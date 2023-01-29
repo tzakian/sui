@@ -590,6 +590,7 @@ impl AuthorityStore {
         inner_temporary_store: InnerTemporaryStore,
         certificate: &VerifiedCertificate,
         effects: &VerifiedSignedTransactionEffects,
+        events: &TransactionEvents,
         effects_digest: &TransactionEffectsDigest,
     ) -> SuiResult {
         // Extract the new state from the execution
@@ -625,6 +626,10 @@ impl AuthorityStore {
             .insert_batch(
                 &self.perpetual_tables.effects,
                 [(effects_digest, effects.data())],
+            )?
+            .insert_batch(
+                &self.perpetual_tables.events,
+                [(effects.events_digest, events)],
             )?;
 
         // Commit.
