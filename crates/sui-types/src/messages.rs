@@ -1484,7 +1484,7 @@ pub enum ExecutionFailureStatus {
     PublishErrorEmptyPackage,
     PublishErrorNonZeroAddress,
     PublishErrorDuplicateModule,
-    SuiMoveVerificationError,
+    SuiMoveVerificationError(Option<MoveLocation>),
 
     //
     // Errors from the Move VM
@@ -1695,7 +1695,7 @@ impl Display for ExecutionFailureStatus {
                 f,
                 "Publish Error, Duplicate Module. More than one module with a given name."
             ),
-            ExecutionFailureStatus::SuiMoveVerificationError => write!(
+            ExecutionFailureStatus::SuiMoveVerificationError(_) => write!(
                 f,
                 "Sui Move Bytecode Verification Error. \
                 Please run the Sui Move Verifier for more information."

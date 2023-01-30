@@ -25,7 +25,7 @@ use sui_types::{
 pub const INIT_FN_NAME: &IdentStr = ident_str!("init");
 
 fn verification_failure(error: String) -> ExecutionError {
-    ExecutionError::new_with_source(ExecutionErrorKind::SuiMoveVerificationError, error)
+    ExecutionError::new_with_source(ExecutionErrorKind::SuiMoveVerificationError(None), error)
 }
 
 /// Checks if a function is annotated with one of the test-related annotations1
