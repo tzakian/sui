@@ -17,8 +17,14 @@ import {
 export const DynamicFieldType = union([literal('DynamicField'), literal('DynamicObject')]);
 export type DynamicFieldType = Infer<typeof DynamicFieldType>;
 
+export const DynamicFieldName = object({
+  type: string(),
+  value: object()
+})
+export type DynamicFieldName = Infer< typeof DynamicFieldName >;
+
 export const DynamicFieldInfo = object({
-  name: string(),
+  name: DynamicFieldName,
   type: DynamicFieldType,
   objectType: string(),
   objectId: ObjectId,

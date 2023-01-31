@@ -47,7 +47,7 @@ import {
 } from '../types';
 import { Provider } from './provider';
 
-import { DynamicFieldPage } from '../types/dynamic_fields';
+import {DynamicFieldName, DynamicFieldPage} from '../types/dynamic_fields';
 
 export class VoidProvider extends Provider {
   // API Version
@@ -201,7 +201,7 @@ export class VoidProvider extends Provider {
 
   getDynamicFieldObject(
     _parent_object_id: ObjectId,
-    _name: string
+    _name: DynamicFieldName
   ): Promise<GetObjectDataResponse> {
     throw this.newError('getDynamicFieldObject');
   }
