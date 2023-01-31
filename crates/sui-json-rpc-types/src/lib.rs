@@ -23,7 +23,6 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::value::{MoveStruct, MoveStructLayout, MoveValue};
 use schemars::JsonSchema;
-use serde::ser::Error;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -438,62 +437,6 @@ impl TryFrom<Object> for SuiCoinMetadata {
             description,
             icon_url,
         })
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SuiParsedSplitCoinResponse {
-    /// The updated original coin object after split
-    pub updated_coin: SuiParsedObject,
-    /// All the newly created coin objects generated from the split
-    pub new_coins: Vec<SuiParsedObject>,
-    /// The updated gas payment object after deducting payment
-    pub updated_gas: SuiParsedObject,
-}
-
-impl Display for SuiParsedSplitCoinResponse {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut writer = String::new();
-        writeln!(writer, "{}", "----- Split Coin Results ----".bold())?;
-
-        let coin = GasCoin::try_from(&self.updated_coin).map_err(fmt::Error::custom)?;
-        writeln!(writer, "Updated Coin : {}", coin)?;
-        let mut new_coin_text = Vec::new();
-        for coin in &self.new_coins {
-            let coin = GasCoin::try_from(coin).map_err(fmt::Error::custom)?;
-            new_coin_text.push(format!("{coin}"))
-        }
-        writeln!(
-            writer,
-            "New Coins : {}",
-            new_coin_text.join(",\n            ")
-        )?;
-        let gas_coin = GasCoin::try_from(&self.updated_gas).map_err(fmt::Error::custom)?;
-        writeln!(writer, "Updated Gas : {}", gas_coin)?;
-        write!(f, "{}", writer)
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SuiParsedMergeCoinResponse {
-    /// The updated original coin object after merge
-    pub updated_coin: SuiParsedObject,
-    /// The updated gas payment object after deducting payment
-    pub updated_gas: SuiParsedObject,
-}
-
-impl Display for SuiParsedMergeCoinResponse {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut writer = String::new();
-        writeln!(writer, "{}", "----- Merge Coin Results ----".bold())?;
-
-        let coin = GasCoin::try_from(&self.updated_coin).map_err(fmt::Error::custom)?;
-        writeln!(writer, "Updated Coin : {}", coin)?;
-        let gas_coin = GasCoin::try_from(&self.updated_gas).map_err(fmt::Error::custom)?;
-        writeln!(writer, "Updated Gas : {}", gas_coin)?;
-        write!(f, "{}", writer)
     }
 }
 
@@ -948,45 +891,6 @@ impl TryFrom<&SuiMoveStruct> for GasCoin {
         Err(SuiError::TypeError {
             error: format!("Struct is not a gas coin: {move_struct:?}"),
         })
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SuiParsedPublishResponse {
-    /// The newly published package object reference.
-    pub package: SuiObjectRef,
-    /// List of Move objects created as part of running the module initializers in the package
-    pub created_objects: Vec<SuiParsedObject>,
-    /// The updated gas payment object after deducting payment
-    pub updated_gas: SuiParsedObject,
-}
-
-impl Display for SuiParsedPublishResponse {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut writer = String::new();
-        writeln!(writer, "{}", "----- Publish Results ----".bold())?;
-        writeln!(
-            writer,
-            "{}",
-            format!(
-                "The newly published package object ID: {:?}\n",
-                self.package.object_id
-            )
-            .bold()
-        )?;
-        if !self.created_objects.is_empty() {
-            writeln!(
-                writer,
-                "List of objects created by running module initializers:"
-            )?;
-            for obj in &self.created_objects {
-                writeln!(writer, "{}\n", obj)?;
-            }
-        }
-        let gas_coin = GasCoin::try_from(&self.updated_gas).map_err(fmt::Error::custom)?;
-        writeln!(writer, "Updated Gas : {}", gas_coin)?;
-        write!(f, "{}", writer)
     }
 }
 

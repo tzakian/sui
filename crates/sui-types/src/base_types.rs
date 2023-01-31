@@ -326,6 +326,9 @@ pub struct TransactionEventsDigest(
 impl TransactionEventsDigest {
     pub const ZERO: Self = TransactionEventsDigest([0u8; TRANSACTION_DIGEST_LENGTH]);
 
+    pub fn new(bytes: [u8; TRANSACTION_DIGEST_LENGTH]) -> Self {
+        Self(bytes)
+    }
     // for testing
     pub fn random() -> Self {
         let random_bytes = rand::thread_rng().gen::<[u8; TRANSACTION_DIGEST_LENGTH]>();

@@ -499,7 +499,7 @@ impl RpcExampleProvider {
                     owner: Owner::ObjectOwner(signer),
                     reference: SuiObjectRef::from(gas_ref),
                 },
-                events_digest: TransactionEventsDigest::random(),
+                events_digest: TransactionEventsDigest::new(self.rng.gen()),
                 dependencies: vec![],
             },
             events: SuiTransactionEvents {
