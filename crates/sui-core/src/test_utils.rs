@@ -140,6 +140,7 @@ pub fn dummy_transaction_effects(tx: &Transaction) -> TransactionEffects {
             Owner::AddressOwner(tx.data().intent_message.value.signer()),
         ),
         events_digest: TransactionEventsDigest::random(),
+        events_count: 0,
         dependencies: Vec::new(),
     }
 }

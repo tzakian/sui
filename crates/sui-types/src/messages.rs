@@ -1956,6 +1956,7 @@ pub struct TransactionEffects {
     pub gas_object: (ObjectRef, Owner),
     /// The events emitted during execution.
     pub events_digest: TransactionEventsDigest,
+    pub events_count: usize,
     /// The set of transaction digests this transaction depends on.
     pub dependencies: Vec<TransactionDigest>,
 }
@@ -2119,6 +2120,7 @@ impl Default for TransactionEffects {
                 Owner::AddressOwner(SuiAddress::default()),
             ),
             events_digest: TransactionEventsDigest::random(),
+            events_count: 0,
             dependencies: Vec::new(),
         }
     }

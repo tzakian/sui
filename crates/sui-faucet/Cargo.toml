@@ -29,6 +29,7 @@ rocksdb = "0.19.0"
 tempfile = "3.3.0"
 
 sui = { path = "../sui" }
+sui-sdk = { path = "../sui-sdk" }
 sui-node = { path = "../sui-node" }
 sui-json-rpc-types= { path = "../sui-json-rpc-types" }
 sui-types = { path = "../sui-types" }

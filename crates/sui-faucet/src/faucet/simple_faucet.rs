@@ -12,11 +12,11 @@ use tap::tap::TapFallible;
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::{CoinInfo, Faucet, FaucetError, FaucetReceipt};
 use sui::client_commands::WalletContext;
-use sui_json_rpc_types::{
-    SuiExecutionStatus, SuiObjectRead, SuiPaySui, SuiTransactionKind, SuiTransactionResponse,
-};
+use sui_json_rpc_types::{SuiExecutionStatus, SuiObjectRead, SuiPaySui, SuiTransactionKind};
 use sui_keys::keystore::AccountKeystore;
+use sui_sdk::TransactionExecutionResult;
 use sui_types::object::Owner;
 use sui_types::{
     base_types::{ObjectID, SuiAddress, TransactionDigest},
@@ -31,8 +31,6 @@ use tokio::sync::{
 use tokio::time::{timeout, Duration};
 use tracing::{error, info, warn};
 use uuid::Uuid;
-
-use crate::{CoinInfo, Faucet, FaucetError, FaucetReceipt};
 
 use super::write_ahead_log::WriteAheadLog;
 
@@ -207,7 +205,7 @@ impl SimpleFaucet {
         recipient: SuiAddress,
         coin_id: ObjectID,
         tx_data: TransactionData,
-    ) -> Result<SuiTransactionResponse, FaucetError> {
+    ) -> Result<TransactionExecutionResult, FaucetError> {
         let signature = self
             .wallet
             .config
@@ -350,7 +348,7 @@ impl SimpleFaucet {
         coin_id: ObjectID,
         recipient: SuiAddress,
         uuid: Uuid,
-    ) -> SuiTransactionResponse {
+    ) -> TransactionExecutionResult {
         let mut retry_delay = Duration::from_millis(500);
 
         loop {
@@ -380,7 +378,7 @@ impl SimpleFaucet {
         coin_id: ObjectID,
         recipient: SuiAddress,
         uuid: Uuid,
-    ) -> Result<SuiTransactionResponse, anyhow::Error> {
+    ) -> Result<TransactionExecutionResult, anyhow::Error> {
         self.metrics.current_executions_in_flight.inc();
         let _metrics_guard = scopeguard::guard(self.metrics.clone(), |metrics| {
             metrics.current_executions_in_flight.dec();
@@ -405,18 +403,12 @@ impl SimpleFaucet {
                     e
                 )
             })?;
-        let tx_cert = response.tx_cert;
-        let effects = response.effects;
+        let effects = &response.effects;
         if matches!(effects.status, SuiExecutionStatus::Failure { .. }) {
             return Err(anyhow!("Error transferring object: {:#?}", effects.status));
         }
 
-        Ok(SuiTransactionResponse {
-            certificate: tx_cert,
-            effects,
-            events: response.events,
-            timestamp_ms: None,
-        })
+        Ok(response)
     }
 
     async fn build_pay_sui_txn(
@@ -445,11 +437,11 @@ impl SimpleFaucet {
 
     async fn check_and_map_transfer_gas_result(
         &self,
-        res: SuiTransactionResponse,
+        res: TransactionExecutionResult,
         number_of_coins: usize,
         recipient: &SuiAddress,
     ) -> Result<(TransactionDigest, Vec<ObjectID>, Vec<u64>), FaucetError> {
-        let txns = res.certificate.data.transactions;
+        let txns = res.tx_cert.data.transactions;
         if txns.len() != 1 {
             panic!(
                 "PaySui Transaction should create one and exactly one txn, but got {:?}",
@@ -478,11 +470,7 @@ impl SimpleFaucet {
                 .iter()
                 .map(|created_coin_owner_ref| created_coin_owner_ref.reference.object_id)
                 .collect();
-            Ok((
-                res.certificate.transaction_digest,
-                coin_ids,
-                amounts.clone(),
-            ))
+            Ok((res.tx_cert.transaction_digest, coin_ids, amounts.clone()))
         } else {
             panic!("Expect SuiTransactionKind::PaySui(SuiPaySui) to send coins to address {} but got txn {:?}", recipient, txn);
         }

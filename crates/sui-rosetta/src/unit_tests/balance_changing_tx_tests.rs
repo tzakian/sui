@@ -15,7 +15,7 @@ use sui_keys::keystore::AccountKeystore;
 use sui_keys::keystore::Keystore;
 use sui_sdk::rpc_types::{
     OwnedObjectRef, SuiData, SuiEvent, SuiExecutionStatus, SuiTransactionEffects,
-    SuiTransactionEvents, SuiTransactionResponse,
+    SuiTransactionEvents,
 };
 use sui_sdk::SuiClient;
 use sui_sdk::TransactionExecutionResult;
@@ -104,11 +104,16 @@ async fn test_publish_and_move_call() {
         modules: compiled_module,
     });
     let response = test_transaction(&client, keystore, vec![], sender, tx, None).await;
+    let events = client
+        .read_api()
+        .get_transaction(response.tx_digest)
+        .await
+        .unwrap()
+        .events;
 
     // Test move call (reuse published module from above test)
     let effect = response.effects.clone();
-    let package = response
-        .events
+    let package = events
         .data
         .iter()
         .find_map(|event| {
@@ -121,7 +126,7 @@ async fn test_publish_and_move_call() {
         .unwrap();
 
     // TODO: Improve tx response to make it easier to find objects.
-    let treasury = find_module_object(&effect, &response.events, "managed", "TreasuryCap");
+    let treasury = find_module_object(&effect, &events, "managed", "TreasuryCap");
     let treasury = treasury.clone().reference.to_object_ref();
     let recipient = *network.accounts.choose(&mut OsRng::default()).unwrap();
     let tx = SingleTransactionKind::Call(MoveCall {
@@ -387,12 +392,11 @@ async fn test_transaction(
         data
     );
 
-    let tx_response = SuiTransactionResponse {
-        certificate: response.tx_cert.clone(),
-        effects: effects.clone(),
-        events: response.events.clone(),
-        timestamp_ms: None,
-    };
+    let tx_response = client
+        .read_api()
+        .get_transaction(response.tx_digest)
+        .await
+        .unwrap();
 
     let ops = tx_response.try_into().unwrap();
     let balances_from_ops = extract_balance_changes_from_ops(ops).unwrap();

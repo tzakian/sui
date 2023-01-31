@@ -562,6 +562,7 @@ impl<S> TemporaryStore<S> {
             wrapped,
             gas_object: updated_gas_object_info,
             events_digest: events.digest(),
+            events_count: events.data.len(),
             dependencies: transaction_dependencies,
         };
         (inner, effects, events)

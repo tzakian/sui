@@ -89,7 +89,7 @@ async fn test_public_transfer_object() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[sim_test]
+#[tokio::test]
 async fn test_tbls_sign_randomness_object() -> Result<(), anyhow::Error> {
     let cluster = TestClusterBuilder::new().build().await?;
     let http_client = cluster.rpc_client();
@@ -132,9 +132,11 @@ async fn test_tbls_sign_randomness_object() -> Result<(), anyhow::Error> {
         )
         .await?;
 
-    let SuiExecuteTransactionResponse {
-        effects, events, ..
-    } = tx_response;
+    let SuiExecuteTransactionResponse { effects, .. } = tx_response;
+    let events = http_client
+        .get_transaction(effects.effects.transaction_digest)
+        .await?
+        .events;
     assert_eq!(SuiExecutionStatus::Success, effects.effects.status);
 
     let package_id = events
@@ -173,15 +175,16 @@ async fn test_tbls_sign_randomness_object() -> Result<(), anyhow::Error> {
         .execute_transaction(
             tx_bytes,
             signature_bytes,
-            ExecuteTransactionRequestType::WaitForEffectsCert,
+            ExecuteTransactionRequestType::WaitForLocalExecution,
         )
         .await?;
 
-    let SuiExecuteTransactionResponse {
-        effects, events, ..
-    } = tx_response;
+    let SuiExecuteTransactionResponse { effects, .. } = tx_response;
     assert_eq!(SuiExecutionStatus::Success, effects.effects.status);
-
+    let events = http_client
+        .get_transaction(effects.effects.transaction_digest)
+        .await?
+        .events;
     let randomness_object_id = events
         .data
         .iter()
@@ -430,8 +433,11 @@ async fn test_get_metadata() -> Result<(), anyhow::Error> {
         )
         .await?;
 
-    let SuiExecuteTransactionResponse { events, .. } = tx_response;
-
+    let SuiExecuteTransactionResponse { effects, .. } = tx_response;
+    let events = http_client
+        .get_transaction(effects.effects.transaction_digest)
+        .await?
+        .events;
     let package_id = events
         .data
         .iter()
@@ -488,7 +494,11 @@ async fn test_get_total_supply() -> Result<(), anyhow::Error> {
         )
         .await?;
 
-    let SuiExecuteTransactionResponse { events, .. } = tx_response;
+    let SuiExecuteTransactionResponse { effects, .. } = tx_response;
+    let events = http_client
+        .get_transaction(effects.effects.transaction_digest)
+        .await?
+        .events;
 
     let package_id = events
         .data

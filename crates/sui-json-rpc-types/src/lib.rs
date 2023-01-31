@@ -375,7 +375,6 @@ pub struct SuiTBlsSignRandomnessObjectResponse {
 pub struct SuiExecuteTransactionResponse {
     pub certificate: SuiCertifiedTransaction,
     pub effects: SuiCertifiedTransactionEffects,
-    events: SuiTransactionEvents,
         // If the transaction is confirmed to be executed locally
         // before this response.
        pub confirmed_local_execution: bool,

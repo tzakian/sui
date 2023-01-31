@@ -147,8 +147,16 @@ impl TestContext {
             .await
             .unwrap_or_else(|e| panic!("Failed to execute transaction for {}. {}", desc, e));
         let (tx_cert, effects) = (resp.tx_cert, resp.effects);
+        let events = self
+            .get_fullnode_client()
+            .read_api()
+            .get_transaction(tx_cert.transaction_digest)
+            .await
+            .unwrap()
+            .events;
+
         assert!(matches!(effects.status, SuiExecutionStatus::Success));
-        (tx_cert, effects, resp.events)
+        (tx_cert, effects, events)
     }
 
     pub async fn setup(options: ClusterTestOpt) -> Result<Self, anyhow::Error> {

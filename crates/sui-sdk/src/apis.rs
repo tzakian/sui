@@ -498,7 +498,6 @@ impl QuorumDriver {
                 tx_digest: certificate.transaction_digest,
                 tx_cert: certificate,
                 effects: effects.effects,
-                events,
                 confirmed_local_execution,
                 timestamp_ms: None,
             },
@@ -511,7 +510,6 @@ impl QuorumDriver {
                     tx_digest: certificate.transaction_digest,
                     tx_cert: certificate,
                     effects: effects.effects,
-                    events,
                     confirmed_local_execution,
                     timestamp_ms: None,
                 }

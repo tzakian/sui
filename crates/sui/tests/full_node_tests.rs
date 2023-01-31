@@ -480,7 +480,7 @@ async fn test_full_node_sync_flood() -> Result<(), anyhow::Error> {
                 };
 
                 owned_tx_digest = if let SuiClientCommandResult::SplitCoin(resp) = res {
-                    Some(resp.certificate.transaction_digest)
+                    Some(resp.tx_cert.transaction_digest)
                 } else {
                     panic!("transfer command did not return WalletCommandResult::Transfer");
                 };
@@ -1038,7 +1038,6 @@ async fn test_execute_tx_with_serialized_signature() -> Result<(), anyhow::Error
         let SuiExecuteTransactionResponse {
             certificate,
             effects: _,
-            events: _,
             confirmed_local_execution,
         } = response;
         assert_eq!(&certificate.transaction_digest, tx_digest);
@@ -1079,7 +1078,6 @@ async fn test_full_node_transaction_orchestrator_rpc_ok() -> Result<(), anyhow::
     let SuiExecuteTransactionResponse {
         certificate,
         effects: _,
-        events: _,
         confirmed_local_execution,
     } = response;
     assert_eq!(&certificate.transaction_digest, tx_digest);
@@ -1105,7 +1103,6 @@ async fn test_full_node_transaction_orchestrator_rpc_ok() -> Result<(), anyhow::
     let SuiExecuteTransactionResponse {
         certificate,
         effects: _,
-        events: _,
         confirmed_local_execution,
     } = response;
     assert_eq!(&certificate.transaction_digest, tx_digest);

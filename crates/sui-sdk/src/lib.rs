@@ -21,7 +21,7 @@ pub use sui_json as json;
 use crate::apis::{CoinReadApi, EventApi, GovernanceApi, QuorumDriver, ReadApi};
 use serde::{Deserialize, Serialize};
 pub use sui_json_rpc_types as rpc_types;
-use sui_json_rpc_types::{GetRawObjectDataResponse, SuiObjectInfo, SuiTransactionEvents};
+use sui_json_rpc_types::{GetRawObjectDataResponse, SuiObjectInfo};
 use sui_transaction_builder::{DataReader, TransactionBuilder};
 pub use sui_types as types;
 use sui_types::base_types::{ObjectID, SuiAddress, TransactionDigest};
@@ -35,7 +35,6 @@ pub struct TransactionExecutionResult {
     pub tx_digest: TransactionDigest,
     pub tx_cert: SuiCertifiedTransaction,
     pub effects: SuiTransactionEffects,
-    pub events: SuiTransactionEvents,
     pub confirmed_local_execution: bool,
     pub timestamp_ms: Option<u64>,
 }

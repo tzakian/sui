@@ -8718,6 +8718,7 @@ dependencies = [
  "sui-json-rpc-types",
  "sui-keys",
  "sui-node",
+ "sui-sdk",
  "sui-types",
  "tap",
  "telemetry-subscribers",
