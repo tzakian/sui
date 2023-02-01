@@ -7,5 +7,6 @@ pub mod ecdsa_k1;
 pub mod ed25519;
 pub mod elliptic_curve;
 pub mod groth16;
+pub mod hash;
 pub mod hmac;
 pub mod tbls;
