@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { is, SuiObject, type ValidatorsFields } from '@mysten/sui.js';
-import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { ValidatorMeta } from '~/components/validator/ValidatorMeta';
 import { ValidatorStats } from '~/components/validator/ValidatorStats';
+import { useGetEvents } from '~/hooks/useGetEvents';
 import { useGetObject } from '~/hooks/useGetObject';
-import { useRpc } from '~/hooks/useRpc';
 import {
     VALIDATORS_OBJECT_ID,
     VALIDATORS_EVENTS_QUERY,
@@ -21,7 +20,6 @@ import { getValidatorMoveEvent } from '~/utils/getValidatorMoveEvent';
 function ValidatorDetails() {
     const { id } = useParams();
     const { data, isLoading } = useGetObject(VALIDATORS_OBJECT_ID);
-    const rpc = useRpc();
 
     const validatorsData =
         data &&
@@ -44,19 +42,11 @@ function ValidatorDetails() {
     }, [validatorsData]);
 
     const { data: validatorEvents, isLoading: validatorsEventsLoading } =
-        useQuery(
-            ['events', VALIDATORS_EVENTS_QUERY],
-            async () => {
-                if (!numberOfValidators) return;
-                return rpc.getEvents(
-                    { MoveEvent: VALIDATORS_EVENTS_QUERY },
-                    null,
-                    numberOfValidators,
-                    'descending'
-                );
-            },
-            { enabled: !!numberOfValidators }
-        );
+        useGetEvents({
+            query: { MoveEvent: VALIDATORS_EVENTS_QUERY },
+            limit: numberOfValidators || null,
+            order: 'descending',
+        });
 
     const validatorRewards = useMemo(() => {
         if (!validatorEvents || !id) return 0;
