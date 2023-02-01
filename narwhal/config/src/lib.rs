@@ -174,7 +174,7 @@ impl Parameters {
     }
 
     fn default_min_header_delay() -> Duration {
-        Duration::from_secs_f64(1.2)
+        Duration::from_secs_f64(1.8)
     }
 }
 
