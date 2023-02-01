@@ -14,14 +14,14 @@ import { getStakedPercent } from '~/utils/getStakedPercent';
 
 type StatsCardProps = {
     validatorData: ActiveValidator;
-    totalValidatorStake: string;
+    epochRewards: string;
     epoch: number | string;
 };
 
 export function ValidatorStats({
     validatorData,
     epoch,
-    totalValidatorStake,
+    epochRewards,
 }: StatsCardProps) {
     // TODO: add missing fields
     // const numberOfDelegators = 0;
@@ -130,8 +130,10 @@ export function ValidatorStats({
                         <Stats
                             label="Last Epoch SUI Rewards"
                             tooltip="The stake rewards collected during the last epoch."
-                            unavailable
-                        />
+                            unavailable={+epochRewards <= 0}
+                        >
+                            <DelegationAmount amount={epochRewards} isStats />
+                        </Stats>
 
                         <Stats
                             label="Reward Pool"
