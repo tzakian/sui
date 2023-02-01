@@ -434,6 +434,7 @@ impl Primary {
             network.downgrade(),
             network_connection_metrics,
             peer_types,
+            None,
         );
 
         info!(
