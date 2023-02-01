@@ -9356,6 +9356,8 @@ dependencies = [
 name = "sui-types"
 version = "0.1.0"
 dependencies = [
+ "anemo",
+ "anemo-tower",
  "anyhow",
  "bcs",
  "bincode",
