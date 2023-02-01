@@ -295,8 +295,10 @@ impl ValidatorService {
         if let Some(signed_effects) =
             state.get_signed_effects_and_maybe_resign(epoch_store.epoch(), &tx_digest)?
         {
+            let event_digest = signed_effects.events_digest;
             return Ok(tonic::Response::new(HandleCertificateResponse {
                 signed_effects: signed_effects.into_inner(),
+                events: state.get_transaction_events(event_digest).await?,
             }));
         }
 
@@ -386,9 +388,13 @@ impl ValidatorService {
             state.execute_certificate(&certificate, &epoch_store).await
         };
         match res {
-            Ok(signed_effects) => Ok(tonic::Response::new(HandleCertificateResponse {
-                signed_effects: signed_effects.into_inner(),
-            })),
+            Ok(signed_effects) => {
+                let event_digest = signed_effects.events_digest;
+                Ok(tonic::Response::new(HandleCertificateResponse {
+                    signed_effects: signed_effects.into_inner(),
+                    events: state.get_transaction_events(event_digest).await?,
+                }))
+            }
             Err(e) => Err(tonic::Status::from(e)),
         }
     }

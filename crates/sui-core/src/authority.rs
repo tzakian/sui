@@ -2139,7 +2139,7 @@ impl AuthorityState {
     pub async fn get_transaction_events(
         &self,
         digest: TransactionEventsDigest,
-    ) -> Result<TransactionEvents, anyhow::Error> {
+    ) -> SuiResult<TransactionEvents> {
         Ok(self.database.get_events(&digest)?)
     }
 
@@ -2350,13 +2350,25 @@ impl AuthorityState {
         transaction_digest: &TransactionDigest,
         epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> Result<VerifiedTransactionInfoResponse, SuiError> {
+        let signed_effects =
+            self.get_signed_effects_and_maybe_resign(epoch_store.epoch(), transaction_digest)?;
+        let events = signed_effects
+            .as_ref()
+            .and_then(|e| {
+                self.database
+                    .perpetual_tables
+                    .events
+                    .get(&e.events_digest)
+                    .transpose()
+            })
+            .transpose()?;
         Ok(VerifiedTransactionInfoResponse {
             signed_transaction: epoch_store.get_signed_transaction(transaction_digest)?,
             certified_transaction: self
                 .database
                 .get_certified_transaction(transaction_digest)?,
-            signed_effects: self
-                .get_signed_effects_and_maybe_resign(epoch_store.epoch(), transaction_digest)?,
+            signed_effects,
+            events,
         })
     }
 

@@ -17,6 +17,7 @@ use sui_core::authority_client::NetworkAuthorityClient;
 use sui_core::transaction_orchestrator::TransactiondOrchestrator;
 use sui_json_rpc_types::{
     SuiCertifiedTransaction, SuiCertifiedTransactionEffects, SuiExecuteTransactionResponse,
+    SuiTransactionEvents,
 };
 use sui_open_rpc::Module;
 use sui_types::intent::Intent;
@@ -73,12 +74,15 @@ impl TransactionExecutionApiServer for FullNodeTransactionExecutionApi {
 
         Ok(match response {
             ExecuteTransactionResponse::EffectsCert(cert) => {
-                let (certificate, effects, is_executed_locally) = *cert;
+                let (certificate, effects, events, is_executed_locally) = *cert;
                 let certificate: SuiCertifiedTransaction = certificate.try_into()?;
                 let effects: SuiCertifiedTransactionEffects = effects.try_into()?;
-                SuiExecuteTransactionResponse::EffectsCert {
+                let events =
+                    SuiTransactionEvents::try_from(events, self.state.module_cache.as_ref())?;
+                SuiExecuteTransactionResponse {
                     certificate,
                     effects,
+                    events,
                     confirmed_local_execution: is_executed_locally,
                 }
             }

@@ -189,11 +189,13 @@ where
                 let QuorumDriverResponse {
                     tx_cert,
                     effects_cert,
+                    events,
                 } = response;
                 if !wait_for_local_execution {
                     return Ok(ExecuteTransactionResponse::EffectsCert(Box::new((
                         tx_cert.into(),
                         effects_cert.into(),
+                        events,
                         false,
                     ))));
                 }
@@ -208,11 +210,13 @@ where
                     Ok(_) => Ok(ExecuteTransactionResponse::EffectsCert(Box::new((
                         tx_cert.into(),
                         effects_cert.into(),
+                        events,
                         true,
                     )))),
                     Err(_) => Ok(ExecuteTransactionResponse::EffectsCert(Box::new((
                         tx_cert.into(),
                         effects_cert.into(),
+                        events,
                         false,
                     )))),
                 }
@@ -310,6 +314,7 @@ where
                 Ok(Ok(QuorumDriverResponse {
                     tx_cert,
                     effects_cert,
+                    events: _,
                 })) => {
                     let tx_digest = tx_cert.digest();
                     if let Err(err) = pending_transaction_log.finish_transaction(tx_digest) {

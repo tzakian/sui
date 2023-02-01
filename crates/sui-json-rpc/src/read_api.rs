@@ -38,6 +38,7 @@ use tracing::debug;
 
 use crate::api::RpcFullNodeReadApiServer;
 use crate::api::{cap_page_limit, RpcReadApiServer};
+use crate::error::Error;
 use crate::SuiRpcModule;
 
 // An implementation of the read portion of the JSON-RPC interface intended for use in
@@ -189,7 +190,8 @@ impl RpcReadApiServer for ReadApi {
         let events = self
             .state
             .get_transaction_events(effects.events_digest)
-            .await?;
+            .await
+            .map_err(Error::from)?;
         Ok(SuiTransactionResponse {
             certificate: cert.try_into()?,
             effects: effects.into(),

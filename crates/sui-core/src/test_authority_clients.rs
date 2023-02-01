@@ -157,12 +157,18 @@ impl LocalAuthorityClient {
                 }
             }
             .into_inner();
+        let events = state
+            .get_transaction_events(signed_effects.events_digest)
+            .await?;
         if fault_config.fail_after_handle_confirmation {
             return Err(SuiError::GenericAuthorityError {
                 error: "Mock error after handle_confirmation_transaction".to_owned(),
             });
         }
-        Ok(HandleCertificateResponse { signed_effects })
+        Ok(HandleCertificateResponse {
+            signed_effects,
+            events,
+        })
     }
 }
 
@@ -241,6 +247,7 @@ impl AuthorityAPI for MockAuthorityApi {
             signed_transaction: None,
             certified_transaction: None,
             signed_effects: None,
+            events: None,
         };
         Ok(res)
     }
@@ -317,6 +324,7 @@ impl HandleTransactionTestAuthorityClient {
                 signed_transaction: None,
                 certified_transaction: None,
                 signed_effects: None,
+                events: None,
             },
         }
     }

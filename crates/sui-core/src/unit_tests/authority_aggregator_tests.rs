@@ -1016,6 +1016,7 @@ async fn test_handle_transaction_response() {
         signed_transaction: None, // we don't care signed_tx when we have tx_cert
         certified_transaction: Some(cert_epoch_0.clone().into_inner()),
         signed_effects: Some(sign_tx_effects(effects, 0, *name_0, key_0)),
+        events: Some(TransactionEvents { data: vec![] }),
     };
     clients
         .get_mut(&authority_keys[0].0)
@@ -1029,6 +1030,7 @@ async fn test_handle_transaction_response() {
             signed_transaction: None,
             certified_transaction: None,
             signed_effects: None,
+            events: None,
         };
         clients.get_mut(name).unwrap().set_tx_info_response(resp);
     }
@@ -1207,6 +1209,7 @@ fn set_tx_info_response_with_cert_and_effects<'a>(
                 key,
                 *name,
             )),
+            events: Some(TransactionEvents { data: vec![] }),
         };
         clients.get_mut(name).unwrap().set_tx_info_response(resp);
     }
@@ -1225,6 +1228,7 @@ fn set_tx_info_response_with_signed_tx(
             signed_transaction: Some(signed_tx),
             certified_transaction: None,
             signed_effects: None,
+            events: None,
         };
         clients.get_mut(name).unwrap().set_tx_info_response(resp);
     }

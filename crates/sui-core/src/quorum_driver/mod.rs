@@ -353,7 +353,7 @@ where
         &self,
         certificate: VerifiedCertificate,
     ) -> Result<QuorumDriverResponse, QuorumDriverInternalError> {
-        let effects = self
+        let (effects, events) = self
             .validators
             .load()
             .process_certificate(certificate.clone().into_inner())
@@ -363,6 +363,7 @@ where
         let response = QuorumDriverResponse {
             tx_cert: certificate,
             effects_cert: effects,
+            events,
         };
 
         Ok(response)
@@ -708,11 +709,13 @@ where
             Ok(QuorumDriverResponse {
                 tx_cert,
                 effects_cert,
+                events,
             }) => {
                 debug!(?tx_digest, "Certificate processing succeeded");
                 QuorumDriverResponse {
                     tx_cert,
                     effects_cert,
+                    events,
                 }
             }
             // Note: non retryable failure when processing a cert

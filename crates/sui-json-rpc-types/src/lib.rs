@@ -374,12 +374,13 @@ pub struct SuiTBlsSignRandomnessObjectResponse {
 pub struct SuiExecuteTransactionResponse {
     pub certificate: SuiCertifiedTransaction,
     pub effects: SuiCertifiedTransactionEffects,
-        // If the transaction is confirmed to be executed locally
-        // before this response.
-       pub confirmed_local_execution: bool,
+    pub events: SuiTransactionEvents,
+    // If the transaction is confirmed to be executed locally
+    // before this response.
+    pub confirmed_local_execution: bool,
 }
 
-impl SuiExecuteTransactionResponse {
+/*impl SuiExecuteTransactionResponse {
     pub fn from_execute_transaction_response(
         resp: ExecuteTransactionResponse,
         resolver: &impl GetModule,
@@ -389,7 +390,7 @@ impl SuiExecuteTransactionResponse {
                 let (certificate, effects, is_executed_locally) = *cert;
                 let certificate: SuiCertifiedTransaction = certificate.try_into()?;
                 let effects: SuiCertifiedTransactionEffects =
-                    SuiCertifiedTransactionEffects::try_from(effects, resolver)?;
+                    SuiCertifiedTransactionEffects::try_from(effects)?;
                 SuiExecuteTransactionResponse {
                     certificate,
                     effects,
@@ -398,7 +399,7 @@ impl SuiExecuteTransactionResponse {
             }
         })
     }
-}
+}*/
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 #[serde(rename_all = "camelCase")]

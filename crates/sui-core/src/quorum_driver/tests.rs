@@ -68,6 +68,7 @@ async fn test_quorum_driver_submit_transaction() {
         let QuorumDriverResponse {
             tx_cert,
             effects_cert,
+            ..
         } = qd_clone
             .subscribe_to_effects()
             .recv()
@@ -101,6 +102,7 @@ async fn test_quorum_driver_submit_transaction_no_ticket() {
         let QuorumDriverResponse {
             tx_cert,
             effects_cert,
+            ..
         } = qd_clone
             .subscribe_to_effects()
             .recv()
@@ -124,6 +126,7 @@ async fn verify_ticket_response<'a>(
     let QuorumDriverResponse {
         tx_cert,
         effects_cert,
+        ..
     } = ticket.await.unwrap();
     assert_eq!(tx_cert.digest(), tx_digest);
     assert_eq!(&effects_cert.data().transaction_digest, tx_digest);
@@ -150,6 +153,7 @@ async fn test_quorum_driver_with_given_notify_read() {
         let QuorumDriverResponse {
             tx_cert,
             effects_cert,
+            ..
         } = qd_clone
             .subscribe_to_effects()
             .recv()
@@ -325,6 +329,7 @@ async fn test_quorum_driver_retry_on_object_locked() -> Result<(), anyhow::Error
     let QuorumDriverResponse {
         tx_cert,
         effects_cert: _,
+        ..
     } = res;
     assert_eq!(tx_cert.digest(), &tx2_digest);
 
@@ -389,6 +394,7 @@ async fn test_quorum_driver_retry_on_object_locked() -> Result<(), anyhow::Error
     let QuorumDriverResponse {
         tx_cert,
         effects_cert: _,
+        ..
     } = res;
     assert_eq!(*tx_cert.digest(), tx_digest);
 

@@ -239,6 +239,7 @@ impl<C> SafeClient<C> {
             signed_transaction,
             certified_transaction,
             signed_effects,
+            events,
         } = response;
 
         let signed_transaction = if let Some(signed_transaction) = signed_transaction {
@@ -300,6 +301,7 @@ impl<C> SafeClient<C> {
             signed_transaction,
             certified_transaction,
             signed_effects,
+            events,
         })
     }
 
@@ -463,6 +465,7 @@ where
     ) -> SuiResult<VerifiedHandleCertificateResponse> {
         Ok(VerifiedHandleCertificateResponse {
             signed_effects: self.check_signed_effects(digest, response.signed_effects, None)?,
+            events: response.events,
         })
     }
 

@@ -1341,11 +1341,13 @@ impl From<TransactionDigest> for TransactionInfoRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HandleCertificateResponse {
     pub signed_effects: SignedTransactionEffects,
+    pub events: TransactionEvents,
 }
 
 #[derive(Clone, Debug)]
 pub struct VerifiedHandleCertificateResponse {
     pub signed_effects: VerifiedSignedTransactionEffects,
+    pub events: TransactionEvents,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1353,6 +1355,7 @@ pub struct TransactionInfoResponse<
     TxnT = SignedTransaction,
     CertT = CertifiedTransaction,
     EffectsT = SignedTransactionEffects,
+    EventT = TransactionEvents,
 > {
     // The signed transaction response to handle_transaction
     pub signed_transaction: Option<TxnT>,
@@ -1361,12 +1364,14 @@ pub struct TransactionInfoResponse<
     // The effects resulting from a successful execution should
     // contain ObjectRef created, mutated, deleted and events.
     pub signed_effects: Option<EffectsT>,
+    pub events: Option<EventT>,
 }
 
 pub type VerifiedTransactionInfoResponse = TransactionInfoResponse<
     VerifiedSignedTransaction,
     VerifiedCertificate,
     VerifiedSignedTransactionEffects,
+    TransactionEvents,
 >;
 
 impl From<VerifiedTransactionInfoResponse> for TransactionInfoResponse {
@@ -1375,6 +1380,7 @@ impl From<VerifiedTransactionInfoResponse> for TransactionInfoResponse {
             signed_transaction,
             certified_transaction,
             signed_effects,
+            events,
         } = v;
 
         let certified_transaction = certified_transaction.map(|c| c.into_inner());
@@ -1384,6 +1390,7 @@ impl From<VerifiedTransactionInfoResponse> for TransactionInfoResponse {
             signed_transaction,
             certified_transaction,
             signed_effects,
+            events,
         }
     }
 }
@@ -2448,6 +2455,7 @@ pub enum ExecuteTransactionResponse {
         Box<(
             CertifiedTransaction,
             CertifiedTransactionEffects,
+            TransactionEvents,
             IsTransactionExecutedLocally,
         )>,
     ),
@@ -2462,6 +2470,7 @@ pub struct QuorumDriverRequest {
 pub struct QuorumDriverResponse {
     pub tx_cert: VerifiedCertificate,
     pub effects_cert: VerifiedCertifiedTransactionEffects,
+    pub events: TransactionEvents,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

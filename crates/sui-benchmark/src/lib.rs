@@ -18,6 +18,7 @@ use sui_core::{
 use sui_json_rpc_types::{SuiCertifiedTransaction, SuiObjectRead, SuiTransactionEffects};
 use sui_sdk::{SuiClient, SuiClientBuilder};
 use sui_types::base_types::SuiAddress;
+use sui_types::messages::TransactionEvents;
 use sui_types::sui_system_state::SuiSystemState;
 use sui_types::{
     base_types::ObjectID,
@@ -45,14 +46,14 @@ pub mod workloads;
 /// responses from LocalValidatorAggregatorProxy and FullNodeProxy
 #[allow(clippy::large_enum_variant)]
 pub enum ExecutionEffects {
-    CertifiedTransactionEffects(CertifiedTransactionEffects),
+    CertifiedTransactionEffects(CertifiedTransactionEffects, TransactionEvents),
     SuiTransactionEffects(SuiTransactionEffects),
 }
 
 impl ExecutionEffects {
     pub fn mutated(&self) -> Vec<(ObjectRef, Owner)> {
         match self {
-            ExecutionEffects::CertifiedTransactionEffects(certified_effects) => {
+            ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
                 certified_effects.data().mutated.clone()
             }
             ExecutionEffects::SuiTransactionEffects(sui_tx_effects) => sui_tx_effects
@@ -66,7 +67,7 @@ impl ExecutionEffects {
 
     pub fn created(&self) -> Vec<(ObjectRef, Owner)> {
         match self {
-            ExecutionEffects::CertifiedTransactionEffects(certified_effects) => {
+            ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
                 certified_effects.data().created.clone()
             }
             ExecutionEffects::SuiTransactionEffects(sui_tx_effects) => sui_tx_effects
@@ -80,7 +81,7 @@ impl ExecutionEffects {
 
     pub fn quorum_sig(&self) -> Option<&AuthorityStrongQuorumSignInfo> {
         match self {
-            ExecutionEffects::CertifiedTransactionEffects(certified_effects) => {
+            ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
                 Some(certified_effects.auth_sig())
             }
             ExecutionEffects::SuiTransactionEffects(_) => None,
@@ -89,7 +90,7 @@ impl ExecutionEffects {
 
     pub fn gas_object(&self) -> (ObjectRef, Owner) {
         match self {
-            ExecutionEffects::CertifiedTransactionEffects(certified_effects) => {
+            ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
                 certified_effects.data().gas_object
             }
             ExecutionEffects::SuiTransactionEffects(sui_tx_effects) => {
@@ -213,10 +214,11 @@ impl ValidatorProxy for LocalValidatorAggregatorProxy {
                     let QuorumDriverResponse {
                         tx_cert,
                         effects_cert,
+                        events,
                     } = resp;
                     return Ok((
                         tx_cert.try_into().unwrap(),
-                        ExecutionEffects::CertifiedTransactionEffects(effects_cert.into()),
+                        ExecutionEffects::CertifiedTransactionEffects(effects_cert.into(), events),
                     ));
                 }
                 Err(err) => {

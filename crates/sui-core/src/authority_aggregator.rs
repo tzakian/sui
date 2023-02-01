@@ -183,6 +183,7 @@ struct EffectsStakeInfo {
 struct EffectsStakeMap {
     effects_map: HashMap<(EpochId, TransactionEffectsDigest), EffectsStakeInfo>,
     effects_cert: Option<VerifiedCertifiedTransactionEffects>,
+    events: Option<TransactionEvents>,
 }
 
 #[derive(Error, Debug)]
@@ -207,6 +208,7 @@ impl EffectsStakeMap {
     pub fn add(
         &mut self,
         effects: SignedTransactionEffects,
+        events: TransactionEvents,
         weight: StakeUnit,
         committee: &Committee,
     ) -> Result<bool, EffectsCertError> {
@@ -252,6 +254,7 @@ impl EffectsStakeMap {
             total_stake: entry.stake,
         })?;
         self.effects_cert = Some(cte);
+        self.events = Some(events);
         Ok(true)
     }
 
@@ -261,6 +264,10 @@ impl EffectsStakeMap {
 
     pub fn get_cert(&self) -> Option<VerifiedCertifiedTransactionEffects> {
         self.effects_cert.clone()
+    }
+
+    pub fn get_events(&self) -> Option<TransactionEvents> {
+        self.events.clone()
     }
 }
 
@@ -1287,9 +1294,10 @@ where
                             Ok(VerifiedTransactionInfoResponse {
                                 certified_transaction: Some(inner_certificate),
                                 signed_effects: Some(inner_effects),
+                                events:Some(events),
                                 ..
                             }) => {
-                                if let Err(err) = self.handle_response_with_certified_transaction(&mut state, name, weight, tx_digest, inner_certificate, inner_effects.into_inner()) {
+                                if let Err(err) = self.handle_response_with_certified_transaction(&mut state, name, weight, tx_digest, inner_certificate, inner_effects.into_inner(), events) {
                                     // The error means we fail to verify a TransactionEffectsCertificate
                                     // with a quorum. This shouldn't happen in theory but when it does,
                                     // we exit
@@ -1501,6 +1509,7 @@ where
         tx_digest: &TransactionDigest,
         certificate: VerifiedCertificate,
         signed_effects: SignedTransactionEffects,
+        events: TransactionEvents,
     ) -> Result<(), EffectsCertError> {
         // If we get a certificate in the same epoch, then we use it.
         // A certificate in a past epoch does not guarantee finality
@@ -1525,7 +1534,7 @@ where
             // TODO: we may return a CertifiedTransactionEffects directly here
             if state
                 .effects_map
-                .add(signed_effects, weight, &self.committee)?
+                .add(signed_effects, events, weight, &self.committee)?
             {
                 debug!(
                     ?tx_digest,
@@ -1603,7 +1612,10 @@ where
     pub async fn process_certificate(
         &self,
         certificate: CertifiedTransaction,
-    ) -> Result<VerifiedCertifiedTransactionEffects, QuorumExecuteCertificateError> {
+    ) -> Result<
+        (VerifiedCertifiedTransactionEffects, TransactionEvents),
+        QuorumExecuteCertificateError,
+    > {
         #[derive(Default)]
         struct ProcessCertificateState {
             // Different authorities could return different effects.  We want at least one effect to come
@@ -1645,15 +1657,15 @@ where
                         // and return.
                         match result {
                             Ok(VerifiedHandleCertificateResponse {
-                                signed_effects,
-                            }) => {
+                                signed_effects, events,
+                               }) => {
                                 debug!(
                                     ?tx_digest,
                                     name = ?name.concise(),
                                     "Validator handled certificate successfully",
                                 );
                                 // Note: here we aggregate votes by the hash of the effects structure
-                                match state.effects_map.add(signed_effects.into_inner(), weight, &self.committee) {
+                                match state.effects_map.add(signed_effects.into_inner(), events,weight, &self.committee) {
                                     Err(err) => {
                                         // The error means we fail to verify a TransactionEffectsCertificate
                                         // with a quorum. This shouldn't happen in theory but when it does,
@@ -1701,9 +1713,11 @@ where
 
         // Check that one effects structure has more than 2f votes,
         // and return it.
-        if let Some(cert) = state.effects_map.get_cert() {
+        if let (Some(cert), Some(events)) =
+            (state.effects_map.get_cert(), state.effects_map.get_events())
+        {
             debug!(?tx_digest, "Found an effect with good stake over threshold");
-            return Ok(cert);
+            return Ok((cert, events));
         }
 
         // If none has, fail.
@@ -1727,7 +1741,7 @@ where
             .instrument(tracing::debug_span!("process_cert"))
             .await?;
 
-        Ok((new_certificate, response))
+        Ok((new_certificate, response.0))
     }
 
     pub async fn get_object_info_execute(&self, object_id: ObjectID) -> SuiResult<ObjectRead> {
