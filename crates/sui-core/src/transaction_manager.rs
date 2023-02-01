@@ -80,12 +80,10 @@ impl TransactionManager {
             inner: RwLock::new(Inner::new(epoch_store.epoch())),
             tx_ready_certificates,
         };
+        let pending_certs = epoch_store.all_pending_certificates().unwrap();
+        debug!("Reloading pending certificates: {:?}", pending_certs);
         transaction_manager
-            .enqueue(
-                epoch_store.all_pending_certificates().unwrap(),
-                epoch_store,
-                None,
-            )
+            .enqueue(pending_certs, epoch_store, None)
             .expect("Initialize TransactionManager with pending certificates failed.");
         transaction_manager
     }
