@@ -175,7 +175,7 @@ async fn test_transaction_orchestrator_reconfig() {
 
     for handle in &authorities {
         handle
-            .with_async(|node| async { node.close_epoch().await.unwrap() })
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
             .await;
     }
 
@@ -225,7 +225,7 @@ async fn test_tx_across_epoch_boundaries() {
     // to make sure QD does not get quorum until reconfig
     for handle in authorities.iter().take(2) {
         handle
-            .with_async(|node| async { node.close_epoch().await.unwrap() })
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
             .await;
     }
 
@@ -263,7 +263,7 @@ async fn test_tx_across_epoch_boundaries() {
     // Ask the remaining 2 validators to close epoch
     for handle in authorities.iter().skip(2) {
         handle
-            .with_async(|node| async { node.close_epoch().await.unwrap() })
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
             .await;
     }
 

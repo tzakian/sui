@@ -736,7 +736,7 @@ async fn test_dev_inspect_uses_unbound_object() {
     }));
 
     let result = fullnode
-        .dev_inspect_transaction(sender, kind, 1, fullnode.epoch())
+        .dev_inspect_transaction(sender, kind, 1, fullnode.current_epoch_for_testing())
         .await;
     let Err(err) = result else { panic!() };
     assert!(err
@@ -3602,7 +3602,7 @@ pub async fn call_dev_inspect(
         arguments,
     }));
     authority
-        .dev_inspect_transaction(*sender, kind, 1, authority.epoch())
+        .dev_inspect_transaction(*sender, kind, 1, authority.current_epoch_for_testing())
         .await
 }
 

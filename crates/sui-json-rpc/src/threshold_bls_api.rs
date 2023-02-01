@@ -11,6 +11,7 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::RpcModule;
 use move_core_types::value::MoveStructLayout;
 use std::sync::Arc;
+use sui_core::authority::authority_per_epoch_store::AuthorityPerEpochStore;
 use sui_core::authority::AuthorityState;
 use sui_json_rpc_types::SuiTBlsSignObjectCommitmentType::{ConsensusCommitted, FastPathCommitted};
 use sui_json_rpc_types::{
@@ -67,18 +68,15 @@ impl ThresholdBlsApi {
         &self,
         object_id: ObjectID,
         effects_cert: &SuiCertifiedTransactionEffects,
+        epoch_store: &AuthorityPerEpochStore,
     ) -> Result<(), Error> {
-        if effects_cert.auth_sign_info.epoch != self.state.epoch() {
+        if effects_cert.auth_sign_info.epoch != epoch_store.epoch() {
             Err(anyhow!(
                 "Old effects certificate, check instead if committed by consensus"
             ))?
         }
         // Check the certificate.
-        let _committee = self
-            .state
-            .committee_store()
-            .get_committee(&self.state.epoch())?
-            .ok_or_else(|| Error::InternalError(anyhow!("Committee not available")))?;
+        let _committee = epoch_store.committee();
 
         // TODO: convert SuiTransactionEffects to TransactionEffects before the next line.
         // effects_cert
@@ -115,14 +113,16 @@ impl ThresholdBlsApiServer for ThresholdBlsApi {
         object_id: ObjectID,
         commitment_type: SuiTBlsSignObjectCommitmentType,
     ) -> RpcResult<SuiTBlsSignRandomnessObjectResponse> {
+        let epoch_store = self.state.load_epoch_store_one_call_per_task();
         match commitment_type {
             ConsensusCommitted => self.verify_object_alive_and_committed(object_id).await?,
             FastPathCommitted(effects_cert) => {
-                self.verify_effects_cert(object_id, &effects_cert).await?
+                self.verify_effects_cert(object_id, &effects_cert, &epoch_store)
+                    .await?
             }
         };
         // Construct the message to be signed, as done in the Move code of the Randomness object.
-        let curr_epoch = self.state.epoch();
+        let curr_epoch = epoch_store.epoch();
         let msg = construct_tbls_randomness_object_message(curr_epoch, &object_id);
         // Sign the message using the mocked DKG keys.
         let (sk, _pk) = mocked_dkg::generate_full_key_pair(curr_epoch);

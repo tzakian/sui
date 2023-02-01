@@ -449,17 +449,12 @@ pub struct AuthorityState {
 ///
 /// Repeating valid commands should produce no changes and return no error.
 impl AuthorityState {
-    pub fn is_validator(&self) -> bool {
-        self.epoch_store().committee().authority_exists(&self.name)
+    pub fn is_validator(&self, epoch_store: &AuthorityPerEpochStore) -> bool {
+        epoch_store.committee().authority_exists(&self.name)
     }
 
-    pub fn is_fullnode(&self) -> bool {
-        !self.is_validator()
-    }
-
-    // TODO: Audit all callsites to make sure it's safe.
-    pub fn epoch(&self) -> EpochId {
-        self.epoch_store().epoch()
+    pub fn is_fullnode(&self, epoch_store: &AuthorityPerEpochStore) -> bool {
+        !self.is_validator(epoch_store)
     }
 
     pub fn committee_store(&self) -> &Arc<CommitteeStore> {
@@ -534,7 +529,7 @@ impl AuthorityState {
             &transaction.data().intent_message.value
         );
 
-        let epoch_store = self.epoch_store();
+        let epoch_store = self.load_epoch_store_one_call_per_task();
         // Ensure an idempotent answer. This is checked before the system_tx check so that
         // a validator is able to return the signed system tx if it was already signed locally.
         if epoch_store
@@ -598,7 +593,7 @@ impl AuthorityState {
         effects: &VerifiedCertifiedTransactionEffects,
         epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult {
-        assert!(self.is_fullnode());
+        assert!(self.is_fullnode(epoch_store));
         let _metrics_guard = self
             .metrics
             .execute_certificate_with_effects_latency
@@ -1061,7 +1056,8 @@ impl AuthorityState {
         transaction: TransactionData,
         transaction_digest: TransactionDigest,
     ) -> Result<SuiTransactionEffects, anyhow::Error> {
-        if !self.is_fullnode() {
+        let epoch_store = self.load_epoch_store_one_call_per_task();
+        if !self.is_fullnode(&epoch_store) {
             return Err(anyhow!("dry-exec is only support on fullnodes"));
         }
 
@@ -1087,7 +1083,7 @@ impl AuthorityState {
                 &self.move_vm,
                 &self._native_functions,
                 gas_status,
-                self.epoch(),
+                epoch_store.epoch(),
             );
         SuiTransactionEffects::try_from(effects, self.module_cache.as_ref())
     }
@@ -1100,7 +1096,8 @@ impl AuthorityState {
         gas_price: u64,
         epoch: EpochId,
     ) -> Result<DevInspectResults, anyhow::Error> {
-        if !self.is_fullnode() {
+        let epoch_store = self.load_epoch_store_one_call_per_task();
+        if !self.is_fullnode(&epoch_store) {
             return Err(anyhow!("dev-inspect is only supported on fullnodes"));
         }
 
@@ -1428,15 +1425,18 @@ impl AuthorityState {
         &self,
         request: TransactionInfoRequest,
     ) -> Result<VerifiedTransactionInfoResponse, SuiError> {
-        self.make_transaction_info(&request.transaction_digest, &self.epoch_store())
-            .await
+        self.make_transaction_info(
+            &request.transaction_digest,
+            &self.load_epoch_store_one_call_per_task(),
+        )
+        .await
     }
 
     pub async fn handle_object_info_request(
         &self,
         request: ObjectInfoRequest,
     ) -> Result<VerifiedObjectInfoResponse, SuiError> {
-        let epoch_store = self.epoch_store();
+        let epoch_store = self.load_epoch_store_one_call_per_task();
         let ref_and_digest = match request.request_kind {
             ObjectInfoRequestKind::PastObjectInfo(seq)
             | ObjectInfoRequestKind::PastObjectInfoDebug(seq, _) => {
@@ -1639,7 +1639,7 @@ impl AuthorityState {
         // Process tx recovery log first, so that checkpoint recovery (below)
         // doesn't observe partially-committed txes.
         state
-            .process_tx_recovery_log(None, &state.epoch_store())
+            .process_tx_recovery_log(None, &state.load_epoch_store_one_call_per_task())
             .await
             .expect("Could not fully process recovery log at startup!");
 
@@ -1841,29 +1841,22 @@ impl AuthorityState {
         self.database.clone()
     }
 
-    // TODO: Deprecate this once we replace all calls with load_epoch_store.
-    pub fn epoch_store(&self) -> Guard<Arc<AuthorityPerEpochStore>> {
+    pub fn current_epoch_for_testing(&self) -> EpochId {
+        self.epoch_store_for_testing().epoch()
+    }
+
+    /// Load the current epoch store. This can change during reconfiguration. To ensure that
+    /// we never end up accessing different epoch stores in a single task, we need to make sure
+    /// that this is called once per task. Each call needs to be carefully audited to ensure it is
+    /// the case. This also means we should minimize the number of call-sites. Only call it when
+    /// there is no way to obtain it from somewhere else.
+    pub fn load_epoch_store_one_call_per_task(&self) -> Guard<Arc<AuthorityPerEpochStore>> {
         self.epoch_store.load()
     }
 
     // Load the epoch store, should be used in tests only.
     pub fn epoch_store_for_testing(&self) -> Guard<Arc<AuthorityPerEpochStore>> {
-        self.epoch_store()
-    }
-
-    pub fn load_epoch_store(
-        &self,
-        intended_epoch: EpochId,
-    ) -> SuiResult<Guard<Arc<AuthorityPerEpochStore>>> {
-        let store = self.epoch_store();
-        fp_ensure!(
-            store.epoch() == intended_epoch,
-            SuiError::StoreAccessEpochMismatch {
-                store_epoch: store.epoch(),
-                intended_epoch,
-            }
-        );
-        Ok(store)
+        self.load_epoch_store_one_call_per_task()
     }
 
     pub fn clone_committee_for_testing(&self) -> Committee {
@@ -2589,7 +2582,7 @@ impl AuthorityState {
     /// This function is called at the very end of the epoch.
     /// This step is required before updating new epoch in the db and calling reopen_epoch_db.
     async fn revert_uncommitted_epoch_transactions(&self) -> SuiResult {
-        let epoch_store = self.epoch_store();
+        let epoch_store = self.load_epoch_store_one_call_per_task();
         {
             let state = epoch_store.get_reconfig_state_write_lock_guard();
             if state.should_accept_user_certs() {
@@ -2627,7 +2620,7 @@ impl AuthorityState {
         info!(new_epoch = ?new_committee.epoch, "re-opening AuthorityEpochTables for new epoch");
 
         let epoch_tables = self
-            .epoch_store()
+            .load_epoch_store_one_call_per_task()
             .new_at_next_epoch(self.name, new_committee);
         let previous_store = self.epoch_store.swap(epoch_tables);
         previous_store.epoch_terminated().await;
