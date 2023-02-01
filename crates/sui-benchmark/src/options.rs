@@ -50,7 +50,7 @@ pub struct Opts {
     #[clap(long, parse(try_from_str), default_value = "true", global = true)]
     pub local: bool,
     /// Required in remote benchmark, namely when local = false
-    #[clap(long)]
+    #[clap(long, global = true)]
     pub fullnode_rpc_address: Option<String>,
     /// Whether to submit transactions to a fullnode.
     /// If true, use FullNodeProxy.
