@@ -2140,7 +2140,7 @@ impl AuthorityState {
         &self,
         digest: TransactionEventsDigest,
     ) -> SuiResult<TransactionEvents> {
-        Ok(self.database.get_events(&digest)?)
+        self.database.get_events(&digest)
     }
 
     fn get_indexes(&self) -> SuiResult<Arc<IndexStore>> {
