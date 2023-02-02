@@ -6,8 +6,11 @@ use std::{
     sync::Arc,
 };
 
+use itertools::Itertools;
 use parking_lot::RwLock;
-use sui_types::{base_types::ObjectID, committee::EpochId, storage::ObjectKey};
+use sui_types::{
+    base_types::ObjectID, committee::EpochId, messages::TransactionEffects, storage::ObjectKey,
+};
 use sui_types::{base_types::TransactionDigest, error::SuiResult, messages::VerifiedCertificate};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, warn};
@@ -78,7 +81,11 @@ impl TransactionManager {
             tx_ready_certificates,
         };
         transaction_manager
-            .enqueue(epoch_store.all_pending_certificates().unwrap(), epoch_store)
+            .enqueue(
+                epoch_store.all_pending_certificates().unwrap(),
+                epoch_store,
+                None,
+            )
             .expect("Initialize TransactionManager with pending certificates failed.");
         transaction_manager
     }
@@ -96,6 +103,7 @@ impl TransactionManager {
         &self,
         certs: Vec<VerifiedCertificate>,
         epoch_store: &AuthorityPerEpochStore,
+        digest_to_effects: Option<HashMap<TransactionDigest, TransactionEffects>>,
     ) -> SuiResult<()> {
         let inner = &mut self.inner.write();
         for cert in certs {
@@ -110,14 +118,22 @@ impl TransactionManager {
             // don't race with a concurrent execution of this tx.
             let _tx_lock = epoch_store.acquire_tx_lock(&digest);
 
-            // skip already pending txes
-            if inner.pending_certificates.contains_key(&digest) {
-                self.metrics
-                    .transaction_manager_num_enqueued_certificates
-                    .with_label_values(&["already_pending"])
-                    .inc();
-                continue;
+            // if effects indicate a success then we need to add and wait for argument packages,
+            // otherwise we can skip
+            let mut skip_adding_type_arg_deps = true; // default to not adding these temporarily to
+                                                      // unbrick validators
+            let mut inputs = cert.data().intent_message.value.input_objects()?;
+
+            if let Some(digest_to_effects) = &digest_to_effects {
+                if let Some(effect) = digest_to_effects.get(cert.digest()) {
+                    skip_adding_type_arg_deps = effect.status.is_err();
+                }
             }
+
+            if !skip_adding_type_arg_deps {
+                inputs.extend(cert.data().intent_message.value.type_argument_packages());
+            }
+
             // skip already executing txes
             if inner.executing_certificates.contains(&digest) {
                 self.metrics
@@ -137,14 +153,36 @@ impl TransactionManager {
                 continue;
             }
 
+            // skip already pending txes
+            if !skip_adding_type_arg_deps {
+                if inner.pending_certificates.contains_key(&digest) {
+                    self.metrics
+                        .transaction_manager_num_enqueued_certificates
+                        .with_label_values(&["already_pending"])
+                        .inc();
+                    continue;
+                }
+            } else if let Some(objects) = inner.pending_certificates.remove(&digest) {
+                for obj in objects {
+                    if let Some(txns) = inner.missing_inputs.get_mut(&obj) {
+                        txns.remove(&digest);
+                    }
+                    if let Some(count) = inner.input_objects.get_mut(&obj.0) {
+                        *count -= 1;
+                        if *count == 0 {
+                            inner.input_objects.remove(&obj.0);
+                        }
+                    }
+                }
+            }
+
             let missing = self
                 .authority_store
-                .get_missing_input_objects(
-                    &digest,
-                    &cert.data().intent_message.value.input_objects()?,
-                    epoch_store,
-                )
-                .expect("Are shared object locks set prior to enqueueing certificates?");
+                .get_missing_input_objects(&digest, &inputs, epoch_store)
+                .expect("Are shared object locks set prior to enqueueing certificates?")
+                .into_iter()
+                .filter(|key| key.0 != ObjectID::ZERO)
+                .collect_vec();
 
             if missing.is_empty() {
                 debug!(tx_digest = ?digest, "certificate ready");
