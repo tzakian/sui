@@ -36,18 +36,27 @@ export default function PageMainLayout({
     const networkName = useAppSelector(({ app: { apiEnv } }) => apiEnv);
     return (
         <div className={st.container}>
+            <div className="fixed top-0 left-1/2 w-px h-36 bg-issue-dark z-50" />
             <div
                 className={cl(st.header, {
                     [st.center]:
                         centerLogo && !topNavMenuEnabled && !dappStatusEnabled,
                 })}
             >
-                <Link to="/tokens" className="no-underline text-gray-90">
-                    <Logo networkName={networkName} />
-                </Link>
-                {dappStatusEnabled ? <DappStatus /> : null}
+                <div className={st.logoContainer}>
+                    <Link to="/tokens" className="no-underline text-gray-90">
+                        <Logo networkName={networkName} />
+                    </Link>
+                </div>
+                {dappStatusEnabled ? (
+                    <div className={st.dappStatusContainer}>
+                        <DappStatus />
+                    </div>
+                ) : null}
                 {topNavMenuEnabled ? (
-                    <MenuButton className={st.menuButton} />
+                    <div className={st.menuContainer}>
+                        <MenuButton className={st.menuButton} />
+                    </div>
                 ) : null}
             </div>
             <div className={st.content}>
