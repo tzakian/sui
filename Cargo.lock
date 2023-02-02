@@ -2568,7 +2568,7 @@ dependencies = [
 [[package]]
 name = "fastcrypto"
 version = "0.1.4"
-source = "git+https://github.com/MystenLabs/fastcrypto?rev=235211dc8195590f5353d38135f5ee51a267521e#235211dc8195590f5353d38135f5ee51a267521e"
+source = "git+https://github.com/MystenLabs/fastcrypto?rev=0203ae5c54e2ac0765dc6024034cbadf2a7d39da#0203ae5c54e2ac0765dc6024034cbadf2a7d39da"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2602,6 +2602,7 @@ dependencies = [
  "schemars",
  "secp256k1",
  "serde 1.0.152",
+ "serde-big-array",
  "serde_bytes",
  "serde_with",
  "sha2 0.10.6",
@@ -2609,6 +2610,7 @@ dependencies = [
  "signature 1.6.4",
  "thiserror",
  "tokio",
+ "twox-hash",
  "typenum",
  "zeroize",
 ]
@@ -2616,7 +2618,7 @@ dependencies = [
 [[package]]
 name = "fastcrypto-derive"
 version = "0.1.2"
-source = "git+https://github.com/MystenLabs/fastcrypto?rev=235211dc8195590f5353d38135f5ee51a267521e#235211dc8195590f5353d38135f5ee51a267521e"
+source = "git+https://github.com/MystenLabs/fastcrypto?rev=0203ae5c54e2ac0765dc6024034cbadf2a7d39da#0203ae5c54e2ac0765dc6024034cbadf2a7d39da"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro2 1.0.49",
@@ -2627,7 +2629,7 @@ dependencies = [
 [[package]]
 name = "fastcrypto-tbls"
 version = "0.1.0"
-source = "git+https://github.com/MystenLabs/fastcrypto?rev=235211dc8195590f5353d38135f5ee51a267521e#235211dc8195590f5353d38135f5ee51a267521e"
+source = "git+https://github.com/MystenLabs/fastcrypto?rev=0203ae5c54e2ac0765dc6024034cbadf2a7d39da#0203ae5c54e2ac0765dc6024034cbadf2a7d39da"
 dependencies = [
  "bincode",
  "digest 0.10.6",
@@ -2643,7 +2645,7 @@ dependencies = [
 [[package]]
 name = "fastcrypto-zkp"
 version = "0.1.0"
-source = "git+https://github.com/MystenLabs/fastcrypto?rev=235211dc8195590f5353d38135f5ee51a267521e#235211dc8195590f5353d38135f5ee51a267521e"
+source = "git+https://github.com/MystenLabs/fastcrypto?rev=0203ae5c54e2ac0765dc6024034cbadf2a7d39da#0203ae5c54e2ac0765dc6024034cbadf2a7d39da"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -5102,6 +5104,7 @@ dependencies = [
  "prometheus-closure-metric",
  "scopeguard",
  "tap",
+ "tokio",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -7678,6 +7681,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb7d1f0d3021d347a83e556fc4683dea2ea09d87bccdf88ff5c12545d89d5efb"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-big-array"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3323f09a748af288c3dc2474ea6803ee81f118321775bffa3ac8f7e65c5e90e7"
+dependencies = [
+ "serde 1.0.152",
 ]
 
 [[package]]
@@ -10287,6 +10299,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
  "cfg-if",
+ "rand 0.7.3",
  "static_assertions",
 ]
 
@@ -11517,6 +11530,7 @@ dependencies = [
  "send_wrapper",
  "serde 0.8.23",
  "serde 1.0.152",
+ "serde-big-array",
  "serde-hjson",
  "serde-name",
  "serde-reflection",
