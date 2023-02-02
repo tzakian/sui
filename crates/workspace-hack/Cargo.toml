@@ -30,6 +30,7 @@ anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "0e0ef705
 anes = { version = "0.1" }
 ansi_term = { version = "0.12", default-features = false }
 anyhow = { version = "1", features = ["backtrace"] }
+arbitrary = { version = "1", default-features = false, features = ["derive"] }
 arc-swap = { version = "1", default-features = false, features = ["serde"] }
 ark-bls12-377 = { version = "0.3", features = ["std"] }
 ark-bls12-381 = { version = "0.3" }
@@ -327,7 +328,7 @@ mio-c38e5c1d305a1b54 = { package = "mio", version = "0.8", features = ["net", "o
 mockall = { version = "0.11", default-features = false }
 more-asserts = { version = "0.3", default-features = false }
 move-abigen = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673", default-features = false }
-move-binary-format = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673" }
+move-binary-format = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673", features = ["fuzzing"] }
 move-borrow-graph = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673", default-features = false }
 move-bytecode-source-map = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673" }
 move-bytecode-utils = { git = "https://github.com/move-language/move", rev = "652badf6fd67e1d4cc2aa6dc69d63ad14083b673", default-features = false }
@@ -668,6 +669,7 @@ anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "0e0ef705
 anes = { version = "0.1" }
 ansi_term = { version = "0.12", default-features = false }
 anyhow = { version = "1", features = ["backtrace"] }
+arbitrary = { version = "1", default-features = false, features = ["derive"] }
 arc-swap = { version = "1", default-features = false, features = ["serde"] }
 ark-bls12-377 = { version = "0.3", features = ["std"] }
 ark-bls12-381 = { version = "0.3" }
@@ -823,6 +825,7 @@ der = { version = "0.6", default-features = false, features = ["oid", "std", "ze
 der-parser = { version = "8", features = ["bigint"] }
 derivative = { version = "2", default-features = false, features = ["use_core"] }
 derive-syn-parse = { version = "0.1", default-features = false }
+derive_arbitrary = { version = "1", default-features = false }
 derive_builder = { version = "0.12" }
 derive_builder_core = { version = "0.12", default-features = false }
 derive_builder_macro = { version = "0.12", default-features = false }

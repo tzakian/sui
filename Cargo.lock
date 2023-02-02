@@ -206,6 +206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e90af4de65aa7b293ef2d09daff88501eb254f58edde2e1ac02c82d873eadad"
+dependencies = [
+ "derive_arbitrary",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,6 +2053,17 @@ name = "derive-syn-parse"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e79116f119dd1dba1abf1f3405f03b9b0e79a27a3883864bfebded8a3dc768cd"
+dependencies = [
+ "proc-macro2 1.0.49",
+ "quote 1.0.23",
+ "syn 1.0.107",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8beee4701e2e229e8098bbdecdca12449bc3e322f137d269182fa1291e20bd00"
 dependencies = [
  "proc-macro2 1.0.49",
  "quote 1.0.23",
@@ -4321,8 +4341,11 @@ version = "0.0.3"
 source = "git+https://github.com/move-language/move?rev=652badf6fd67e1d4cc2aa6dc69d63ad14083b673#652badf6fd67e1d4cc2aa6dc69d63ad14083b673"
 dependencies = [
  "anyhow",
+ "arbitrary",
  "move-core-types",
  "once_cell",
+ "proptest",
+ "proptest-derive",
  "ref-cast",
  "serde 1.0.152",
  "variant_count",
@@ -4488,12 +4511,15 @@ version = "0.0.4"
 source = "git+https://github.com/move-language/move?rev=652badf6fd67e1d4cc2aa6dc69d63ad14083b673#652badf6fd67e1d4cc2aa6dc69d63ad14083b673"
 dependencies = [
  "anyhow",
+ "arbitrary",
  "bcs",
  "ethnum",
  "hex",
  "num",
  "once_cell",
  "primitive-types",
+ "proptest",
+ "proptest-derive",
  "rand 0.8.5",
  "ref-cast",
  "serde 1.0.152",
@@ -9407,6 +9433,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-verifier-fuzzer"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "move-binary-format",
+ "move-bytecode-verifier",
+ "sui-framework-build",
+ "sui-verifier",
+ "workspace-hack",
+]
+
+[[package]]
 name = "sui-verifier-transactional-tests"
 version = "0.1.0"
 dependencies = [
@@ -10922,6 +10960,7 @@ dependencies = [
  "anes",
  "ansi_term",
  "anyhow",
+ "arbitrary",
  "arc-swap",
  "ark-bls12-377",
  "ark-bls12-381",
@@ -11087,6 +11126,7 @@ dependencies = [
  "der-parser",
  "derivative",
  "derive-syn-parse",
+ "derive_arbitrary",
  "derive_builder",
  "derive_builder_core",
  "derive_builder_macro",
