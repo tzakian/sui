@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::metrics::GrpcMetrics;
-use anemo::Network;
+use anemo::{Network, PeerId};
 use anemo_tower::callback::CallbackLayer;
 use anemo_tower::trace::DefaultMakeSpan;
 use anemo_tower::trace::DefaultOnFailure;
@@ -43,6 +43,7 @@ use sui_json_rpc::{JsonRpcServerBuilder, ServerHandle};
 use sui_network::api::ValidatorServer;
 use sui_network::discovery;
 use sui_network::{state_sync, DEFAULT_CONNECT_TIMEOUT_SEC, DEFAULT_HTTP2_KEEPALIVE_SEC};
+use tokio::sync::mpsc::{channel, Receiver};
 
 #[cfg(not(test))]
 use sui_protocol_constants::MAX_TRANSACTIONS_PER_CHECKPOINT;
@@ -67,13 +68,16 @@ mod handle;
 pub mod metrics;
 pub use handle::SuiNodeHandle;
 use narwhal_config::SharedWorkerCache;
+use narwhal_network::connectivity::ConnectionStatus;
 use narwhal_types::TransactionsClient;
 use sui_core::authority::authority_per_epoch_store::AuthorityPerEpochStore;
 use sui_core::checkpoints::{
     CheckpointMetrics, CheckpointService, CheckpointStore, SendCheckpointToStateSync,
     SubmitCheckpointToConsensus,
 };
-use sui_core::consensus_adapter::{ConsensusAdapter, ConsensusAdapterMetrics};
+use sui_core::consensus_adapter::{
+    ConnectionMonitorListener, ConsensusAdapter, ConsensusAdapterMetrics,
+};
 use sui_core::consensus_handler::ConsensusHandler;
 use sui_core::consensus_validator::{SuiTxValidator, SuiTxValidatorMetrics};
 use sui_core::epoch::data_removal::EpochDataRemover;
@@ -84,6 +88,8 @@ use sui_json_rpc::coin_api::CoinReadApi;
 use sui_json_rpc::threshold_bls_api::ThresholdBlsApi;
 use sui_types::base_types::{AuthorityName, EpochId, TransactionDigest};
 use sui_types::error::{SuiError, SuiResult};
+
+pub const DEFAULT_CHANNEL_SIZE: usize = 1_000;
 
 pub struct ValidatorComponents {
     validator_server_handle: tokio::task::JoinHandle<Result<()>>,
@@ -107,7 +113,7 @@ pub struct SuiNode {
     transaction_orchestrator: Option<Arc<TransactiondOrchestrator<NetworkAuthorityClient>>>,
     registry_service: RegistryService,
 
-    _p2p_network: Network,
+    p2p_network: Network,
     _discovery: discovery::Handle,
     state_sync: state_sync::Handle,
     checkpoint_store: Arc<CheckpointStore>,
@@ -201,15 +207,17 @@ impl SuiNode {
             None
         };
 
-        let (p2p_network, discovery_handle, state_sync_handle) =
-            Self::create_p2p_network(config, state_sync_store, &prometheus_registry)?;
-
         let transaction_streamer = if is_full_node {
             Some(Arc::new(TransactionStreamer::new()))
         } else {
             None
         };
 
+        // Create network
+        let (p2p_network, discovery_handle, state_sync_handle) =
+            Self::create_p2p_network(config, state_sync_store, &prometheus_registry)?;
+
+        // Create Authority State
         let state = AuthorityState::new(
             config.protocol_public_key(),
             secret,
@@ -276,6 +284,7 @@ impl SuiNode {
                     epoch_store.clone(),
                     checkpoint_store.clone(),
                     state_sync_handle.clone(),
+                    p2p_network.clone(),
                     &registry_service,
                 )
                 .await?,
@@ -292,7 +301,7 @@ impl SuiNode {
             transaction_orchestrator,
             registry_service,
 
-            _p2p_network: p2p_network,
+            p2p_network,
             _discovery: discovery_handle,
             state_sync: state_sync_handle,
             checkpoint_store,
@@ -380,8 +389,6 @@ impl SuiNode {
                 NetworkMetrics::new("sui", "inbound", prometheus_registry);
             let outbound_network_metrics =
                 NetworkMetrics::new("sui", "outbound", prometheus_registry);
-            let network_connection_metrics =
-                NetworkConnectionMetrics::new("sui", prometheus_registry);
 
             let service = ServiceBuilder::new()
                 .layer(
@@ -422,14 +429,6 @@ impl SuiNode {
                 .start(service)?;
             info!("P2p network started on {}", network.local_addr());
 
-            let _connection_monitor_handle =
-                narwhal_network::connectivity::ConnectionMonitor::spawn(
-                    network.downgrade(),
-                    network_connection_metrics,
-                    HashMap::default(),
-                    None,
-                );
-
             network
         };
 
@@ -444,8 +443,30 @@ impl SuiNode {
         epoch_store: Arc<AuthorityPerEpochStore>,
         checkpoint_store: Arc<CheckpointStore>,
         state_sync_handle: state_sync::Handle,
+        p2p_network: Network,
         registry_service: &RegistryService,
     ) -> Result<ValidatorComponents> {
+        let system_state = state
+            .get_sui_system_state_object()
+            .expect("Reading Sui system state object cannot fail");
+        // Spawn connectivity monitor for network
+
+        let peer_ids = system_state.get_current_epoch_peer_ids();
+
+        let peer_ids_to_authority_names =
+            system_state.get_current_epoch_peer_id_to_authority_names();
+
+        let (connection_status_sender, connection_status_receiver) = channel(DEFAULT_CHANNEL_SIZE);
+
+        let network_connection_metrics =
+            NetworkConnectionMetrics::new("sui", &registry_service.default_registry());
+        let _connection_monitor_handle = narwhal_network::connectivity::ConnectionMonitor::spawn(
+            p2p_network.downgrade(),
+            network_connection_metrics,
+            peer_ids,
+            Some(connection_status_sender),
+        );
+
         let consensus_config = config
             .consensus_config()
             .ok_or_else(|| anyhow!("Validator is missing consensus config"))?;
@@ -454,8 +475,11 @@ impl SuiNode {
             consensus_config,
             state.name,
             &epoch_store,
+            connection_status_receiver,
+            peer_ids_to_authority_names,
             &registry_service.default_registry(),
-        );
+        )
+        .await;
 
         let validator_server_handle = Self::start_grpc_validator_service(
             config,
@@ -619,10 +643,12 @@ impl SuiNode {
         Ok(NarwhalManager::new(narwhal_config, metrics))
     }
 
-    fn construct_consensus_adapter(
+    async fn construct_consensus_adapter(
         consensus_config: &ConsensusConfig,
         authority: AuthorityName,
         epoch_store: &Arc<AuthorityPerEpochStore>,
+        connection_status_receiver: Receiver<(PeerId, ConnectionStatus)>,
+        peer_id_to_authority_names: HashMap<PeerId, AuthorityName>,
         prometheus_registry: &Registry,
     ) -> Arc<ConsensusAdapter> {
         const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -644,10 +670,17 @@ impl SuiNode {
         let ca_metrics = ConsensusAdapterMetrics::new(prometheus_registry);
         // The consensus adapter allows the authority to send user certificates through consensus.
 
+        let connection_monitor_status = ConnectionMonitorListener::spawn(
+            connection_status_receiver,
+            peer_id_to_authority_names,
+        )
+        .await;
+
         ConsensusAdapter::new(
             Box::new(consensus_client),
             authority,
             epoch_store,
+            Box::new(connection_monitor_status),
             ca_metrics,
         )
     }
@@ -808,6 +841,7 @@ impl SuiNode {
                             self.state.epoch_store().clone(),
                             self.checkpoint_store.clone(),
                             self.state_sync.clone(),
+                            self.p2p_network.clone(),
                             &self.registry_service,
                         )
                         .await?,

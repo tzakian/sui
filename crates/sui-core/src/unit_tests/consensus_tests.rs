@@ -124,6 +124,7 @@ async fn submit_transaction_to_consensus_adapter() {
         Box::new(SubmitDirectly(state.clone())),
         state.name,
         &state.epoch_store_for_testing(),
+        Box::new(ConnectionMonitorStatusForTests {}),
         metrics,
     );
 
