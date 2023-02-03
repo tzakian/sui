@@ -3,18 +3,19 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::hash::Hash;
 use sui_types::base_types::AuthorityName;
 use sui_types::committee::{Committee, StakeUnit};
 use sui_types::crypto::{AuthorityQuorumSignInfo, AuthoritySignInfo};
 use sui_types::error::SuiError;
 
-pub struct StakeAggregator<V, const STRENGTH: bool> {
-    data: HashMap<AuthorityName, V>,
+pub struct StakeAggregator<S, const STRENGTH: bool> {
+    data: HashMap<AuthorityName, S>,
     total_votes: StakeUnit,
     committee: Committee,
 }
 
-impl<V: Clone, const STRENGTH: bool> StakeAggregator<V, STRENGTH> {
+impl<S: Clone, const STRENGTH: bool> StakeAggregator<S, STRENGTH> {
     pub fn new(committee: Committee) -> Self {
         Self {
             data: Default::default(),
@@ -23,13 +24,13 @@ impl<V: Clone, const STRENGTH: bool> StakeAggregator<V, STRENGTH> {
         }
     }
 
-    pub fn from_iter<I: Iterator<Item = (AuthorityName, V)>>(
+    pub fn from_iter<I: Iterator<Item = (AuthorityName, S)>>(
         committee: Committee,
         data: I,
     ) -> Self {
         let mut this = Self::new(committee);
-        for (authority, v) in data {
-            this.insert_generic(authority, v);
+        for (authority, s) in data {
+            this.insert_generic(authority, s);
         }
         this
     }
@@ -37,16 +38,16 @@ impl<V: Clone, const STRENGTH: bool> StakeAggregator<V, STRENGTH> {
     /// A generic version of inserting arbitrary type of V (e.g. void type).
     /// If V is AuthoritySignInfo, the `insert` function should be used instead since it does extra
     /// checks and aggregations in the end.
-    pub fn insert_generic(&mut self, authority: AuthorityName, v: V) -> InsertResult<V, ()> {
+    pub fn insert_generic(&mut self, authority: AuthorityName, s: S) -> InsertResult<S, ()> {
         match self.data.entry(authority) {
             Entry::Occupied(oc) => {
                 return InsertResult::RepeatingEntry {
                     previous: oc.get().clone(),
-                    new: v,
+                    new: s,
                 };
             }
             Entry::Vacant(va) => {
-                va.insert(v);
+                va.insert(s);
             }
         }
         let votes = self.committee.weight(&authority);
@@ -119,5 +120,41 @@ pub enum InsertResult<V, CertT> {
 impl<V, CertT> InsertResult<V, CertT> {
     pub fn is_quorum_reached(&self) -> bool {
         matches!(self, Self::QuorumReached(..))
+    }
+}
+
+pub struct MultiStakeAggregator<'a, K, V, S, const STRENGTH: bool> {
+    committee: &'a Committee,
+    stake_maps: HashMap<K, (V, StakeAggregator<S, STRENGTH>)>,
+}
+
+impl<'a, K, V, S, const STRENGTH: bool> MultiStakeAggregator<'a, K, V, S, STRENGTH> {
+    pub fn new(committee: &'a Committee) -> Self {
+        Self {
+            committee,
+            stake_maps: Default::default(),
+        }
+    }
+}
+
+impl<'a, K, V, const STRENGTH: bool> MultiStakeAggregator<'a, K, V, AuthoritySignInfo, STRENGTH>
+where
+    K: Hash + Eq,
+    V: Clone,
+{
+    pub fn add(
+        &mut self,
+        k: K,
+        v: &V,
+        sig: AuthoritySignInfo,
+    ) -> Option<AuthorityQuorumSignInfo<STRENGTH>> {
+        let mut entry = self
+            .stake_maps
+            .entry(k)
+            .or_insert((v.clone(), StakeAggregator::new(self.committee.clone())));
+        match entry.1.insert(sig) {
+            InsertResult::QuorumReached(cert) => Some(cert),
+            _ => None,
+        }
     }
 }
