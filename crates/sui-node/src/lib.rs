@@ -24,6 +24,7 @@ use sui_core::authority_aggregator::{AuthorityAggregator, NetworkTransactionCert
 use sui_core::authority_server::ValidatorService;
 use sui_core::checkpoints::checkpoint_executor;
 use sui_core::epoch::committee_store::CommitteeStore;
+use sui_core::state_accumulator::StateAccumulator;
 use sui_core::storage::RocksDbStore;
 use sui_core::transaction_orchestrator::TransactiondOrchestrator;
 use sui_core::transaction_streamer::TransactionStreamer;
@@ -111,6 +112,7 @@ pub struct SuiNode {
     _discovery: discovery::Handle,
     state_sync: state_sync::Handle,
     checkpoint_store: Arc<CheckpointStore>,
+    accumulator: Arc<StateAccumulator>,
 
     end_of_epoch_channel: tokio::sync::broadcast::Sender<Committee>,
 
@@ -165,6 +167,7 @@ impl SuiNode {
             &config.db_path().join("store"),
             None,
             EpochMetrics::new(&registry_service.default_registry()),
+            None,
         );
 
         let checkpoint_store = CheckpointStore::new(&config.db_path().join("checkpoints"));
@@ -213,7 +216,7 @@ impl SuiNode {
         let state = AuthorityState::new(
             config.protocol_public_key(),
             secret,
-            store,
+            store.clone(),
             epoch_store.clone(),
             committee_store.clone(),
             index_store.clone(),
@@ -268,6 +271,8 @@ impl SuiNode {
         )
         .await?;
 
+        let accumulator = Arc::new(StateAccumulator::new(store));
+
         let validator_components = if state.is_validator() {
             Some(
                 Self::construct_validator_components(
@@ -276,6 +281,7 @@ impl SuiNode {
                     epoch_store.clone(),
                     checkpoint_store.clone(),
                     state_sync_handle.clone(),
+                    accumulator.clone(),
                     &registry_service,
                 )
                 .await?,
@@ -296,6 +302,7 @@ impl SuiNode {
             _discovery: discovery_handle,
             state_sync: state_sync_handle,
             checkpoint_store,
+            accumulator,
             end_of_epoch_channel,
 
             #[cfg(msim)]
@@ -443,6 +450,7 @@ impl SuiNode {
         epoch_store: Arc<AuthorityPerEpochStore>,
         checkpoint_store: Arc<CheckpointStore>,
         state_sync_handle: state_sync::Handle,
+        accumulator: Arc<StateAccumulator>,
         registry_service: &RegistryService,
     ) -> Result<ValidatorComponents> {
         let consensus_config = config
@@ -486,6 +494,7 @@ impl SuiNode {
             narwhal_manager,
             narwhal_epoch_data_remover,
             validator_server_handle,
+            accumulator,
             checkpoint_metrics,
             sui_tx_validator_metrics,
         )
@@ -502,6 +511,7 @@ impl SuiNode {
         narwhal_manager: NarwhalManager,
         narwhal_epoch_data_remover: EpochDataRemover,
         validator_server_handle: JoinHandle<Result<()>>,
+        accumulator: Arc<StateAccumulator>,
         checkpoint_metrics: Arc<CheckpointMetrics>,
         sui_tx_validator_metrics: Arc<SuiTxValidatorMetrics>,
     ) -> Result<ValidatorComponents> {
@@ -512,6 +522,7 @@ impl SuiNode {
             epoch_store.clone(),
             state.clone(),
             state_sync_handle,
+            accumulator,
             checkpoint_metrics.clone(),
         );
 
@@ -571,13 +582,18 @@ impl SuiNode {
         epoch_store: Arc<AuthorityPerEpochStore>,
         state: Arc<AuthorityState>,
         state_sync_handle: state_sync::Handle,
+        accumulator: Arc<StateAccumulator>,
         checkpoint_metrics: Arc<CheckpointMetrics>,
     ) -> (Arc<CheckpointService>, watch::Sender<()>) {
         let checkpoint_output = Box::new(SubmitCheckpointToConsensus {
             sender: consensus_adapter,
             signer: state.secret.clone(),
             authority: config.protocol_public_key(),
-            checkpoints_per_epoch: config.checkpoints_per_epoch,
+            next_reconfiguration_timestamp_ms: epoch_store
+                .epoch_start_configuration()
+                .expect("Failed to load epoch start configuration")
+                .epoch_start_timestamp_ms
+                .saturating_add(config.epoch_duration_ms),
         });
 
         let certified_checkpoint_output = SendCheckpointToStateSync::new(state_sync_handle);
@@ -591,6 +607,7 @@ impl SuiNode {
             checkpoint_store,
             epoch_store,
             Box::new(state.db()),
+            accumulator,
             checkpoint_output,
             Box::new(certified_checkpoint_output),
             Box::new(NetworkTransactionCertifier::default()),
@@ -727,6 +744,7 @@ impl SuiNode {
             self.checkpoint_store.clone(),
             self.state.database.clone(),
             self.state.transaction_manager().clone(),
+            self.accumulator.clone(),
             self.config.checkpoint_executor_config.clone(),
             &self.registry_service.default_registry(),
         );
@@ -785,6 +803,7 @@ impl SuiNode {
                             narwhal_manager,
                             narwhal_epoch_data_remover,
                             validator_server_handle,
+                            self.accumulator.clone(),
                             checkpoint_metrics,
                             sui_tx_validator_metrics,
                         )
@@ -807,6 +826,7 @@ impl SuiNode {
                             self.state.epoch_store().clone(),
                             self.checkpoint_store.clone(),
                             self.state_sync.clone(),
+                            self.accumulator.clone(),
                             &self.registry_service,
                         )
                         .await?,
@@ -828,7 +848,10 @@ impl SuiNode {
         let new_committee = system_state.get_current_epoch_committee();
         assert_eq!(next_epoch, new_committee.committee.epoch);
         self.state
-            .reconfigure(new_committee.committee)
+            .reconfigure(
+                new_committee.committee,
+                system_state.epoch_start_timestamp_ms,
+            )
             .await
             .expect("Reconfigure authority state cannot fail");
         info!("Validator State has been reconfigured");

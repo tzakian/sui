@@ -2378,6 +2378,7 @@ async fn test_authority_persist() {
             &epoch_store_path,
             None,
             EpochMetrics::new(&registry),
+            Some(Default::default()),
         );
 
         let checkpoint_store_path = dir.join(format!("DB_{:?}", ObjectID::random()));
@@ -3907,6 +3908,7 @@ async fn test_tallying_rule_score_updates() {
         &epoch_store_path,
         None,
         metrics.clone(),
+        Some(Default::default()),
     );
 
     let get_stored_seq_num_and_counter = |auth_name: &AuthorityName| {
@@ -3915,8 +3917,8 @@ async fn test_tallying_rule_score_updates() {
             .unwrap()
     };
 
-    // Only include auth_0 and auth_1 in this certified checkpoint.
-    let ckpt_1 = mock_certified_checkpoint(authorities[0..2].iter(), committee.clone(), 1);
+    // Only include auth_[0..3] in this certified checkpoint.
+    let ckpt_1 = mock_certified_checkpoint(authorities[0..3].iter(), committee.clone(), 1);
 
     assert!(epoch_store
         .record_certified_checkpoint_signatures(&ckpt_1)
@@ -3930,7 +3932,10 @@ async fn test_tallying_rule_score_updates() {
         get_stored_seq_num_and_counter(&auth_1_name),
         Some((Some(1), 1))
     );
-    assert_eq!(get_stored_seq_num_and_counter(&auth_2_name), None);
+    assert_eq!(
+        get_stored_seq_num_and_counter(&auth_2_name),
+        Some((Some(1), 1))
+    );
     assert_eq!(get_stored_seq_num_and_counter(&auth_3_name), None);
 
     // Only include auth_1, auth_2 and auth_3 in this certified checkpoint.
@@ -3950,7 +3955,7 @@ async fn test_tallying_rule_score_updates() {
     );
     assert_eq!(
         get_stored_seq_num_and_counter(&auth_2_name),
-        Some((Some(2), 1))
+        Some((Some(2), 2))
     );
     assert_eq!(
         get_stored_seq_num_and_counter(&auth_3_name),
@@ -3974,7 +3979,7 @@ async fn test_tallying_rule_score_updates() {
     );
     assert_eq!(
         get_stored_seq_num_and_counter(&auth_2_name),
-        Some((Some(2), 1))
+        Some((Some(2), 2))
     );
     assert_eq!(
         get_stored_seq_num_and_counter(&auth_3_name),
@@ -3994,6 +3999,6 @@ async fn test_tallying_rule_score_updates() {
     };
     assert_eq!(get_auth_score_metric(&auth_0_name), 1);
     assert_eq!(get_auth_score_metric(&auth_1_name), 2);
-    assert_eq!(get_auth_score_metric(&auth_2_name), 1);
+    assert_eq!(get_auth_score_metric(&auth_2_name), 2);
     assert_eq!(get_auth_score_metric(&auth_3_name), 1);
 }

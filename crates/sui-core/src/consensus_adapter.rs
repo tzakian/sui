@@ -461,7 +461,7 @@ pub fn position_submit_certificate(
     tx_digest: &TransactionDigest,
 ) -> usize {
     // the 32 is as requirement of the default StdRng::from_seed choice
-    let digest_bytes = tx_digest.into_bytes();
+    let digest_bytes = tx_digest.into_inner();
 
     // permute the validators deterministically, based on the digest
     let mut rng = StdRng::from_seed(digest_bytes);
@@ -480,6 +480,10 @@ impl ReconfigurationInitiator for Arc<ConsensusAdapter> {
     fn close_epoch(&self, epoch_store: &Arc<AuthorityPerEpochStore>) {
         let send_end_of_publish = {
             let reconfig_guard = epoch_store.get_reconfig_state_write_lock_guard();
+            if !reconfig_guard.should_accept_user_certs() {
+                // Allow caller to call this method multiple times
+                return;
+            }
             let pending_count = epoch_store.pending_consensus_certificates_count();
             debug!(epoch=?epoch_store.epoch(), ?pending_count, "Trying to close epoch");
             let send_end_of_publish = pending_count == 0;
@@ -584,9 +588,9 @@ impl SubmitToConsensus for Arc<ConsensusAdapter> {
 mod adapter_tests {
     use super::position_submit_certificate;
     use fastcrypto::traits::KeyPair;
-    use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
+    use rand::{rngs::StdRng, Rng, SeedableRng};
     use sui_types::{
-        base_types::{TransactionDigest, TRANSACTION_DIGEST_LENGTH},
+        base_types::TransactionDigest,
         committee::Committee,
         crypto::{get_key_pair_from_rng, AuthorityKeyPair, AuthorityPublicKeyBytes},
     };
@@ -614,9 +618,7 @@ mod adapter_tests {
         const NUM_TEST_TRANSACTIONS: usize = 1000;
 
         for _tx_idx in 0..NUM_TEST_TRANSACTIONS {
-            let mut tx_digest_bytes = [0u8; TRANSACTION_DIGEST_LENGTH];
-            rng.fill_bytes(&mut tx_digest_bytes);
-            let tx_digest = TransactionDigest::new(tx_digest_bytes);
+            let tx_digest = TransactionDigest::generate(&mut rng);
 
             let mut zero_found = false;
             for (name, _) in authorities.iter() {

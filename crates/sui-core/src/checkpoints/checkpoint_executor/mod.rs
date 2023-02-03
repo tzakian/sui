@@ -45,6 +45,7 @@ use crate::authority::AuthorityStore;
 use crate::authority::{
     authority_per_epoch_store::AuthorityPerEpochStore, authority_store::EffectsStore,
 };
+use crate::state_accumulator::{State, StateAccumulator};
 use crate::transaction_manager::TransactionManager;
 use crate::{authority::EffectsNotifyRead, checkpoints::CheckpointStore};
 
@@ -61,6 +62,7 @@ pub struct CheckpointExecutor {
     checkpoint_store: Arc<CheckpointStore>,
     authority_store: Arc<AuthorityStore>,
     tx_manager: Arc<TransactionManager>,
+    accumulator: Arc<StateAccumulator>,
     config: CheckpointExecutorConfig,
     metrics: Arc<CheckpointExecutorMetrics>,
 }
@@ -71,6 +73,7 @@ impl CheckpointExecutor {
         checkpoint_store: Arc<CheckpointStore>,
         authority_store: Arc<AuthorityStore>,
         tx_manager: Arc<TransactionManager>,
+        accumulator: Arc<StateAccumulator>,
         config: CheckpointExecutorConfig,
         prometheus_registry: &Registry,
     ) -> Self {
@@ -79,6 +82,7 @@ impl CheckpointExecutor {
             checkpoint_store,
             authority_store,
             tx_manager,
+            accumulator,
             config,
             metrics: CheckpointExecutorMetrics::new(prometheus_registry),
         }
@@ -89,12 +93,14 @@ impl CheckpointExecutor {
         checkpoint_store: Arc<CheckpointStore>,
         authority_store: Arc<AuthorityStore>,
         tx_manager: Arc<TransactionManager>,
+        accumulator: Arc<StateAccumulator>,
     ) -> Self {
         Self {
             mailbox,
             checkpoint_store,
             authority_store,
             tx_manager,
+            accumulator,
             config: Default::default(),
             metrics: CheckpointExecutorMetrics::new_for_tests(),
         }
@@ -258,6 +264,7 @@ impl CheckpointExecutor {
         let authority_store = self.authority_store.clone();
         let checkpoint_store = self.checkpoint_store.clone();
         let tx_manager = self.tx_manager.clone();
+        let accumulator = self.accumulator.clone();
 
         pending.push_back(spawn_monitored_task!(async move {
             let epoch_store = epoch_store.clone();
@@ -265,8 +272,9 @@ impl CheckpointExecutor {
                 checkpoint.clone(),
                 authority_store.clone(),
                 checkpoint_store.clone(),
-                &epoch_store,
+                epoch_store.clone(),
                 tx_manager.clone(),
+                accumulator.clone(),
                 local_execution_timeout_sec,
                 &metrics,
             )
@@ -315,8 +323,9 @@ pub async fn execute_checkpoint(
     checkpoint: VerifiedCheckpoint,
     authority_store: Arc<AuthorityStore>,
     checkpoint_store: Arc<CheckpointStore>,
-    epoch_store: &AuthorityPerEpochStore,
+    epoch_store: Arc<AuthorityPerEpochStore>,
     transaction_manager: Arc<TransactionManager>,
+    accumulator: Arc<StateAccumulator>,
     local_execution_timeout_sec: u64,
     metrics: &Arc<CheckpointExecutorMetrics>,
 ) -> SuiResult {
@@ -349,7 +358,8 @@ pub async fn execute_checkpoint(
         epoch_store,
         transaction_manager,
         local_execution_timeout_sec,
-        checkpoint.sequence_number(),
+        checkpoint,
+        accumulator,
     )
     .await
 }
@@ -357,10 +367,11 @@ pub async fn execute_checkpoint(
 async fn execute_transactions(
     execution_digests: Vec<ExecutionDigests>,
     authority_store: Arc<AuthorityStore>,
-    epoch_store: &AuthorityPerEpochStore,
+    epoch_store: Arc<AuthorityPerEpochStore>,
     transaction_manager: Arc<TransactionManager>,
     log_timeout_sec: u64,
-    checkpoint_sequence: CheckpointSequenceNumber,
+    checkpoint: VerifiedCheckpoint,
+    accumulator: Arc<StateAccumulator>,
 ) -> SuiResult {
     let all_tx_digests: Vec<TransactionDigest> =
         execution_digests.iter().map(|tx| tx.transaction).collect();
@@ -405,7 +416,7 @@ async fn execute_transactions(
     }
     epoch_store.insert_pending_certificates(&synced_txns)?;
 
-    transaction_manager.enqueue(synced_txns, epoch_store)?;
+    transaction_manager.enqueue(synced_txns, &epoch_store)?;
 
     // Once synced_txns have been awaited, all txns should have effects committed.
     let mut periods = 1;
@@ -440,12 +451,23 @@ async fn execute_transactions(
                 periods += 1;
             }
             Ok(Err(err)) => return Err(err),
-            Ok(Ok(_)) => {
+            Ok(Ok(effects)) => {
                 authority_store.insert_executed_transactions(
                     &all_tx_digests,
                     epoch_store.epoch(),
-                    checkpoint_sequence,
+                    checkpoint.sequence_number(),
                 )?;
+
+                let checkpoint_seq_num = checkpoint.sequence_number();
+                let effects: Vec<TransactionEffects> =
+                    effects.into_iter().map(|fx| fx.data().clone()).collect();
+
+                let state = State {
+                    effects,
+                    checkpoint_seq_num,
+                };
+                accumulator.accumulate_checkpoint(state, epoch_store)?;
+
                 return Ok(());
             }
         }

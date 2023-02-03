@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use futures::future::{select, Either};
+use futures::future::{join_all, select, Either};
 use futures::FutureExt;
 use narwhal_executor::ExecutionIndices;
 use narwhal_types::CommittedSubDag;
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use sui_storage::default_db_options;
 use sui_storage::mutex_table::LockGuard;
 use sui_storage::write_ahead_log::{DBWriteAheadLog, TxGuard, WriteAheadLog};
+use sui_types::accumulator::Accumulator;
 use sui_types::base_types::{AuthorityName, EpochId, ObjectID, SequenceNumber, TransactionDigest};
 use sui_types::committee::Committee;
 use sui_types::crypto::{AuthoritySignInfo, Signature};
@@ -50,7 +51,7 @@ use std::cmp::Ordering as CmpOrdering;
 use sui_types::message_envelope::TrustedEnvelope;
 use sui_types::messages_checkpoint::{
     CertifiedCheckpointSummary, CheckpointContents, CheckpointSequenceNumber,
-    CheckpointSignatureMessage, CheckpointSummary,
+    CheckpointSignatureMessage, CheckpointSummary, CheckpointTimestamp,
 };
 use sui_types::storage::{transaction_input_object_keys, ObjectKey, ParentSync};
 use sui_types::temporary_store::InnerTemporaryStore;
@@ -84,6 +85,9 @@ pub struct AuthorityPerEpochStore {
     /// In-memory cache of the content from the reconfig_state db table.
     reconfig_state_mem: RwLock<ReconfigState>,
     consensus_notify_read: NotifyRead<ConsensusTransactionKey, ()>,
+
+    pub(crate) checkpoint_state_notify_read: NotifyRead<CheckpointSequenceNumber, Accumulator>,
+
     /// This is used to notify all epoch specific tasks that epoch has ended.
     epoch_alive_notify: NotifyOnce,
     /// This lock acts as a barrier for tasks that should not be executed in parallel with reconfiguration
@@ -141,7 +145,7 @@ pub struct AuthorityEpochTables {
     /// This table is critical for crash recovery, because usually the consensus output progress
     /// is updated after a certificate is committed into this table.
     ///
-    /// If theory, this table may be superseded by storing consensus and checkpoint execution
+    /// In theory, this table may be superseded by storing consensus and checkpoint execution
     /// progress. But it is more complex, because it would be necessary to track inflight
     /// executions not ordered by indices. For now, tracking inflight certificates as a map
     /// seems easier.
@@ -223,6 +227,21 @@ pub struct AuthorityEpochTables {
     /// epoch, used for tallying rule scores.
     num_certified_checkpoint_signatures:
         DBMap<AuthorityName, (Option<CheckpointSequenceNumber>, u64)>,
+
+    /// Parameters of the system fixed at the epoch start
+    epoch_start_configuration: DBMap<(), EpochStartConfiguration>,
+
+    // Maps checkpoint sequence number to an accumulator with accumulated state
+    // only for the checkpoint that the key references. Append-only, i.e.,
+    // the accumulator is complete wrt the checkpoint
+    pub state_hash_by_checkpoint: DBMap<CheckpointSequenceNumber, Accumulator>,
+}
+
+/// Parameters of the epoch fixed at epoch start.
+#[derive(Default, Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub struct EpochStartConfiguration {
+    pub epoch_start_timestamp_ms: CheckpointTimestamp,
+    // Current epoch committee can eventually move here too, though right now it is served from a different table
 }
 
 impl AuthorityEpochTables {
@@ -271,6 +290,7 @@ impl AuthorityPerEpochStore {
         parent_path: &Path,
         db_options: Option<Options>,
         metrics: Arc<EpochMetrics>,
+        epoch_start_configuration: Option<EpochStartConfiguration>,
     ) -> Arc<Self> {
         let current_time = Instant::now();
         let epoch_id = committee.epoch;
@@ -294,6 +314,18 @@ impl AuthorityPerEpochStore {
                 }
             })
             .collect();
+        // Insert epoch_start_configuration in the DB. This is used by unit tests
+        //
+        // Production code goes different path:
+        // (1) For the first epoch, this is inserted in the DB along with genesis checkpoint
+        // (2) For other epochs, this is updated when AuthorityPerEpochStore
+        // is initialized during epoch change
+        if let Some(epoch_start_configuration) = epoch_start_configuration {
+            tables
+                .epoch_start_configuration
+                .insert(&(), &epoch_start_configuration)
+                .expect("Failed to store epoch_start_configuration");
+        }
         metrics.current_epoch.set(epoch_id as i64);
         metrics
             .current_voting_right
@@ -308,6 +340,7 @@ impl AuthorityPerEpochStore {
             epoch_alive_notify,
             epoch_alive: tokio::sync::RwLock::new(true),
             consensus_notify_read: NotifyRead::new(),
+            checkpoint_state_notify_read: NotifyRead::new(),
             end_of_publish: Mutex::new(end_of_publish),
             pending_consensus_certificates: Mutex::new(pending_consensus_certificates),
             wal,
@@ -321,7 +354,20 @@ impl AuthorityPerEpochStore {
         self.parent_path.clone()
     }
 
-    pub fn new_at_next_epoch(&self, name: AuthorityName, new_committee: Committee) -> Arc<Self> {
+    pub fn epoch_start_configuration(&self) -> SuiResult<EpochStartConfiguration> {
+        Ok(self
+            .tables
+            .epoch_start_configuration
+            .get(&())?
+            .expect("epoch_start_configuration was not initialized properly"))
+    }
+
+    pub fn new_at_next_epoch(
+        &self,
+        name: AuthorityName,
+        new_committee: Committee,
+        epoch_start_configuration: EpochStartConfiguration,
+    ) -> Arc<Self> {
         assert_eq!(self.epoch() + 1, new_committee.epoch);
         self.record_reconfig_halt_duration_metric();
         self.record_epoch_total_duration_metric();
@@ -331,6 +377,7 @@ impl AuthorityPerEpochStore {
             &self.parent_path,
             self.db_options.clone(),
             self.metrics.clone(),
+            Some(epoch_start_configuration),
         )
     }
 
@@ -348,6 +395,28 @@ impl AuthorityPerEpochStore {
 
     pub fn epoch(&self) -> EpochId {
         self.committee.epoch
+    }
+
+    pub fn get_state_hash_for_checkpoint(
+        &self,
+        checkpoint: &CheckpointSequenceNumber,
+    ) -> SuiResult<Option<Accumulator>> {
+        Ok(self
+            .tables
+            .state_hash_by_checkpoint
+            .get(checkpoint)?
+            .map(|acc| acc.into()))
+    }
+
+    pub fn insert_state_hash_for_checkpoint(
+        &self,
+        checkpoint: &CheckpointSequenceNumber,
+        accumulator: &Accumulator,
+    ) -> SuiResult {
+        Ok(self
+            .tables
+            .state_hash_by_checkpoint
+            .insert(checkpoint, accumulator)?)
     }
 
     pub async fn acquire_tx_guard(&self, cert: &VerifiedCertificate) -> SuiResult<CertTxGuard> {
@@ -448,6 +517,37 @@ impl AuthorityPerEpochStore {
             .map(|(_idx, tx)| tx)
             .collect();
         Ok(roots)
+    }
+
+    /// Returns future containing the state digest for the given epoch
+    /// once available
+    pub async fn notify_read_checkpoint_state_digests(
+        &self,
+        checkpoints: Vec<CheckpointSequenceNumber>,
+    ) -> SuiResult<Vec<Accumulator>> {
+        // We need to register waiters _before_ reading from the database to avoid
+        // race conditions
+        let registrations = self
+            .checkpoint_state_notify_read
+            .register_all(checkpoints.clone());
+        let accumulators = self
+            .tables
+            .state_hash_by_checkpoint
+            .multi_get(checkpoints)?;
+
+        // Zipping together registrations and accumulators ensures returned order is
+        // the same as order of digests
+        let results =
+            accumulators
+                .into_iter()
+                .zip(registrations.into_iter())
+                .map(|(a, r)| match a {
+                    // Note that Some() clause also drops registration that is already fulfilled
+                    Some(ready) => Either::Left(futures::future::ready(ready)),
+                    None => Either::Right(r),
+                });
+
+        Ok(join_all(results).await)
     }
 
     /// `pending_certificates` table related methods. Should only be used from TransactionManager.
@@ -689,9 +789,7 @@ impl AuthorityPerEpochStore {
     pub fn remove_pending_consensus_transaction(&self, key: &ConsensusTransactionKey) -> SuiResult {
         self.tables.pending_consensus_transactions.remove(key)?;
         if let ConsensusTransactionKey::Certificate(cert) = key {
-            self.pending_consensus_certificates
-                .lock()
-                .remove(cert.as_ref());
+            self.pending_consensus_certificates.lock().remove(cert);
         }
         Ok(())
     }
@@ -1481,6 +1579,12 @@ impl AuthorityPerEpochStore {
                 .builder_digest_to_checkpoint
                 .insert(&digest, &sequence)?;
         }
+        let epoch_start_configuration = EpochStartConfiguration {
+            epoch_start_timestamp_ms: summary.timestamp_ms,
+        };
+        self.tables
+            .epoch_start_configuration
+            .insert(&(), &epoch_start_configuration)?;
         self.tables
             .builder_checkpoint_summary
             .insert(summary.sequence_number(), summary)?;

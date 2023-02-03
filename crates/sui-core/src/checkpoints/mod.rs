@@ -14,7 +14,7 @@ pub use crate::checkpoints::checkpoint_output::{
 };
 pub use crate::checkpoints::metrics::CheckpointMetrics;
 use crate::stake_aggregator::{InsertResult, StakeAggregator};
-use fastcrypto::encoding::{Encoding, Hex};
+use crate::state_accumulator::{State, StateAccumulator};
 use futures::future::{select, Either};
 use futures::FutureExt;
 use mysten_metrics::{monitored_scope, spawn_monitored_task, MonitoredFutureExt};
@@ -29,14 +29,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use sui_types::base_types::{EpochId, TransactionDigest};
-use sui_types::crypto::{AuthoritySignInfo, AuthorityWeakQuorumSignInfo};
+use sui_types::crypto::{AuthoritySignInfo, AuthorityStrongQuorumSignInfo};
+use sui_types::digests::{CheckpointContentsDigest, CheckpointDigest};
 use sui_types::error::{SuiError, SuiResult};
 use sui_types::gas::GasCostSummary;
 use sui_types::messages::{TransactionEffects, VerifiedSignedTransactionEffects};
 use sui_types::messages_checkpoint::{
-    CertifiedCheckpointSummary, CheckpointContents, CheckpointContentsDigest, CheckpointDigest,
-    CheckpointSequenceNumber, CheckpointSignatureMessage, CheckpointSummary, CheckpointTimestamp,
-    VerifiedCheckpoint,
+    CertifiedCheckpointSummary, CheckpointContents, CheckpointSequenceNumber,
+    CheckpointSignatureMessage, CheckpointSummary, CheckpointTimestamp, VerifiedCheckpoint,
 };
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
@@ -372,6 +372,7 @@ pub struct CheckpointBuilder {
     notify: Arc<Notify>,
     notify_aggregator: Arc<Notify>,
     effects_store: Box<dyn EffectsNotifyRead>,
+    accumulator: Arc<StateAccumulator>,
     output: Box<dyn CheckpointOutput>,
     exit: watch::Receiver<()>,
     metrics: Arc<CheckpointMetrics>,
@@ -394,7 +395,7 @@ pub struct CheckpointSignatureAggregator {
     next_index: u64,
     summary: CheckpointSummary,
     digest: CheckpointDigest,
-    signatures: StakeAggregator<AuthoritySignInfo, false>,
+    signatures: StakeAggregator<AuthoritySignInfo, true>,
 }
 
 impl CheckpointBuilder {
@@ -404,6 +405,7 @@ impl CheckpointBuilder {
         epoch_store: Arc<AuthorityPerEpochStore>,
         notify: Arc<Notify>,
         effects_store: Box<dyn EffectsNotifyRead>,
+        accumulator: Arc<StateAccumulator>,
         output: Box<dyn CheckpointOutput>,
         exit: watch::Receiver<()>,
         notify_aggregator: Arc<Notify>,
@@ -417,6 +419,7 @@ impl CheckpointBuilder {
             epoch_store,
             notify,
             effects_store,
+            accumulator,
             output,
             exit,
             notify_aggregator,
@@ -576,6 +579,7 @@ impl CheckpointBuilder {
                     .record_epoch_first_checkpoint_creation_time_metric();
             }
             let last_checkpoint_of_epoch = details.last_of_epoch && index == chunks_count - 1;
+
             let digests_without_epoch_augment: Vec<_> =
                 effects.iter().map(|e| e.transaction_digest).collect();
             debug!("Waiting for checkpoint user signatures for certificates {:?} to appear in consensus", digests_without_epoch_augment);
@@ -611,6 +615,26 @@ impl CheckpointBuilder {
                 .await?;
             }
 
+            let root_state_digest = if last_checkpoint_of_epoch {
+                let state = State {
+                    effects: effects.clone(),
+                    checkpoint_seq_num: sequence_number,
+                };
+                self.accumulator
+                    .accumulate_checkpoint(state, self.epoch_store.clone())?;
+
+                Some(self.accumulator.digest_epoch(
+                    &epoch,
+                    sequence_number.clone(),
+                    self.epoch_store.clone(),
+                )?)
+            } else {
+                None
+            };
+
+            // for now, just log this value, and insert None into the checkpoint summary
+            info!("Epoch {epoch} root state hash digest: {root_state_digest:?}");
+
             let contents =
                 CheckpointContents::new_with_causally_ordered_transactions_and_signatures(
                     effects.iter().map(TransactionEffects::execution_digests),
@@ -643,6 +667,7 @@ impl CheckpointBuilder {
                 } else {
                     None
                 },
+                None, // root_state_digest
                 timestamp_ms,
             );
             if last_checkpoint_of_epoch {
@@ -907,7 +932,7 @@ impl CheckpointSignatureAggregator {
     pub fn try_aggregate(
         &mut self,
         data: CheckpointSignatureMessage,
-    ) -> Result<AuthorityWeakQuorumSignInfo, ()> {
+    ) -> Result<AuthorityStrongQuorumSignInfo, ()> {
         let their_digest = data.summary.summary.digest();
         let author = data.summary.auth_signature.authority;
         let signature = data.summary.auth_signature;
@@ -916,9 +941,9 @@ impl CheckpointSignatureAggregator {
             warn!(
                 "Validator {:?} has mismatching checkpoint digest {} at seq {}, we have digest {}",
                 author.concise(),
-                Hex::encode(their_digest),
+                their_digest,
                 self.summary.sequence_number,
-                Hex::encode(self.digest)
+                self.digest
             );
             return Err(());
         }
@@ -972,6 +997,7 @@ impl CheckpointService {
         checkpoint_store: Arc<CheckpointStore>,
         epoch_store: Arc<AuthorityPerEpochStore>,
         effects_store: Box<dyn EffectsNotifyRead>,
+        accumulator: Arc<StateAccumulator>,
         checkpoint_output: Box<dyn CheckpointOutput>,
         certified_checkpoint_output: Box<dyn CertifiedCheckpointOutput>,
         transaction_certifier: Box<dyn TransactionCertifier>,
@@ -989,6 +1015,7 @@ impl CheckpointService {
             epoch_store.clone(),
             notify_builder.clone(),
             effects_store,
+            accumulator,
             checkpoint_output,
             exit_rcv.clone(),
             notify_aggregator.clone(),
@@ -1072,7 +1099,7 @@ impl CheckpointServiceNotify for CheckpointService {
         debug!(
             "Received signature for checkpoint sequence {}, digest {} from {}",
             sequence,
-            Hex::encode(info.summary.summary.digest()),
+            info.summary.summary.digest(),
             info.summary.auth_signature.authority.concise(),
         );
         // While it can be tempting to make last_signature_index into AtomicU64, this won't work
@@ -1186,6 +1213,7 @@ impl PendingCheckpoint {
 mod tests {
     use super::*;
     use crate::authority_aggregator::NetworkTransactionCertifier;
+    use crate::state_accumulator::StateAccumulator;
     use async_trait::async_trait;
     use fastcrypto::traits::KeyPair;
     use std::collections::HashMap;
@@ -1255,12 +1283,16 @@ mod tests {
         let store = Box::new(store);
 
         let checkpoint_store = CheckpointStore::new(tempdir.path());
+
+        let accumulator = StateAccumulator::new(state.database.clone());
+
         let epoch_store = state.epoch_store_for_testing();
         let (checkpoint_service, _exit) = CheckpointService::spawn(
             state.clone(),
             checkpoint_store,
             epoch_store.clone(),
             store,
+            Arc::new(accumulator),
             Box::new(output),
             Box::new(certified_output),
             Box::new(NetworkTransactionCertifier::default()),
@@ -1353,12 +1385,7 @@ mod tests {
         ) -> SuiResult<Vec<VerifiedSignedTransactionEffects>> {
             Ok(digests
                 .into_iter()
-                .map(|d| {
-                    self.get(d.as_ref())
-                        .expect("effects not found")
-                        .clone()
-                        .into()
-                })
+                .map(|d| self.get(&d).expect("effects not found").clone().into())
                 .collect())
         }
 
@@ -1368,7 +1395,7 @@ mod tests {
         ) -> SuiResult<Vec<Option<VerifiedSignedTransactionEffects>>> {
             Ok(digests
                 .iter()
-                .map(|d| self.get(d.as_ref()).cloned().map(|e_opt| e_opt.into()))
+                .map(|d| self.get(d).cloned().map(|e_opt| e_opt.into()))
                 .collect())
         }
     }
