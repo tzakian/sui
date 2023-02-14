@@ -23,7 +23,7 @@ pub mod cost_calib;
 pub mod natives;
 
 // Move unit tests will halt after executing this many steps. This is a protection to avoid divergence
-const MAX_UNIT_TEST_INSTRUCTIONS: u64 = 100_000;
+const MAX_UNIT_TEST_INSTRUCTIONS: u64 = 1_000_000_000;
 
 static SUI_FRAMEWORK: Lazy<Vec<CompiledModule>> = Lazy::new(|| {
     const SUI_FRAMEWORK_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sui-framework"));

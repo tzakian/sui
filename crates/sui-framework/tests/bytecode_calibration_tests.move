@@ -7,7 +7,7 @@
 // Isolating the bytecode is tricky, so we run two functions with and without the bytecode instruction
 // The difference in execution times is the time the instruction takes
 // functions prefixed with __baseline do not have the bytecode under yesy
-// Many parts of the code are written in such a way that the bytecode diffs yield exactly the 
+// Many parts of the code are written in such a way that the bytecode diffs yield exactly the
 // instruction/operation to be isolated
 
 
@@ -18,7 +18,7 @@ module sui::bytecode_calibration_tests {
     // Number of times to run the inner loop of tests
     // We set this value 1 to avoid long running tests
     // But normally we want something like 1000000
-    const NUM_TRIALS: u64 = 1;
+    const NUM_TRIALS: u64 = 1000;
     const U64_MAX: u64 = 18446744073709551615;
 
     struct ObjectWithU8Field has store, drop{
@@ -27,6 +27,71 @@ module sui::bytecode_calibration_tests {
 
     struct ObjectWithU64Field has store, drop{
         f0: u64,
+    }
+
+    fun generic_fun<A: drop, B: drop, C: drop, D: drop>(_a: A, _b: B, _c: C, _d: D) { }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall10() {
+        let trials: u64 = 10;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall100() {
+        let trials: u64 = 100;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall200() {
+        let trials: u64 = 200;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall500() {
+        let trials: u64 = 500;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall1000() {
+        let trials: u64 = 1000;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall5000() {
+        let trials: u64 = 5000;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
+    }
+
+    #[test]
+    public entry fun test_calibrate_generic_funcall10000() {
+        let trials: u64 = 10000;
+        while (trials > 0) {
+            generic_fun(0u8, 0u16, 0u32, 064);
+            trials = trials - 1;
+        }
     }
 
     // Add operation
@@ -910,7 +975,7 @@ module sui::bytecode_calibration_tests {
 // MoveLoc, StLoc, BrTrue, BrFalse, Branch, Call, CallGeneric, Pop, Ret, MutBorrowFieldGeneric, ImmBorrowFieldGeneric, Abort, Nop
 
 // Not supported for Sui:
-// MutBorrowGlobal, MutBorrowGlobalGeneric, ImmBorrowGlobal, ImmBorrowGlobalGeneric, Exists, ExistsGeneric, MoveFrom, MoveFromGeneric, 
+// MutBorrowGlobal, MutBorrowGlobalGeneric, ImmBorrowGlobal, ImmBorrowGlobalGeneric, Exists, ExistsGeneric, MoveFrom, MoveFromGeneric,
 // MoveTo, MoveToGeneric
 
 
