@@ -13,7 +13,10 @@ mod checked {
             RawValueType, Value,
         },
         gas_charger::GasCharger,
-        programmable_transactions::{context::*, data_store::SuiDataStore},
+        programmable_transactions::{
+            context::*, data_store::SuiDataStore,
+            linkage_resolution::linkage_analysis_for_protocol_config,
+        },
         type_resolver::TypeTagResolver,
     };
     use move_binary_format::file_format::AbilitySet;
@@ -119,11 +122,14 @@ mod checked {
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> Result<Mode::ExecutionResults, ExecutionError> {
         let ProgrammableTransaction { inputs, commands } = pt;
+        let mut linkage_resolver =
+            linkage_analysis_for_protocol_config::<Mode>(protocol_config, &state_view)?;
         let mut context = ExecutionContext::new(
             protocol_config,
             metrics,
             vm,
             state_view,
+            linkage_resolver.as_mut(),
             tx_context,
             gas_charger,
             inputs,
@@ -132,9 +138,17 @@ mod checked {
         let mut mode_results = Mode::empty_results();
         for (idx, command) in commands.into_iter().enumerate() {
             let start = Instant::now();
-            if let Err(err) =
-                execute_command::<Mode>(&mut context, &mut mode_results, command, trace_builder_opt)
-            {
+            let mut linked_context = context
+                .linked_context(&command)
+                .map_err(|e| e.with_command_index(idx))?;
+            if let Err(err) = execute_command::<Mode>(
+                // TODO/XXX: This needs to pass the linked context
+                &mut linked_context.ctx,
+                &mut mode_results,
+                command,
+                trace_builder_opt,
+            ) {
+                drop(linked_context);
                 let object_runtime: &ObjectRuntime = context.object_runtime()?;
                 // We still need to record the loaded child objects for replay
                 let loaded_runtime_objects = object_runtime.loaded_runtime_objects();

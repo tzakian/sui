@@ -15,7 +15,12 @@ mod checked {
         },
         gas_charger::GasCharger,
         gas_meter::SuiGasMeter,
-        programmable_transactions::{data_store::SuiDataStore, linkage_view::LinkageView},
+        programmable_transactions::{
+            data_store::new as ND,
+            data_store::SuiDataStore,
+            linkage_resolution::{LinkageAnalysis, ResolvedLinkage},
+            linkage_view::LinkageView,
+        },
         type_resolver::TypeTagResolver,
     };
     use move_binary_format::{
@@ -60,10 +65,22 @@ mod checked {
         move_package::MovePackage,
         object::{Authenticator, Data, MoveObject, Object, ObjectInner, Owner},
         storage::{BackingPackageStore, DenyListResult, PackageObject},
-        transaction::{Argument, CallArg, ObjectArg},
+        transaction::{Argument, CallArg, Command, ObjectArg},
     };
     use sui_types::{error::command_argument_error, execution_status::CommandArgumentError};
     use tracing::instrument;
+
+    /// A `LinkedContext` is an execution context with a specific linkage that has been determined.
+    /// This is usually for a specific command, but the linkage can be derived, e.g., for the
+    /// entire PTB.
+    pub struct LinkedContext<'ctx, 'vm, 'state, 'a> {
+        /// The execution context
+        pub ctx: &'ctx mut ExecutionContext<'vm, 'state, 'a>,
+        /// The specified linkage for this linked context.
+        /// This is a mapping of runtime_id -> storage_id
+        pub linkage: ResolvedLinkage,
+        pub ephemeral_package: Option<MovePackage>,
+    }
 
     /// Maintains all runtime state specific to programmable transactions
     pub struct ExecutionContext<'vm, 'state, 'a> {
@@ -75,6 +92,7 @@ mod checked {
         pub vm: &'vm MoveVM,
         /// The LinkageView for this session
         pub linkage_view: LinkageView<'state>,
+        pub linkage_analyzer: &'a mut dyn LinkageAnalysis,
         pub native_extensions: NativeContextExtensions<'state>,
         /// The global state, used for resolving packages
         pub state_view: &'state dyn ExecutionState,
@@ -131,6 +149,59 @@ mod checked {
         Result(u16, u16),
     }
 
+    impl<'ctx, 'vm, 'state, 'a> LinkedContext<'ctx, 'vm, 'state, 'a> {
+        pub fn new(
+            ctx: &'ctx mut ExecutionContext<'vm, 'state, 'a>,
+            linkage: ResolvedLinkage,
+        ) -> Self {
+            Self {
+                ctx,
+                linkage,
+                ephemeral_package: None,
+            }
+        }
+
+        pub fn linked_datastore<'b>(
+            &'b mut self,
+            linkage_context: AccountAddress,
+        ) -> ND::LinkedDataStore<'b> {
+            ND::LinkedDataStore::new(
+                linkage_context,
+                &self.linkage,
+                self.ctx.linkage_analyzer.resolver(),
+                Box::new(ND::SuiDataStore::new(
+                    self.ctx.state_view.as_backing_package_store(),
+                    &self.ctx.new_packages,
+                )),
+            )
+        }
+
+        pub fn publication_context<'pub_ctx: 'ctx>(
+            &'pub_ctx mut self,
+            publication_linkage: ResolvedLinkage,
+            ephemeral_package: MovePackage,
+        ) -> LinkedContext<'pub_ctx, 'vm, 'state, 'a> {
+            Self {
+                ctx: self.ctx,
+                linkage: publication_linkage,
+                ephemeral_package: Some(ephemeral_package),
+            }
+        }
+    }
+
+    impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
+        pub fn linked_context(
+            &mut self,
+            command: &Command,
+        ) -> Result<LinkedContext<'_, 'vm, 'state, 'a>, ExecutionError> {
+            let resolved_linkage = self.linkage_analyzer.add_command(
+                command,
+                &ND::SuiDataStore::new(&self.state_view, &self.new_packages),
+            )?;
+            Ok(LinkedContext::new(self, resolved_linkage))
+        }
+    }
+
     impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
         #[instrument(name = "ExecutionContext::new", level = "trace", skip_all)]
         pub fn new(
@@ -138,6 +209,7 @@ mod checked {
             metrics: Arc<LimitsMetrics>,
             vm: &'vm MoveVM,
             state_view: &'state dyn ExecutionState,
+            linkage_analyzer: &'a mut dyn LinkageAnalysis,
             tx_context: Rc<RefCell<TxContext>>,
             gas_charger: &'a mut GasCharger,
             inputs: Vec<CallArg>,
@@ -234,6 +306,7 @@ mod checked {
                 metrics,
                 vm,
                 linkage_view,
+                linkage_analyzer,
                 native_extensions,
                 state_view,
                 tx_context,
