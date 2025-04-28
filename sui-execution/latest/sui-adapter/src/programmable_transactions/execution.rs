@@ -5,17 +5,20 @@ pub use checked::*;
 
 #[sui_macros::with_checked_arithmetic]
 mod checked {
-    use crate::execution_mode::ExecutionMode;
-    use crate::execution_value::{
-        ensure_serialized_size, CommandKind, ExecutionState, ObjectContents, ObjectValue,
-        RawValueType, Value,
+    use crate::{
+        adapter::substitute_package_id,
+        execution_mode::ExecutionMode,
+        execution_value::{
+            ensure_serialized_size, CommandKind, ExecutionState, ObjectContents, ObjectValue,
+            RawValueType, Value,
+        },
+        gas_charger::GasCharger,
+        programmable_transactions::{context::*, data_store::SuiDataStore},
     };
-    use crate::gas_charger::GasCharger;
-    use move_binary_format::file_format::AbilitySet;
     use move_binary_format::{
         compatibility::{Compatibility, InclusionCheck},
         errors::{Location, PartialVMResult, VMResult},
-        file_format::{CodeOffset, FunctionDefinitionIndex, LocalIndex, Visibility},
+        file_format::{AbilitySet, CodeOffset, FunctionDefinitionIndex, LocalIndex, Visibility},
         file_format_common::VERSION_6,
         normalized, CompiledModule,
     };
@@ -32,9 +35,8 @@ mod checked {
     };
     use move_vm_types::loaded_data::runtime_types::{CachedDatatype, Type};
     use serde::{de::DeserializeSeed, Deserialize};
-    use std::cell::OnceCell;
     use std::{
-        cell::RefCell,
+        cell::{OnceCell, RefCell},
         collections::{BTreeMap, BTreeSet},
         fmt,
         rc::Rc,
@@ -43,11 +45,6 @@ mod checked {
     };
     use sui_move_natives::object_runtime::ObjectRuntime;
     use sui_protocol_config::ProtocolConfig;
-    use sui_types::execution::{ExecutionTiming, ResultWithTimings};
-    use sui_types::execution_config_utils::to_binary_config;
-    use sui_types::execution_status::{CommandArgumentError, PackageUpgradeError};
-    use sui_types::storage::{get_package_objects, PackageObject};
-    use sui_types::type_input::TypeInput;
     use sui_types::{
         base_types::{
             MoveLegacyTxContext, MoveObjectType, ObjectID, SuiAddress, TxContext, TxContextKind,
@@ -56,14 +53,19 @@ mod checked {
         },
         coin::Coin,
         error::{command_argument_error, ExecutionError, ExecutionErrorKind},
+        execution::{ExecutionTiming, ResultWithTimings},
+        execution_config_utils::to_binary_config,
+        execution_status::{CommandArgumentError, PackageUpgradeError},
         id::RESOLVED_SUI_ID,
         metrics::LimitsMetrics,
         move_package::{
             normalize_deserialized_modules, MovePackage, UpgradeCap, UpgradePolicy, UpgradeReceipt,
             UpgradeTicket,
         },
+        storage::{get_package_objects, PackageObject},
         transaction::{Command, ProgrammableMoveCall, ProgrammableTransaction},
         transfer::RESOLVED_RECEIVING_STRUCT,
+        type_input::TypeInput,
         SUI_FRAMEWORK_ADDRESS,
     };
     use sui_verifier::{
@@ -71,9 +73,6 @@ mod checked {
         INIT_FN_NAME,
     };
     use tracing::instrument;
-
-    use crate::adapter::substitute_package_id;
-    use crate::programmable_transactions::context::*;
 
     pub fn execute<Mode: ExecutionMode>(
         protocol_config: &ProtocolConfig,
