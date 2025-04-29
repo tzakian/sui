@@ -48,20 +48,21 @@ mod checked {
         self, get_all_uids, max_event_error, LoadedRuntimeObject, ObjectRuntime, RuntimeResults,
     };
     use sui_protocol_config::ProtocolConfig;
+    use sui_types::execution::ExecutionResults;
     use sui_types::{
         balance::Balance,
         base_types::{MoveObjectType, ObjectID, SuiAddress, TxContext},
         coin::Coin,
-        error::{command_argument_error, ExecutionError, ExecutionErrorKind},
+        error::{ExecutionError, ExecutionErrorKind},
         event::Event,
-        execution::{ExecutionResults, ExecutionResultsV2},
-        execution_status::CommandArgumentError,
+        execution::ExecutionResultsV2,
         metrics::LimitsMetrics,
         move_package::MovePackage,
         object::{Authenticator, Data, MoveObject, Object, ObjectInner, Owner},
         storage::{BackingPackageStore, DenyListResult, PackageObject},
         transaction::{Argument, CallArg, ObjectArg},
     };
+    use sui_types::{error::command_argument_error, execution_status::CommandArgumentError};
     use tracing::instrument;
 
     /// Maintains all runtime state specific to programmable transactions
