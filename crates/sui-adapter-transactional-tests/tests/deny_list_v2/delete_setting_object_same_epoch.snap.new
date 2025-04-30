@@ -1,0 +1,61 @@
+---
+source: external-crates/move/crates/move-transactional-test-runner/src/framework.rs
+assertion_line: 809
+---
+processed 12 tasks
+
+init:
+A: object(0,0), B: object(0,1)
+
+task 1, lines 9-53:
+//# publish --sender A
+Error: Transaction Effects Status: Move Bytecode Verification Error. Please run the Bytecode Verifier for more information.
+Execution Error: ExecutionError: ExecutionError { inner: ExecutionErrorInner { kind: VMVerificationOrDeserializationError, source: Some(VMError { major_status: LINKER_ERROR, sub_status: None, message: Some("Cannot find link context _ in store"), exec_state: None, location: Undefined, indices: [], offsets: [] }), command: None } }
+
+task 2, lines 54-56:
+//# run sui::coin::deny_list_v2_add --args object(0x403) object(1,3) @B --type-args test::regulated_coin::REGULATED_COIN --sender A
+Error: INVALID TEST. Unknown object, object(1,3)
+
+task 3, lines 57-59:
+//# run sui::coin::deny_list_v2_enable_global_pause --args object(0x403) object(1,3) --type-args test::regulated_coin::REGULATED_COIN --sender A
+Error: INVALID TEST. Unknown object, object(1,3)
+
+task 4, line 60:
+//# view-object 2,1
+Error: task 4, lines 60-60
+//# view-object 2,1
+. Unbound fake id 2,1
+
+task 5, lines 62-64:
+//# view-object 3,0
+Error: task 5, lines 62-62
+//# view-object 3,0
+. Unbound fake id 3,0
+
+task 6, lines 65-67:
+//# run sui::coin::deny_list_v2_remove --args object(0x403) object(1,3) @B --type-args test::regulated_coin::REGULATED_COIN --sender A
+Error: INVALID TEST. Unknown object, object(1,3)
+
+task 7, lines 68-70:
+//# run sui::coin::deny_list_v2_disable_global_pause --args object(0x403) object(1,3) --type-args test::regulated_coin::REGULATED_COIN --sender A
+Error: INVALID TEST. Unknown object, object(1,3)
+
+task 8, line 71:
+//# view-object 2,1
+Error: task 8, lines 71-71
+//# view-object 2,1
+. Unbound fake id 2,1
+
+task 9, lines 73-75:
+//# view-object 3,0
+Error: task 9, lines 73-73
+//# view-object 3,0
+. Unbound fake id 3,0
+
+task 10, lines 76-78:
+//# run test::regulated_coin::assert_address_deny_status --args immshared(0x403) @B false --sender A
+Error: Error checking transaction input objects: DependentPackageNotFound { package_id: 0x0000000000000000000000000000000000000000000000000000000000000000 }
+
+task 11, line 79:
+//# run test::regulated_coin::assert_global_pause_status --args immshared(0x403) false --sender A
+Error: Error checking transaction input objects: DependentPackageNotFound { package_id: 0x0000000000000000000000000000000000000000000000000000000000000000 }

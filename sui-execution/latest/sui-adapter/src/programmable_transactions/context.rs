@@ -342,7 +342,10 @@ mod checked {
             }
             let new_events = events
                 .into_iter()
-                .map(|(ty, tag, value)| {
+                .map(|(tag, value)| {
+                    let ty = self
+                        .load_type_from_struct(&tag)
+                        .map_err(|e| self.convert_vm_error(e))?;
                     let layout = self
                         .vm
                         .get_runtime()
@@ -705,7 +708,7 @@ mod checked {
             let Self {
                 protocol_config,
                 vm,
-                linkage_view,
+                mut linkage_view,
                 mut native_extensions,
                 tx_context,
                 gas_charger,
@@ -840,12 +843,6 @@ mod checked {
             loaded_runtime_objects.extend(loaded_child_objects);
 
             let mut written_objects = BTreeMap::new();
-            for package in new_packages {
-                let package_obj = Object::new_from_package(package, tx_digest);
-                let id = package_obj.id();
-                created_object_ids.insert(id);
-                written_objects.insert(id, package_obj);
-            }
             for (id, additional_write) in additional_writes {
                 let AdditionalWrite {
                     recipient,
@@ -873,7 +870,21 @@ mod checked {
                 }
             }
 
-            for (id, (recipient, ty, value)) in writes {
+            for (id, (recipient, tag, value)) in writes {
+                let ty = load_type_from_struct(
+                    vm,
+                    &mut linkage_view,
+                    &new_packages,
+                    &StructTag::from(tag.clone()),
+                )
+                .map_err(|e| {
+                    convert_vm_error(
+                        e,
+                        vm,
+                        &linkage_view,
+                        protocol_config.resolve_abort_locations_to_package_id(),
+                    )
+                })?;
                 let abilities = vm.get_runtime().get_type_abilities(&ty).map_err(|e| {
                     convert_vm_error(
                         e,
@@ -909,6 +920,13 @@ mod checked {
                 };
                 let object = Object::new_move(move_object, recipient, tx_digest);
                 written_objects.insert(id, object);
+            }
+
+            for package in new_packages {
+                let package_obj = Object::new_from_package(package, tx_digest);
+                let id = package_obj.id();
+                created_object_ids.insert(id);
+                written_objects.insert(id, package_obj);
             }
 
             // Before finishing, ensure that any shared object taken by value by the transaction is either:
@@ -1292,9 +1310,12 @@ mod checked {
 
         match linkage_view.get_package_object(&package_id) {
             Ok(Some(package)) => Ok(package),
-            Ok(None) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                .with_message(format!("Cannot find link context {package_id} in store"))
-                .finish(Location::Undefined)),
+            Ok(None) => {
+                panic!("CANNOT FIND {} in store", package_id);
+                Err(PartialVMError::new(StatusCode::LINKER_ERROR)
+                    .with_message(format!("Cannot find link context {package_id} in store"))
+                    .finish(Location::Undefined))
+            }
             Err(err) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
                 .with_message(format!(
                     "Error loading link context {package_id} from store: {err}"
@@ -1324,20 +1345,21 @@ mod checked {
         let defining_id = ObjectID::from_address(*address);
         let package = package_for_linkage(linkage_view, defining_id)?;
 
+        let saved_linkage = linkage_view.steal_linkage();
+
         // Set the defining package as the link context while loading the
         // struct
         let original_address = linkage_view
             .set_linkage(package.move_package())
-            .map_err(|e| {
-                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(e.to_string())
-                    .finish(Location::Undefined)
-            })?;
+            .expect("Linkage context was just stolen. Therefore must be empty");
 
         let runtime_id = ModuleId::new(original_address, module.clone());
         let data_store = SuiDataStore::new(linkage_view, new_packages);
         let res = vm.get_runtime().load_type(&runtime_id, name, &data_store);
         linkage_view.reset_linkage();
+        linkage_view
+            .restore_linkage(saved_linkage)
+            .expect("Linkage context was just reset. Therefore must be empty");
         let (idx, struct_type) = res?;
 
         // Recursively load type parameters, if necessary
