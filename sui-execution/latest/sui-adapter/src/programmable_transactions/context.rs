@@ -73,7 +73,7 @@ mod checked {
     /// A `LinkedContext` is an execution context with a specific linkage that has been determined.
     /// This is usually for a specific command, but the linkage can be derived, e.g., for the
     /// entire PTB.
-    pub struct LinkedContext<'ctx, 'vm, 'state, 'a> {
+    pub struct LinkedExecutionContext<'ctx, 'vm, 'state, 'a> {
         /// The execution context
         pub ctx: &'ctx mut ExecutionContext<'vm, 'state, 'a>,
         /// The specified linkage for this linked context.
@@ -149,7 +149,7 @@ mod checked {
         Result(u16, u16),
     }
 
-    impl<'ctx, 'vm, 'state, 'a> LinkedContext<'ctx, 'vm, 'state, 'a> {
+    impl<'ctx, 'vm, 'state, 'a> LinkedExecutionContext<'ctx, 'vm, 'state, 'a> {
         pub fn new(
             ctx: &'ctx mut ExecutionContext<'vm, 'state, 'a>,
             linkage: ResolvedLinkage,
@@ -161,10 +161,7 @@ mod checked {
             }
         }
 
-        pub fn linked_datastore<'b>(
-            &'b mut self,
-            linkage_context: AccountAddress,
-        ) -> ND::LinkedDataStore<'b> {
+        pub fn linked_datastore(&mut self, linkage_context: AccountAddress) -> ND::LinkedDataStore {
             ND::LinkedDataStore::new(
                 linkage_context,
                 &self.linkage,
@@ -180,7 +177,7 @@ mod checked {
             &'pub_ctx mut self,
             publication_linkage: ResolvedLinkage,
             ephemeral_package: MovePackage,
-        ) -> LinkedContext<'pub_ctx, 'vm, 'state, 'a> {
+        ) -> LinkedExecutionContext<'pub_ctx, 'vm, 'state, 'a> {
             Self {
                 ctx: self.ctx,
                 linkage: publication_linkage,
@@ -193,12 +190,12 @@ mod checked {
         pub fn linked_context(
             &mut self,
             command: &Command,
-        ) -> Result<LinkedContext<'_, 'vm, 'state, 'a>, ExecutionError> {
+        ) -> Result<LinkedExecutionContext<'_, 'vm, 'state, 'a>, ExecutionError> {
             let resolved_linkage = self.linkage_analyzer.add_command(
                 command,
                 &ND::SuiDataStore::new(&self.state_view, &self.new_packages),
             )?;
-            Ok(LinkedContext::new(self, resolved_linkage))
+            Ok(LinkedExecutionContext::new(self, resolved_linkage))
         }
     }
 
