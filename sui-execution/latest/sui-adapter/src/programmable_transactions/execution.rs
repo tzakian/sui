@@ -139,7 +139,7 @@ mod checked {
         for (idx, command) in commands.into_iter().enumerate() {
             let start = Instant::now();
             let mut linked_context = context
-                .linked_context(&command)
+                .linked_command_context(&command)
                 .map_err(|e| e.with_command_index(idx))?;
             if let Err(err) = execute_command::<Mode>(
                 &mut linked_context,
@@ -198,7 +198,7 @@ mod checked {
 
                 let tag = to_type_tag(context, tag)?;
 
-                let elem_ty = context.ctx.load_type(&tag).map_err(|e| {
+                let elem_ty = context.load_type(&tag).map_err(|e| {
                     if context.ctx.protocol_config.convert_type_argument_error() {
                         context.ctx.convert_type_argument_error(0, e)
                     } else {

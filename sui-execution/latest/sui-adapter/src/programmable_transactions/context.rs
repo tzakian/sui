@@ -16,8 +16,10 @@ mod checked {
         gas_charger::GasCharger,
         gas_meter::SuiGasMeter,
         programmable_transactions::{
-            data_store::new as ND,
-            data_store::SuiDataStore,
+            data_store::{
+                new::{self as ND, LinkableStore, LinkedDataStore},
+                PackageStore, SuiDataStore,
+            },
             linkage_resolution::{LinkageAnalysis, ResolvedLinkage},
             linkage_view::LinkageView,
         },
@@ -166,10 +168,10 @@ mod checked {
                 linkage_context,
                 &self.linkage,
                 self.ctx.linkage_analyzer.resolver(),
-                Box::new(ND::SuiDataStore::new(
+                &ND::SuiDataStore::new(
                     self.ctx.state_view.as_backing_package_store(),
                     &self.ctx.new_packages,
-                )),
+                ),
             )
         }
 
@@ -184,150 +186,35 @@ mod checked {
                 ephemeral_package: Some(ephemeral_package),
             }
         }
-    }
 
-    impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
-        pub fn linked_context(
-            &mut self,
-            command: &Command,
-        ) -> Result<LinkedExecutionContext<'_, 'vm, 'state, 'a>, ExecutionError> {
-            let resolved_linkage = self.linkage_analyzer.add_command(
-                command,
-                &ND::SuiDataStore::new(&self.state_view, &self.new_packages),
-            )?;
-            Ok(LinkedExecutionContext::new(self, resolved_linkage))
+        fn type_linked_store_for_linkage<'b>(&'b self) -> ND::LinkedDataStore<'b> {
+            // Set link context to an address
+            // If there are no addresses in the linkage then the context doesn't matter and default
+            // to 0x0.
+            let link_context = self
+                .linkage
+                .linkage
+                .first_key_value()
+                .map(|(_, v)| **v)
+                .unwrap_or_else(|| AccountAddress::ZERO);
+            ND::LinkedDataStore::new(
+                link_context,
+                &self.linkage,
+                self.ctx.linkage_analyzer.resolver(),
+                &ND::SuiDataStore::new(
+                    self.ctx.state_view.as_backing_package_store(),
+                    &self.ctx.new_packages,
+                ),
+            )
         }
     }
 
-    impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
-        #[instrument(name = "ExecutionContext::new", level = "trace", skip_all)]
-        pub fn new(
-            protocol_config: &'a ProtocolConfig,
-            metrics: Arc<LimitsMetrics>,
-            vm: &'vm MoveVM,
-            state_view: &'state dyn ExecutionState,
-            linkage_analyzer: &'a mut dyn LinkageAnalysis,
-            tx_context: Rc<RefCell<TxContext>>,
-            gas_charger: &'a mut GasCharger,
-            inputs: Vec<CallArg>,
-        ) -> Result<Self, ExecutionError>
-        where
-            'a: 'state,
-        {
-            let mut linkage_view = LinkageView::new(Box::new(state_view.as_sui_resolver()));
-            let mut input_object_map = BTreeMap::new();
-            let inputs = inputs
-                .into_iter()
-                .map(|call_arg| {
-                    load_call_arg(
-                        protocol_config,
-                        vm,
-                        state_view,
-                        &mut linkage_view,
-                        &[],
-                        &mut input_object_map,
-                        call_arg,
-                    )
-                })
-                .collect::<Result<_, ExecutionError>>()?;
-            let gas = if let Some(gas_coin) = gas_charger.gas_coin() {
-                let mut gas = load_object(
-                    protocol_config,
-                    vm,
-                    state_view,
-                    &mut linkage_view,
-                    &[],
-                    &mut input_object_map,
-                    /* imm override */ false,
-                    gas_coin,
-                )?;
-                // subtract the max gas budget. This amount is off limits in the programmable transaction,
-                // so to mimic this "off limits" behavior, we act as if the coin has less balance than
-                // it really does
-                let Some(Value::Object(ObjectValue {
-                    contents: ObjectContents::Coin(coin),
-                    ..
-                })) = &mut gas.inner.value
-                else {
-                    invariant_violation!("Gas object should be a populated coin")
-                };
-
-                let max_gas_in_balance = gas_charger.gas_budget();
-                let Some(new_balance) = coin.balance.value().checked_sub(max_gas_in_balance) else {
-                    invariant_violation!(
-                        "Transaction input checker should check that there is enough gas"
-                    );
-                };
-                coin.balance = Balance::new(new_balance);
-                gas
-            } else {
-                InputValue {
-                    object_metadata: None,
-                    inner: ResultValue {
-                        last_usage_kind: None,
-                        value: None,
-                    },
-                }
-            };
-            let native_extensions = new_native_extensions(
-                state_view.as_child_resolver(),
-                input_object_map,
-                !gas_charger.is_unmetered(),
-                protocol_config,
-                metrics.clone(),
-                tx_context.clone(),
-            );
-
-            // Set the profiler if in CLI
-            #[skip_checked_arithmetic]
-            move_vm_profiler::tracing_feature_enabled! {
-                use move_vm_profiler::GasProfiler;
-                use move_vm_types::gas::GasMeter;
-                use crate::gas_meter::SuiGasMeter;
-
-                let ref_context: &RefCell<TxContext> = tx_context.borrow();
-                let tx_digest = ref_context.borrow().digest();
-                let remaining_gas: u64 = move_vm_types::gas::GasMeter::remaining_gas(&SuiGasMeter(
-                    gas_charger.move_gas_status_mut(),
-                ))
-                        .into();
-                SuiGasMeter(gas_charger.move_gas_status_mut()).set_profiler(GasProfiler::init(
-                        &vm.config().profiler_config,
-                        format!("{}", tx_digest),
-                        remaining_gas,
-                    ));
-            }
-
-            Ok(Self {
-                protocol_config,
-                metrics,
-                vm,
-                linkage_view,
-                linkage_analyzer,
-                native_extensions,
-                state_view,
-                tx_context,
-                gas_charger,
-                gas,
-                inputs,
-                results: vec![],
-                additional_transfers: vec![],
-                new_packages: vec![],
-                user_events: vec![],
-                borrowed: HashMap::new(),
-            })
-        }
-
-        pub fn object_runtime(&self) -> Result<&ObjectRuntime, ExecutionError> {
-            self.native_extensions
-                .get::<ObjectRuntime>()
-                .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))
-        }
-
+    impl<'ctx, 'vm, 'state, 'a> LinkedExecutionContext<'ctx, 'vm, 'state, 'a> {
         /// Create a new ID and update the state
         pub fn fresh_id(&mut self) -> Result<ObjectID, ExecutionError> {
-            let object_id = self.tx_context.borrow_mut().fresh_id();
-            self.native_extensions
+            let object_id = self.ctx.tx_context.borrow_mut().fresh_id();
+            self.ctx
+                .native_extensions
                 .get_mut()
                 .and_then(|object_runtime: &mut ObjectRuntime| object_runtime.new_id(object_id))
                 .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))?;
@@ -336,54 +223,28 @@ mod checked {
 
         /// Delete an ID and update the state
         pub fn delete_id(&mut self, object_id: ObjectID) -> Result<(), ExecutionError> {
-            self.native_extensions
+            self.ctx
+                .native_extensions
                 .get_mut()
                 .and_then(|object_runtime: &mut ObjectRuntime| object_runtime.delete_id(object_id))
                 .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))
         }
 
-        /// Set the link context for the session from the linkage information in the MovePackage found
-        /// at `package_id`.  Returns the runtime ID of the link context package on success.
-        pub fn set_link_context(
-            &mut self,
-            package_id: ObjectID,
-        ) -> Result<AccountAddress, ExecutionError> {
-            if self.linkage_view.has_linkage(package_id) {
-                // Setting same context again, can skip.
-                return Ok(self
-                    .linkage_view
-                    .original_package_id()
-                    .unwrap_or(*package_id));
-            }
-
-            let package = package_for_linkage(&self.linkage_view, package_id)
-                .map_err(|e| self.convert_vm_error(e))?;
-
-            self.linkage_view.set_linkage(package.move_package())
-        }
-
         /// Load a type using the context's current session.
         pub fn load_type(&mut self, type_tag: &TypeTag) -> VMResult<Type> {
-            load_type(
-                self.vm,
-                &mut self.linkage_view,
-                &self.new_packages,
-                type_tag,
-            )
+            let linked_store = self.type_linked_store_for_linkage();
+            load_type(&self.ctx.vm, &linked_store, type_tag)
         }
 
         /// Load a type using the context's current session.
         pub fn load_type_from_struct(&mut self, struct_tag: &StructTag) -> VMResult<Type> {
-            load_type_from_struct(
-                self.vm,
-                &mut self.linkage_view,
-                &self.new_packages,
-                struct_tag,
-            )
+            let linked_store = self.type_linked_store_for_linkage();
+            load_type_from_struct(&self.ctx.vm, &linked_store, struct_tag)
         }
 
         pub fn get_type_abilities(&self, t: &Type) -> Result<AbilitySet, ExecutionError> {
-            self.vm
+            self.ctx
+                .vm
                 .get_runtime()
                 .get_type_abilities(t)
                 .map_err(|e| self.convert_vm_error(e))
@@ -398,12 +259,13 @@ mod checked {
             last_offset: CodeOffset,
         ) -> Result<(), ExecutionError> {
             let events = self
+                .ctx
                 .native_extensions
                 .get_mut()
                 .map(|object_runtime: &mut ObjectRuntime| object_runtime.take_user_events())
                 .map_err(|e| self.convert_vm_error(e.finish(Location::Undefined)))?;
-            let num_events = self.user_events.len() + events.len();
-            let max_events = self.protocol_config.max_num_event_emit();
+            let num_events = self.ctx.user_events.len() + events.len();
+            let max_events = self.ctx.protocol_config.max_num_event_emit();
             if num_events as u64 > max_events {
                 let err = max_event_error(max_events)
                     .at_code_offset(function, last_offset)
@@ -414,6 +276,7 @@ mod checked {
                 .into_iter()
                 .map(|(ty, tag, value)| {
                     let layout = self
+                        .ctx
                         .vm
                         .get_runtime()
                         .type_to_type_layout(&ty)
@@ -424,7 +287,7 @@ mod checked {
                     Ok((module_id.clone(), tag, bytes))
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()?;
-            self.user_events.extend(new_events);
+            self.ctx.user_events.extend(new_events);
             Ok(())
         }
 
@@ -441,7 +304,7 @@ mod checked {
         where
             Items::IntoIter: ExactSizeIterator,
         {
-            if !self.protocol_config.normalize_ptb_arguments() {
+            if !self.ctx.protocol_config.normalize_ptb_arguments() {
                 Ok(args.into_iter().map(|arg| Arg(Arg_::V1(arg))).collect())
             } else {
                 let args = args.into_iter();
@@ -460,13 +323,13 @@ mod checked {
             match arg {
                 Argument::GasCoin => res.push(Arg(Arg_::V2(NormalizedArg::GasCoin))),
                 Argument::Input(i) => {
-                    if i as usize >= self.inputs.len() {
+                    if i as usize >= self.ctx.inputs.len() {
                         return Err(CommandArgumentError::IndexOutOfBounds { idx: i }.into());
                     }
                     res.push(Arg(Arg_::V2(NormalizedArg::Input(i))))
                 }
                 Argument::NestedResult(i, j) => {
-                    let Some(command_result) = self.results.get(i as usize) else {
+                    let Some(command_result) = self.ctx.results.get(i as usize) else {
                         return Err(CommandArgumentError::IndexOutOfBounds { idx: i }.into());
                     };
                     if j as usize >= command_result.len() {
@@ -479,7 +342,7 @@ mod checked {
                     res.push(Arg(Arg_::V2(NormalizedArg::Result(i, j))))
                 }
                 Argument::Result(i) => {
-                    let Some(result) = self.results.get(i as usize) else {
+                    let Some(result) = self.ctx.results.get(i as usize) else {
                         return Err(CommandArgumentError::IndexOutOfBounds { idx: i }.into());
                     };
                     let Ok(len): Result<u16, _> = result.len().try_into() else {
@@ -530,7 +393,7 @@ mod checked {
             command_kind: CommandKind<'_>,
             arg: Arg,
         ) -> Result<V, EitherError> {
-            let shared_obj_deletion_enabled = self.protocol_config.shared_object_deletion();
+            let shared_obj_deletion_enabled = self.ctx.protocol_config.shared_object_deletion();
             let is_borrowed = self.arg_is_borrowed(&arg);
             let (input_metadata_opt, val_opt) = self.borrow_mut(arg, UsageKind::ByValue)?;
             let is_copyable = if let Some(val) = val_opt {
@@ -610,7 +473,7 @@ mod checked {
             if self.arg_is_borrowed(&arg) {
                 return Err(CommandArgumentError::InvalidValueUsage.into());
             }
-            self.borrowed.insert(arg, /* is_mut */ true);
+            self.ctx.borrowed.insert(arg, /* is_mut */ true);
             let (input_metadata_opt, val_opt) = self.borrow_mut(arg, UsageKind::BorrowMut)?;
             let is_copyable = if let Some(val) = val_opt {
                 val.is_copyable()
@@ -658,7 +521,7 @@ mod checked {
             if self.arg_is_mut_borrowed(&arg) {
                 return Err(CommandArgumentError::InvalidValueUsage.into());
             }
-            self.borrowed.insert(arg, /* is_mut */ false);
+            self.ctx.borrowed.insert(arg, /* is_mut */ false);
             let (_input_metadata_opt, val_opt) = self.borrow_mut(arg, UsageKind::BorrowImm)?;
             if val_opt.is_none() {
                 return Err(CommandArgumentError::InvalidValueUsage.into());
@@ -683,7 +546,7 @@ mod checked {
             value: Value,
         ) -> Result<(), ExecutionError> {
             Mode::add_argument_update(self, updates, arg.into(), &value)?;
-            let was_mut_opt = self.borrowed.remove(&arg);
+            let was_mut_opt = self.ctx.borrowed.remove(&arg);
             assert_invariant!(
                 was_mut_opt.is_some() && was_mut_opt.unwrap(),
                 "Should never restore a non-mut borrowed value. \
@@ -710,7 +573,7 @@ mod checked {
             obj: ObjectValue,
             addr: SuiAddress,
         ) -> Result<(), ExecutionError> {
-            self.additional_transfers.push((addr, obj));
+            self.ctx.additional_transfers.push((addr, obj));
             Ok(())
         }
 
@@ -722,8 +585,8 @@ mod checked {
         ) -> Result<MovePackage, ExecutionError> {
             MovePackage::new_initial(
                 modules,
-                self.protocol_config.max_move_package_size(),
-                self.protocol_config.move_binary_format_version(),
+                self.ctx.protocol_config.max_move_package_size(),
+                self.ctx.protocol_config.move_binary_format_version(),
                 dependencies,
             )
         }
@@ -739,35 +602,900 @@ mod checked {
             previous_package.new_upgraded(
                 storage_id,
                 new_modules,
-                self.protocol_config,
+                self.ctx.protocol_config,
                 dependencies,
             )
         }
 
         /// Add a newly created package to write as an effect of the transaction
         pub fn write_package(&mut self, package: MovePackage) {
-            self.new_packages.push(package);
+            self.ctx.new_packages.push(package);
         }
 
         /// Return the last package pushed in `write_package`.
         /// This function should be used in block of codes that push a package, verify
         /// it, run the init and in case of error will remove the package.
         /// The package has to be pushed for the init to run correctly.
+        #[deprecated(note = "REMOVE THIS FUNCTION")]
         pub fn pop_package(&mut self) -> Option<MovePackage> {
-            self.new_packages.pop()
+            self.ctx.new_packages.pop()
         }
 
         /// Finish a command: clearing the borrows and adding the results to the result vector
         pub fn push_command_results(&mut self, results: Vec<Value>) -> Result<(), ExecutionError> {
             assert_invariant!(
-                self.borrowed.values().all(|is_mut| !is_mut),
+                self.ctx.borrowed.values().all(|is_mut| !is_mut),
                 "all mut borrows should be restored"
             );
             // clear borrow state
-            self.borrowed = HashMap::new();
-            self.results
+            self.ctx.borrowed = HashMap::new();
+            self.ctx
+                .results
                 .push(results.into_iter().map(ResultValue::new).collect());
             Ok(())
+        }
+
+        /// Convert a VM Error to an execution one
+        pub fn convert_vm_error(&self, error: VMError) -> ExecutionError {
+            crate::error::convert_vm_error(
+                error,
+                self.ctx.vm,
+                &self.type_linked_store_for_linkage(),
+                self.ctx
+                    .protocol_config
+                    .resolve_abort_locations_to_package_id(),
+            )
+        }
+
+        /// Special case errors for type arguments to Move functions
+        pub fn convert_type_argument_error(&self, idx: usize, error: VMError) -> ExecutionError {
+            use move_core_types::vm_status::StatusCode;
+            use sui_types::execution_status::TypeArgumentError;
+            match error.major_status() {
+                StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH => {
+                    ExecutionErrorKind::TypeArityMismatch.into()
+                }
+                StatusCode::TYPE_RESOLUTION_FAILURE => ExecutionErrorKind::TypeArgumentError {
+                    argument_idx: idx as TypeParameterIndex,
+                    kind: TypeArgumentError::TypeNotFound,
+                }
+                .into(),
+                StatusCode::CONSTRAINT_NOT_SATISFIED => ExecutionErrorKind::TypeArgumentError {
+                    argument_idx: idx as TypeParameterIndex,
+                    kind: TypeArgumentError::ConstraintNotSatisfied,
+                }
+                .into(),
+                _ => self.convert_vm_error(error),
+            }
+        }
+
+        /// Returns true if the value at the argument's location is borrowed, mutably or immutably
+        fn arg_is_borrowed(&self, arg: &Arg) -> bool {
+            self.ctx.borrowed.contains_key(arg)
+        }
+
+        /// Returns true if the value at the argument's location is mutably borrowed
+        fn arg_is_mut_borrowed(&self, arg: &Arg) -> bool {
+            matches!(self.ctx.borrowed.get(arg), Some(/* mut */ true))
+        }
+
+        /// Internal helper to borrow the value for an argument and update the most recent usage
+        fn borrow_mut(
+            &mut self,
+            arg: Arg,
+            usage: UsageKind,
+        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), EitherError> {
+            self.borrow_mut_impl(arg, Some(usage))
+        }
+
+        /// Internal helper to borrow the value for an argument
+        /// Updates the most recent usage if specified
+        fn borrow_mut_impl(
+            &mut self,
+            arg: Arg,
+            update_last_usage: Option<UsageKind>,
+        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), EitherError> {
+            match arg.0 {
+                Arg_::V1(arg) => {
+                    assert_invariant!(
+                        !self.ctx.protocol_config.normalize_ptb_arguments(),
+                        "Should not be using v1 args with normalized args"
+                    );
+                    Ok(self.borrow_mut_impl_v1(arg, update_last_usage)?)
+                }
+                Arg_::V2(arg) => {
+                    assert_invariant!(
+                        self.ctx.protocol_config.normalize_ptb_arguments(),
+                        "Should be using only v2 args with normalized args"
+                    );
+                    Ok(self.borrow_mut_impl_v2(arg, update_last_usage)?)
+                }
+            }
+        }
+
+        // v1 of borrow_mut_impl
+        fn borrow_mut_impl_v1(
+            &mut self,
+            arg: Argument,
+            update_last_usage: Option<UsageKind>,
+        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), CommandArgumentError>
+        {
+            let (metadata, result_value) = match arg {
+                Argument::GasCoin => (
+                    self.ctx.gas.object_metadata.as_ref(),
+                    &mut self.ctx.gas.inner,
+                ),
+                Argument::Input(i) => {
+                    let Some(input_value) = self.ctx.inputs.get_mut(i as usize) else {
+                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
+                    };
+                    (input_value.object_metadata.as_ref(), &mut input_value.inner)
+                }
+                Argument::Result(i) => {
+                    let Some(command_result) = self.ctx.results.get_mut(i as usize) else {
+                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
+                    };
+                    if command_result.len() != 1 {
+                        return Err(CommandArgumentError::InvalidResultArity { result_idx: i });
+                    }
+                    (None, &mut command_result[0])
+                }
+                Argument::NestedResult(i, j) => {
+                    let Some(command_result) = self.ctx.results.get_mut(i as usize) else {
+                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
+                    };
+                    let Some(result_value) = command_result.get_mut(j as usize) else {
+                        return Err(CommandArgumentError::SecondaryIndexOutOfBounds {
+                            result_idx: i,
+                            secondary_idx: j,
+                        });
+                    };
+                    (None, result_value)
+                }
+            };
+            if let Some(usage) = update_last_usage {
+                result_value.last_usage_kind = Some(usage);
+            }
+            Ok((metadata, &mut result_value.value))
+        }
+
+        // v2 of borrow_mut_impl
+        fn borrow_mut_impl_v2(
+            &mut self,
+            arg: NormalizedArg,
+            update_last_usage: Option<UsageKind>,
+        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), ExecutionError> {
+            let (metadata, result_value) = match arg {
+                NormalizedArg::GasCoin => (
+                    self.ctx.gas.object_metadata.as_ref(),
+                    &mut self.ctx.gas.inner,
+                ),
+                NormalizedArg::Input(i) => {
+                    let input_value = self
+                        .ctx
+                        .inputs
+                        .get_mut(i as usize)
+                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?;
+                    (input_value.object_metadata.as_ref(), &mut input_value.inner)
+                }
+                NormalizedArg::Result(i, j) => {
+                    let result_value = self
+                        .ctx
+                        .results
+                        .get_mut(i as usize)
+                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?
+                        .get_mut(j as usize)
+                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?;
+                    (None, result_value)
+                }
+            };
+            if let Some(usage) = update_last_usage {
+                result_value.last_usage_kind = Some(usage);
+            }
+            Ok((metadata, &mut result_value.value))
+        }
+
+        pub(crate) fn execute_function_bypass_visibility(
+            &mut self,
+            module: &ModuleId,
+            function_name: &IdentStr,
+            ty_args: Vec<Type>,
+            args: Vec<impl Borrow<[u8]>>,
+            tracer: &mut Option<MoveTraceBuilder>,
+        ) -> VMResult<SerializedReturnValues> {
+            let gas_status = self.ctx.gas_charger.move_gas_status_mut();
+            let mut data_store = self.linked_datastore(*module.address());
+            self.ctx
+                .vm
+                .get_runtime()
+                .execute_function_bypass_visibility(
+                    module,
+                    function_name,
+                    ty_args,
+                    args,
+                    &mut data_store,
+                    &mut SuiGasMeter(gas_status),
+                    &mut self.ctx.native_extensions,
+                    tracer.as_mut(),
+                )
+        }
+
+        pub(crate) fn load_function(
+            &mut self,
+            module_id: &ModuleId,
+            function_name: &IdentStr,
+            type_arguments: &[Type],
+        ) -> VMResult<LoadedFunctionInstantiation> {
+            let mut data_store = self.linked_datastore(*module_id.address());
+            self.ctx.vm.get_runtime().load_function(
+                module_id,
+                function_name,
+                type_arguments,
+                &mut data_store,
+            )
+        }
+
+        pub(crate) fn make_object_value(
+            &mut self,
+            type_: MoveObjectType,
+            has_public_transfer: bool,
+            used_in_non_entry_move_call: bool,
+            contents: &[u8],
+        ) -> Result<ObjectValue, ExecutionError> {
+            let store = self.linked_datastore(type_.address());
+            make_object_value(
+                self.ctx.protocol_config,
+                self.ctx.vm,
+                &store,
+                type_,
+                has_public_transfer,
+                used_in_non_entry_move_call,
+                contents,
+            )
+        }
+
+        pub fn publish_module_bundle(
+            &mut self,
+            modules: Vec<Vec<u8>>,
+            sender: AccountAddress,
+        ) -> VMResult<()> {
+            // TODO: publish_module_bundle() currently doesn't charge gas.
+            // Do we want to charge there?
+            let mut data_store = self.linked_datastore(sender);
+            self.ctx.vm.get_runtime().publish_module_bundle(
+                modules,
+                sender,
+                &mut data_store,
+                &mut SuiGasMeter(self.ctx.gas_charger.move_gas_status_mut()),
+            )
+        }
+
+        pub fn size_bound_raw(&self, bound: u64) -> SizeBound {
+            if self.ctx.protocol_config.max_ptb_value_size_v2() {
+                SizeBound::Raw(bound)
+            } else {
+                SizeBound::Object(bound)
+            }
+        }
+
+        pub fn size_bound_vector_elem(&self, bound: u64) -> SizeBound {
+            if self.ctx.protocol_config.max_ptb_value_size_v2() {
+                SizeBound::VectorElem(bound)
+            } else {
+                SizeBound::Object(bound)
+            }
+        }
+    }
+
+    impl Arg {
+        fn is_gas_coin(&self) -> bool {
+            // kept as two separate matches for exhaustiveness
+            match self {
+                Arg(Arg_::V1(a)) => matches!(a, Argument::GasCoin),
+                Arg(Arg_::V2(n)) => matches!(n, NormalizedArg::GasCoin),
+            }
+        }
+    }
+
+    impl From<Arg> for Argument {
+        fn from(arg: Arg) -> Self {
+            match arg.0 {
+                Arg_::V1(a) => a,
+                Arg_::V2(normalized) => match normalized {
+                    NormalizedArg::GasCoin => Argument::GasCoin,
+                    NormalizedArg::Input(i) => Argument::Input(i),
+                    NormalizedArg::Result(i, j) => Argument::NestedResult(i, j),
+                },
+            }
+        }
+    }
+
+    impl TypeTagResolver for LinkedExecutionContext<'_, '_, '_, '_> {
+        fn get_type_tag(&self, type_: &Type) -> Result<TypeTag, ExecutionError> {
+            self.ctx
+                .vm
+                .get_runtime()
+                .get_type_tag(type_)
+                .map_err(|e| self.convert_vm_error(e))
+        }
+    }
+
+    /// Fetch the package at `package_id` with a view to using it as a link context.  Produces an error
+    /// if the object at that ID does not exist, or is not a package.
+    fn package_for_linkage(
+        linked_store: &LinkedDataStore,
+        package_id: ObjectID,
+    ) -> VMResult<MovePackage> {
+        use move_binary_format::errors::PartialVMError;
+        use move_core_types::vm_status::StatusCode;
+
+        match linked_store.get_package(package_id) {
+            Ok(Some(package)) => Ok(package),
+            Ok(None) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
+                .with_message(format!("Cannot find link context {package_id} in store"))
+                .finish(Location::Undefined)),
+            Err(err) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
+                .with_message(format!(
+                    "Error loading link context {package_id} from store: {err}"
+                ))
+                .finish(Location::Undefined)),
+        }
+    }
+
+    pub fn load_type_from_struct(
+        vm: &MoveVM,
+        linked_store: &LinkedDataStore,
+        struct_tag: &StructTag,
+    ) -> VMResult<Type> {
+        fn verification_error<T>(code: StatusCode) -> VMResult<T> {
+            Err(PartialVMError::new(code).finish(Location::Undefined))
+        }
+
+        let StructTag {
+            address,
+            module,
+            name,
+            type_params,
+        } = struct_tag;
+
+        // Load the package that the struct is defined in, in storage
+        let defining_id = ObjectID::from_address(*address);
+        let move_package = package_for_linkage(linked_store, defining_id)?;
+        let original_address = move_package.original_package_id();
+
+        let runtime_id = ModuleId::new(*original_address, module.clone());
+        let (idx, struct_type) = vm
+            .get_runtime()
+            .load_type(&runtime_id, name, linked_store)?;
+
+        // Recursively load type parameters, if necessary
+        let type_param_constraints = struct_type.type_param_constraints();
+        if type_param_constraints.len() != type_params.len() {
+            return verification_error(StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH);
+        }
+
+        if type_params.is_empty() {
+            Ok(Type::Datatype(idx))
+        } else {
+            let loaded_type_params = type_params
+                .iter()
+                .map(|type_param| load_type(vm, linked_store, type_param))
+                .collect::<VMResult<Vec<_>>>()?;
+
+            // Verify that the type parameter constraints on the struct are met
+            for (constraint, param) in type_param_constraints.zip(&loaded_type_params) {
+                let abilities = vm.get_runtime().get_type_abilities(param)?;
+                if !constraint.is_subset(abilities) {
+                    return verification_error(StatusCode::CONSTRAINT_NOT_SATISFIED);
+                }
+            }
+
+            Ok(Type::DatatypeInstantiation(Box::new((
+                idx,
+                loaded_type_params,
+            ))))
+        }
+    }
+
+    /// Load `type_tag` to get a `Type` in the provided `session`.  `session`'s linkage context may be
+    /// reset after this operation, because during the operation, it may change when loading a struct.
+    pub fn load_type(
+        vm: &MoveVM,
+        linked_store: &LinkedDataStore,
+        type_tag: &TypeTag,
+    ) -> VMResult<Type> {
+        Ok(match type_tag {
+            TypeTag::Bool => Type::Bool,
+            TypeTag::U8 => Type::U8,
+            TypeTag::U16 => Type::U16,
+            TypeTag::U32 => Type::U32,
+            TypeTag::U64 => Type::U64,
+            TypeTag::U128 => Type::U128,
+            TypeTag::U256 => Type::U256,
+            TypeTag::Address => Type::Address,
+            TypeTag::Signer => Type::Signer,
+
+            TypeTag::Vector(inner) => Type::Vector(Box::new(load_type(vm, linked_store, inner)?)),
+            TypeTag::Struct(struct_tag) => {
+                return load_type_from_struct(vm, linked_store, struct_tag)
+            }
+        })
+    }
+
+    pub(crate) fn make_object_value(
+        protocol_config: &ProtocolConfig,
+        vm: &MoveVM,
+        linked_store: &LinkedDataStore,
+        type_: MoveObjectType,
+        has_public_transfer: bool,
+        used_in_non_entry_move_call: bool,
+        contents: &[u8],
+    ) -> Result<ObjectValue, ExecutionError> {
+        let contents = if type_.is_coin() {
+            let Ok(coin) = Coin::from_bcs_bytes(contents) else {
+                invariant_violation!("Could not deserialize a coin")
+            };
+            ObjectContents::Coin(coin)
+        } else {
+            ObjectContents::Raw(contents.to_vec())
+        };
+
+        let tag: StructTag = type_.into();
+        let type_ = load_type_from_struct(vm, linked_store, &tag).map_err(|e| {
+            crate::error::convert_vm_error(
+                e,
+                vm,
+                linked_store,
+                protocol_config.resolve_abort_locations_to_package_id(),
+            )
+        })?;
+        let has_public_transfer = if protocol_config.recompute_has_public_transfer_in_execution() {
+            let abilities = vm.get_runtime().get_type_abilities(&type_).map_err(|e| {
+                crate::error::convert_vm_error(
+                    e,
+                    vm,
+                    linked_store,
+                    protocol_config.resolve_abort_locations_to_package_id(),
+                )
+            })?;
+            abilities.has_store()
+        } else {
+            has_public_transfer
+        };
+        Ok(ObjectValue {
+            type_,
+            has_public_transfer,
+            used_in_non_entry_move_call,
+            contents,
+        })
+    }
+
+    pub(crate) fn value_from_object<'t>(
+        protocol_config: &ProtocolConfig,
+        vm: &MoveVM,
+        linkable_store: &'t mut LinkableStore,
+        object: &Object,
+    ) -> Result<(ObjectValue, LinkedDataStore<'t>), ExecutionError> {
+        let ObjectInner {
+            data: Data::Move(object),
+            ..
+        } = object.as_inner()
+        else {
+            invariant_violation!("Expected a Move object");
+        };
+
+        let used_in_non_entry_move_call = false;
+        let linked_store = linkable_store.linked_data_store_for_object_type(object.type_())?;
+        Ok((
+            make_object_value(
+                protocol_config,
+                vm,
+                &linked_store,
+                object.type_().clone(),
+                object.has_public_transfer(),
+                used_in_non_entry_move_call,
+                object.contents(),
+            )?,
+            linked_store,
+        ))
+    }
+
+    /// Load an input object from the state_view
+    fn load_object(
+        protocol_config: &ProtocolConfig,
+        vm: &MoveVM,
+        state_view: &dyn ExecutionState,
+        linkable_store: &mut LinkableStore,
+        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
+        override_as_immutable: bool,
+        id: ObjectID,
+    ) -> Result<InputValue, ExecutionError> {
+        let Some(obj) = state_view.read_object(&id) else {
+            // protected by transaction input checker
+            invariant_violation!("Object {} does not exist yet", id);
+        };
+        // override_as_immutable ==> Owner::Shared or Owner::ConsensusV2
+        assert_invariant!(
+            !override_as_immutable
+                || matches!(obj.owner, Owner::Shared { .. } | Owner::ConsensusV2 { .. }),
+            "override_as_immutable should only be set for consensus objects"
+        );
+        let is_mutable_input = match obj.owner {
+            Owner::AddressOwner(_) => true,
+            Owner::Shared { .. } | Owner::ConsensusV2 { .. } => !override_as_immutable,
+            Owner::Immutable => false,
+            Owner::ObjectOwner(_) => {
+                // protected by transaction input checker
+                invariant_violation!("ObjectOwner objects cannot be input")
+            }
+        };
+        let owner = obj.owner.clone();
+        let version = obj.version();
+        let object_metadata = InputObjectMetadata::InputObject {
+            id,
+            is_mutable_input,
+            owner: owner.clone(),
+            version,
+        };
+        let (obj_value, linked_store) =
+            value_from_object(protocol_config, vm, linkable_store, obj)?;
+        let contained_uids = {
+            let fully_annotated_layout = vm
+                .get_runtime()
+                .type_to_fully_annotated_layout(&obj_value.type_)
+                .map_err(|e| {
+                    convert_vm_error(
+                        e,
+                        vm,
+                        &linked_store,
+                        protocol_config.resolve_abort_locations_to_package_id(),
+                    )
+                })?;
+            let mut bytes = vec![];
+            obj_value.write_bcs_bytes(&mut bytes, None)?;
+            match get_all_uids(&fully_annotated_layout, &bytes) {
+                Err(e) => {
+                    invariant_violation!("Unable to retrieve UIDs for object. Got error: {e}")
+                }
+                Ok(uids) => uids,
+            }
+        };
+        let runtime_input = object_runtime::InputObject {
+            contained_uids,
+            owner,
+            version,
+        };
+        let prev = input_object_map.insert(id, runtime_input);
+        // protected by transaction input checker
+        assert_invariant!(prev.is_none(), "Duplicate input object {}", id);
+        Ok(InputValue::new_object(object_metadata, obj_value))
+    }
+
+    /// Load a CallArg, either an object or a raw set of BCS bytes
+    fn load_call_arg(
+        protocol_config: &ProtocolConfig,
+        vm: &MoveVM,
+        state_view: &dyn ExecutionState,
+        linkable_store: &mut LinkableStore,
+        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
+        call_arg: CallArg,
+    ) -> Result<InputValue, ExecutionError> {
+        Ok(match call_arg {
+            CallArg::Pure(bytes) => InputValue::new_raw(RawValueType::Any, bytes),
+            CallArg::Object(obj_arg) => load_object_arg(
+                protocol_config,
+                vm,
+                state_view,
+                linkable_store,
+                input_object_map,
+                obj_arg,
+            )?,
+        })
+    }
+
+    /// Load an ObjectArg from state view, marking if it can be treated as mutable or not
+    fn load_object_arg(
+        protocol_config: &ProtocolConfig,
+        vm: &MoveVM,
+        state_view: &dyn ExecutionState,
+        linkable_store: &mut LinkableStore,
+        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
+        obj_arg: ObjectArg,
+    ) -> Result<InputValue, ExecutionError> {
+        match obj_arg {
+            ObjectArg::ImmOrOwnedObject((id, _, _)) => load_object(
+                protocol_config,
+                vm,
+                state_view,
+                linkable_store,
+                input_object_map,
+                /* imm override */ false,
+                id,
+            ),
+            ObjectArg::SharedObject { id, mutable, .. } => load_object(
+                protocol_config,
+                vm,
+                state_view,
+                linkable_store,
+                input_object_map,
+                /* imm override */ !mutable,
+                id,
+            ),
+            ObjectArg::Receiving((id, version, _)) => {
+                Ok(InputValue::new_receiving_object(id, version))
+            }
+        }
+    }
+
+    /// Generate an additional write for an ObjectValue
+    fn add_additional_write(
+        additional_writes: &mut BTreeMap<ObjectID, AdditionalWrite>,
+        owner: Owner,
+        object_value: ObjectValue,
+    ) -> Result<(), ExecutionError> {
+        let ObjectValue {
+            type_,
+            has_public_transfer,
+            contents,
+            ..
+        } = object_value;
+        let bytes = match contents {
+            ObjectContents::Coin(coin) => coin.to_bcs_bytes(),
+            ObjectContents::Raw(bytes) => bytes,
+        };
+        let object_id = MoveObject::id_opt(&bytes).map_err(|e| {
+            ExecutionError::invariant_violation(format!("No id for Raw object bytes. {e}"))
+        })?;
+        let additional_write = AdditionalWrite {
+            recipient: owner,
+            type_,
+            has_public_transfer,
+            bytes,
+        };
+        additional_writes.insert(object_id, additional_write);
+        Ok(())
+    }
+
+    /// The max budget was deducted from the gas coin at the beginning of the transaction,
+    /// now we return exactly that amount. Gas will be charged by the execution engine
+    fn refund_max_gas_budget(
+        additional_writes: &mut BTreeMap<ObjectID, AdditionalWrite>,
+        gas_charger: &mut GasCharger,
+        gas_id: ObjectID,
+    ) -> Result<(), ExecutionError> {
+        let Some(AdditionalWrite { bytes, .. }) = additional_writes.get_mut(&gas_id) else {
+            invariant_violation!("Gas object cannot be wrapped or destroyed")
+        };
+        let Ok(mut coin) = Coin::from_bcs_bytes(bytes) else {
+            invariant_violation!("Gas object must be a coin")
+        };
+        let Some(new_balance) = coin.balance.value().checked_add(gas_charger.gas_budget()) else {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::CoinBalanceOverflow,
+                "Gas coin too large after returning the max gas budget",
+            ));
+        };
+        coin.balance = Balance::new(new_balance);
+        *bytes = coin.to_bcs_bytes();
+        Ok(())
+    }
+
+    /// Generate an MoveObject given an updated/written object
+    /// # Safety
+    ///
+    /// This function assumes proper generation of has_public_transfer, either from the abilities of
+    /// the StructTag, or from the runtime correctly propagating from the inputs
+    unsafe fn create_written_object(
+        vm: &MoveVM,
+        linkage_view: &LinkageView,
+        protocol_config: &ProtocolConfig,
+        objects_modified_at: &BTreeMap<ObjectID, LoadedRuntimeObject>,
+        id: ObjectID,
+        type_: Type,
+        has_public_transfer: bool,
+        contents: Vec<u8>,
+    ) -> Result<MoveObject, ExecutionError> {
+        debug_assert_eq!(
+            id,
+            MoveObject::id_opt(&contents).expect("object contents should start with an id")
+        );
+        let old_obj_ver = objects_modified_at
+            .get(&id)
+            .map(|obj: &LoadedRuntimeObject| obj.version);
+
+        let type_tag = vm.get_runtime().get_type_tag(&type_).map_err(|e| {
+            crate::error::convert_vm_error(
+                e,
+                vm,
+                linkage_view,
+                protocol_config.resolve_abort_locations_to_package_id(),
+            )
+        })?;
+
+        let struct_tag = match type_tag {
+            TypeTag::Struct(inner) => *inner,
+            _ => invariant_violation!("Non struct type for object"),
+        };
+        MoveObject::new_from_execution(
+            struct_tag.into(),
+            has_public_transfer,
+            old_obj_ver.unwrap_or_default(),
+            contents,
+            protocol_config,
+        )
+    }
+
+    enum EitherError {
+        CommandArgument(CommandArgumentError),
+        Execution(ExecutionError),
+    }
+
+    impl From<ExecutionError> for EitherError {
+        fn from(e: ExecutionError) -> Self {
+            EitherError::Execution(e)
+        }
+    }
+
+    impl From<CommandArgumentError> for EitherError {
+        fn from(e: CommandArgumentError) -> Self {
+            EitherError::CommandArgument(e)
+        }
+    }
+
+    impl EitherError {
+        fn into_execution_error(self, command_index: usize) -> ExecutionError {
+            match self {
+                EitherError::CommandArgument(e) => command_argument_error(e, command_index),
+                EitherError::Execution(e) => e,
+            }
+        }
+    }
+
+    fn identity_linkage_for_type_tags<'a>(
+        linkage_analyzer: &mut dyn LinkageAnalysis,
+        tags: impl IntoIterator<Item = &'a TypeTag>,
+        store: &dyn PackageStore,
+    ) -> Result<ResolvedLinkage, ExecutionError> {
+        let tags: Vec<_> = tags
+            .into_iter()
+            .flat_map(|tag| tag.all_addresses())
+            .map(ObjectID::from)
+            .collect();
+        linkage_analyzer.resolver().type_linkage(&tags, store)
+    }
+
+    fn identity_linkage_for_struct_tags<'a>(
+        linkage_analyzer: &mut dyn LinkageAnalysis,
+        tags: impl IntoIterator<Item = &'a StructTag>,
+        store: &dyn PackageStore,
+    ) -> Result<ResolvedLinkage, ExecutionError> {
+        let tags: Vec<_> = tags
+            .into_iter()
+            .flat_map(|tag| tag.all_addresses())
+            .map(ObjectID::from)
+            .collect();
+        linkage_analyzer.resolver().type_linkage(&tags, store)
+    }
+
+    impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
+        #[instrument(name = "ExecutionContext::new", level = "trace", skip_all)]
+        pub fn new(
+            protocol_config: &'a ProtocolConfig,
+            metrics: Arc<LimitsMetrics>,
+            vm: &'vm MoveVM,
+            state_view: &'state dyn ExecutionState,
+            linkage_analyzer: &'a mut dyn LinkageAnalysis,
+            tx_context: Rc<RefCell<TxContext>>,
+            gas_charger: &'a mut GasCharger,
+            inputs: Vec<CallArg>,
+        ) -> Result<Self, ExecutionError>
+        where
+            'a: 'state,
+        {
+            let mut linkage_view = LinkageView::new(Box::new(state_view.as_sui_resolver()));
+            let mut input_object_map = BTreeMap::new();
+            let linkable_store = LinkableStore::new(
+                linkage_analyzer,
+                &ND::SuiDataStore::new(state_view.as_backing_package_store(), &[]),
+            );
+            let inputs = inputs
+                .into_iter()
+                .map(|call_arg| {
+                    load_call_arg(
+                        protocol_config,
+                        vm,
+                        state_view,
+                        &mut linkable_store,
+                        &mut input_object_map,
+                        call_arg,
+                    )
+                })
+                .collect::<Result<_, ExecutionError>>()?;
+            let gas = if let Some(gas_coin) = gas_charger.gas_coin() {
+                let mut gas = load_object(
+                    protocol_config,
+                    vm,
+                    state_view,
+                    &mut linkable_store,
+                    &mut input_object_map,
+                    /* imm override */ false,
+                    gas_coin,
+                )?;
+                // subtract the max gas budget. This amount is off limits in the programmable transaction,
+                // so to mimic this "off limits" behavior, we act as if the coin has less balance than
+                // it really does
+                let Some(Value::Object(ObjectValue {
+                    contents: ObjectContents::Coin(coin),
+                    ..
+                })) = &mut gas.inner.value
+                else {
+                    invariant_violation!("Gas object should be a populated coin")
+                };
+
+                let max_gas_in_balance = gas_charger.gas_budget();
+                let Some(new_balance) = coin.balance.value().checked_sub(max_gas_in_balance) else {
+                    invariant_violation!(
+                        "Transaction input checker should check that there is enough gas"
+                    );
+                };
+                coin.balance = Balance::new(new_balance);
+                gas
+            } else {
+                InputValue {
+                    object_metadata: None,
+                    inner: ResultValue {
+                        last_usage_kind: None,
+                        value: None,
+                    },
+                }
+            };
+            let native_extensions = new_native_extensions(
+                state_view.as_child_resolver(),
+                input_object_map,
+                !gas_charger.is_unmetered(),
+                protocol_config,
+                metrics.clone(),
+                tx_context.clone(),
+            );
+
+            // Set the profiler if in CLI
+            #[skip_checked_arithmetic]
+            move_vm_profiler::tracing_feature_enabled! {
+                use move_vm_profiler::GasProfiler;
+                use move_vm_types::gas::GasMeter;
+                use crate::gas_meter::SuiGasMeter;
+
+                let ref_context: &RefCell<TxContext> = tx_context.borrow();
+                let tx_digest = ref_context.borrow().digest();
+                let remaining_gas: u64 = move_vm_types::gas::GasMeter::remaining_gas(&SuiGasMeter(
+                    gas_charger.move_gas_status_mut(),
+                ))
+                        .into();
+                SuiGasMeter(gas_charger.move_gas_status_mut()).set_profiler(GasProfiler::init(
+                        &vm.config().profiler_config,
+                        format!("{}", tx_digest),
+                        remaining_gas,
+                    ));
+            }
+
+            Ok(Self {
+                protocol_config,
+                metrics,
+                vm,
+                linkage_view,
+                linkage_analyzer,
+                native_extensions,
+                state_view,
+                tx_context,
+                gas_charger,
+                gas,
+                inputs,
+                results: vec![],
+                additional_transfers: vec![],
+                new_packages: vec![],
+                user_events: vec![],
+                borrowed: HashMap::new(),
+            })
         }
 
         /// Determine the object changes and collect all user events
@@ -1080,723 +1808,22 @@ mod checked {
             }))
         }
 
-        /// Convert a VM Error to an execution one
-        pub fn convert_vm_error(&self, error: VMError) -> ExecutionError {
-            crate::error::convert_vm_error(
-                error,
-                self.vm,
-                &self.linkage_view,
-                self.protocol_config.resolve_abort_locations_to_package_id(),
-            )
-        }
-
-        /// Special case errors for type arguments to Move functions
-        pub fn convert_type_argument_error(&self, idx: usize, error: VMError) -> ExecutionError {
-            use move_core_types::vm_status::StatusCode;
-            use sui_types::execution_status::TypeArgumentError;
-            match error.major_status() {
-                StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH => {
-                    ExecutionErrorKind::TypeArityMismatch.into()
-                }
-                StatusCode::TYPE_RESOLUTION_FAILURE => ExecutionErrorKind::TypeArgumentError {
-                    argument_idx: idx as TypeParameterIndex,
-                    kind: TypeArgumentError::TypeNotFound,
-                }
-                .into(),
-                StatusCode::CONSTRAINT_NOT_SATISFIED => ExecutionErrorKind::TypeArgumentError {
-                    argument_idx: idx as TypeParameterIndex,
-                    kind: TypeArgumentError::ConstraintNotSatisfied,
-                }
-                .into(),
-                _ => self.convert_vm_error(error),
-            }
-        }
-
-        /// Returns true if the value at the argument's location is borrowed, mutably or immutably
-        fn arg_is_borrowed(&self, arg: &Arg) -> bool {
-            self.borrowed.contains_key(arg)
-        }
-
-        /// Returns true if the value at the argument's location is mutably borrowed
-        fn arg_is_mut_borrowed(&self, arg: &Arg) -> bool {
-            matches!(self.borrowed.get(arg), Some(/* mut */ true))
-        }
-
-        /// Internal helper to borrow the value for an argument and update the most recent usage
-        fn borrow_mut(
-            &mut self,
-            arg: Arg,
-            usage: UsageKind,
-        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), EitherError> {
-            self.borrow_mut_impl(arg, Some(usage))
-        }
-
-        /// Internal helper to borrow the value for an argument
-        /// Updates the most recent usage if specified
-        fn borrow_mut_impl(
-            &mut self,
-            arg: Arg,
-            update_last_usage: Option<UsageKind>,
-        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), EitherError> {
-            match arg.0 {
-                Arg_::V1(arg) => {
-                    assert_invariant!(
-                        !self.protocol_config.normalize_ptb_arguments(),
-                        "Should not be using v1 args with normalized args"
-                    );
-                    Ok(self.borrow_mut_impl_v1(arg, update_last_usage)?)
-                }
-                Arg_::V2(arg) => {
-                    assert_invariant!(
-                        self.protocol_config.normalize_ptb_arguments(),
-                        "Should be using only v2 args with normalized args"
-                    );
-                    Ok(self.borrow_mut_impl_v2(arg, update_last_usage)?)
-                }
-            }
-        }
-
-        // v1 of borrow_mut_impl
-        fn borrow_mut_impl_v1(
-            &mut self,
-            arg: Argument,
-            update_last_usage: Option<UsageKind>,
-        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), CommandArgumentError>
-        {
-            let (metadata, result_value) = match arg {
-                Argument::GasCoin => (self.gas.object_metadata.as_ref(), &mut self.gas.inner),
-                Argument::Input(i) => {
-                    let Some(input_value) = self.inputs.get_mut(i as usize) else {
-                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
-                    };
-                    (input_value.object_metadata.as_ref(), &mut input_value.inner)
-                }
-                Argument::Result(i) => {
-                    let Some(command_result) = self.results.get_mut(i as usize) else {
-                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
-                    };
-                    if command_result.len() != 1 {
-                        return Err(CommandArgumentError::InvalidResultArity { result_idx: i });
-                    }
-                    (None, &mut command_result[0])
-                }
-                Argument::NestedResult(i, j) => {
-                    let Some(command_result) = self.results.get_mut(i as usize) else {
-                        return Err(CommandArgumentError::IndexOutOfBounds { idx: i });
-                    };
-                    let Some(result_value) = command_result.get_mut(j as usize) else {
-                        return Err(CommandArgumentError::SecondaryIndexOutOfBounds {
-                            result_idx: i,
-                            secondary_idx: j,
-                        });
-                    };
-                    (None, result_value)
-                }
+        pub fn object_runtime(&self) -> Result<&ObjectRuntime, ExecutionError> {
+            let Some(object_runtime) = self.native_extensions.get::<ObjectRuntime>().ok() else {
+                invariant_violation!("Object runtime not found in native extensions")
             };
-            if let Some(usage) = update_last_usage {
-                result_value.last_usage_kind = Some(usage);
-            }
-            Ok((metadata, &mut result_value.value))
+            Ok(object_runtime)
         }
 
-        // v2 of borrow_mut_impl
-        fn borrow_mut_impl_v2(
+        pub fn linked_command_context(
             &mut self,
-            arg: NormalizedArg,
-            update_last_usage: Option<UsageKind>,
-        ) -> Result<(Option<&InputObjectMetadata>, &mut Option<Value>), ExecutionError> {
-            let (metadata, result_value) = match arg {
-                NormalizedArg::GasCoin => (self.gas.object_metadata.as_ref(), &mut self.gas.inner),
-                NormalizedArg::Input(i) => {
-                    let input_value = self
-                        .inputs
-                        .get_mut(i as usize)
-                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?;
-                    (input_value.object_metadata.as_ref(), &mut input_value.inner)
-                }
-                NormalizedArg::Result(i, j) => {
-                    let result_value = self
-                        .results
-                        .get_mut(i as usize)
-                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?
-                        .get_mut(j as usize)
-                        .ok_or_else(|| make_invariant_violation!("bounds already checked"))?;
-                    (None, result_value)
-                }
-            };
-            if let Some(usage) = update_last_usage {
-                result_value.last_usage_kind = Some(usage);
-            }
-            Ok((metadata, &mut result_value.value))
-        }
-
-        pub(crate) fn execute_function_bypass_visibility(
-            &mut self,
-            module: &ModuleId,
-            function_name: &IdentStr,
-            ty_args: Vec<Type>,
-            args: Vec<impl Borrow<[u8]>>,
-            tracer: &mut Option<MoveTraceBuilder>,
-        ) -> VMResult<SerializedReturnValues> {
-            let gas_status = self.gas_charger.move_gas_status_mut();
-            let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
-            self.vm.get_runtime().execute_function_bypass_visibility(
-                module,
-                function_name,
-                ty_args,
-                args,
-                &mut data_store,
-                &mut SuiGasMeter(gas_status),
-                &mut self.native_extensions,
-                tracer.as_mut(),
-            )
-        }
-
-        pub(crate) fn load_function(
-            &mut self,
-            module_id: &ModuleId,
-            function_name: &IdentStr,
-            type_arguments: &[Type],
-        ) -> VMResult<LoadedFunctionInstantiation> {
-            let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
-            self.vm.get_runtime().load_function(
-                module_id,
-                function_name,
-                type_arguments,
-                &mut data_store,
-            )
-        }
-
-        pub(crate) fn make_object_value(
-            &mut self,
-            type_: MoveObjectType,
-            has_public_transfer: bool,
-            used_in_non_entry_move_call: bool,
-            contents: &[u8],
-        ) -> Result<ObjectValue, ExecutionError> {
-            make_object_value(
-                self.protocol_config,
-                self.vm,
-                &mut self.linkage_view,
-                &self.new_packages,
-                type_,
-                has_public_transfer,
-                used_in_non_entry_move_call,
-                contents,
-            )
-        }
-
-        pub fn publish_module_bundle(
-            &mut self,
-            modules: Vec<Vec<u8>>,
-            sender: AccountAddress,
-        ) -> VMResult<()> {
-            // TODO: publish_module_bundle() currently doesn't charge gas.
-            // Do we want to charge there?
-            let mut data_store = SuiDataStore::new(&self.linkage_view, &self.new_packages);
-            self.vm.get_runtime().publish_module_bundle(
-                modules,
-                sender,
-                &mut data_store,
-                &mut SuiGasMeter(self.gas_charger.move_gas_status_mut()),
-            )
-        }
-
-        pub fn size_bound_raw(&self, bound: u64) -> SizeBound {
-            if self.protocol_config.max_ptb_value_size_v2() {
-                SizeBound::Raw(bound)
-            } else {
-                SizeBound::Object(bound)
-            }
-        }
-
-        pub fn size_bound_vector_elem(&self, bound: u64) -> SizeBound {
-            if self.protocol_config.max_ptb_value_size_v2() {
-                SizeBound::VectorElem(bound)
-            } else {
-                SizeBound::Object(bound)
-            }
-        }
-    }
-
-    impl Arg {
-        fn is_gas_coin(&self) -> bool {
-            // kept as two separate matches for exhaustiveness
-            match self {
-                Arg(Arg_::V1(a)) => matches!(a, Argument::GasCoin),
-                Arg(Arg_::V2(n)) => matches!(n, NormalizedArg::GasCoin),
-            }
-        }
-    }
-
-    impl From<Arg> for Argument {
-        fn from(arg: Arg) -> Self {
-            match arg.0 {
-                Arg_::V1(a) => a,
-                Arg_::V2(normalized) => match normalized {
-                    NormalizedArg::GasCoin => Argument::GasCoin,
-                    NormalizedArg::Input(i) => Argument::Input(i),
-                    NormalizedArg::Result(i, j) => Argument::NestedResult(i, j),
-                },
-            }
-        }
-    }
-
-    impl TypeTagResolver for ExecutionContext<'_, '_, '_> {
-        fn get_type_tag(&self, type_: &Type) -> Result<TypeTag, ExecutionError> {
-            self.vm
-                .get_runtime()
-                .get_type_tag(type_)
-                .map_err(|e| self.convert_vm_error(e))
-        }
-    }
-
-    /// Fetch the package at `package_id` with a view to using it as a link context.  Produces an error
-    /// if the object at that ID does not exist, or is not a package.
-    fn package_for_linkage(
-        linkage_view: &LinkageView,
-        package_id: ObjectID,
-    ) -> VMResult<PackageObject> {
-        use move_binary_format::errors::PartialVMError;
-        use move_core_types::vm_status::StatusCode;
-
-        match linkage_view.get_package_object(&package_id) {
-            Ok(Some(package)) => Ok(package),
-            Ok(None) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                .with_message(format!("Cannot find link context {package_id} in store"))
-                .finish(Location::Undefined)),
-            Err(err) => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                .with_message(format!(
-                    "Error loading link context {package_id} from store: {err}"
-                ))
-                .finish(Location::Undefined)),
-        }
-    }
-
-    pub fn load_type_from_struct(
-        vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        struct_tag: &StructTag,
-    ) -> VMResult<Type> {
-        fn verification_error<T>(code: StatusCode) -> VMResult<T> {
-            Err(PartialVMError::new(code).finish(Location::Undefined))
-        }
-
-        let StructTag {
-            address,
-            module,
-            name,
-            type_params,
-        } = struct_tag;
-
-        // Load the package that the struct is defined in, in storage
-        let defining_id = ObjectID::from_address(*address);
-        let package = package_for_linkage(linkage_view, defining_id)?;
-
-        // Set the defining package as the link context while loading the
-        // struct
-        let original_address = linkage_view
-            .set_linkage(package.move_package())
-            .map_err(|e| {
-                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(e.to_string())
-                    .finish(Location::Undefined)
-            })?;
-
-        let runtime_id = ModuleId::new(original_address, module.clone());
-        let data_store = SuiDataStore::new(linkage_view, new_packages);
-        let res = vm.get_runtime().load_type(&runtime_id, name, &data_store);
-        linkage_view.reset_linkage();
-        let (idx, struct_type) = res?;
-
-        // Recursively load type parameters, if necessary
-        let type_param_constraints = struct_type.type_param_constraints();
-        if type_param_constraints.len() != type_params.len() {
-            return verification_error(StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH);
-        }
-
-        if type_params.is_empty() {
-            Ok(Type::Datatype(idx))
-        } else {
-            let loaded_type_params = type_params
-                .iter()
-                .map(|type_param| load_type(vm, linkage_view, new_packages, type_param))
-                .collect::<VMResult<Vec<_>>>()?;
-
-            // Verify that the type parameter constraints on the struct are met
-            for (constraint, param) in type_param_constraints.zip(&loaded_type_params) {
-                let abilities = vm.get_runtime().get_type_abilities(param)?;
-                if !constraint.is_subset(abilities) {
-                    return verification_error(StatusCode::CONSTRAINT_NOT_SATISFIED);
-                }
-            }
-
-            Ok(Type::DatatypeInstantiation(Box::new((
-                idx,
-                loaded_type_params,
-            ))))
-        }
-    }
-
-    /// Load `type_tag` to get a `Type` in the provided `session`.  `session`'s linkage context may be
-    /// reset after this operation, because during the operation, it may change when loading a struct.
-    pub fn load_type(
-        vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        type_tag: &TypeTag,
-    ) -> VMResult<Type> {
-        Ok(match type_tag {
-            TypeTag::Bool => Type::Bool,
-            TypeTag::U8 => Type::U8,
-            TypeTag::U16 => Type::U16,
-            TypeTag::U32 => Type::U32,
-            TypeTag::U64 => Type::U64,
-            TypeTag::U128 => Type::U128,
-            TypeTag::U256 => Type::U256,
-            TypeTag::Address => Type::Address,
-            TypeTag::Signer => Type::Signer,
-
-            TypeTag::Vector(inner) => {
-                Type::Vector(Box::new(load_type(vm, linkage_view, new_packages, inner)?))
-            }
-            TypeTag::Struct(struct_tag) => {
-                return load_type_from_struct(vm, linkage_view, new_packages, struct_tag)
-            }
-        })
-    }
-
-    pub(crate) fn make_object_value(
-        protocol_config: &ProtocolConfig,
-        vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        type_: MoveObjectType,
-        has_public_transfer: bool,
-        used_in_non_entry_move_call: bool,
-        contents: &[u8],
-    ) -> Result<ObjectValue, ExecutionError> {
-        let contents = if type_.is_coin() {
-            let Ok(coin) = Coin::from_bcs_bytes(contents) else {
-                invariant_violation!("Could not deserialize a coin")
-            };
-            ObjectContents::Coin(coin)
-        } else {
-            ObjectContents::Raw(contents.to_vec())
-        };
-
-        let tag: StructTag = type_.into();
-        let type_ = load_type_from_struct(vm, linkage_view, new_packages, &tag).map_err(|e| {
-            crate::error::convert_vm_error(
-                e,
-                vm,
-                linkage_view,
-                protocol_config.resolve_abort_locations_to_package_id(),
-            )
-        })?;
-        let has_public_transfer = if protocol_config.recompute_has_public_transfer_in_execution() {
-            let abilities = vm.get_runtime().get_type_abilities(&type_).map_err(|e| {
-                crate::error::convert_vm_error(
-                    e,
-                    vm,
-                    linkage_view,
-                    protocol_config.resolve_abort_locations_to_package_id(),
-                )
-            })?;
-            abilities.has_store()
-        } else {
-            has_public_transfer
-        };
-        Ok(ObjectValue {
-            type_,
-            has_public_transfer,
-            used_in_non_entry_move_call,
-            contents,
-        })
-    }
-
-    pub(crate) fn value_from_object(
-        protocol_config: &ProtocolConfig,
-        vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        object: &Object,
-    ) -> Result<ObjectValue, ExecutionError> {
-        let ObjectInner {
-            data: Data::Move(object),
-            ..
-        } = object.as_inner()
-        else {
-            invariant_violation!("Expected a Move object");
-        };
-
-        let used_in_non_entry_move_call = false;
-        make_object_value(
-            protocol_config,
-            vm,
-            linkage_view,
-            new_packages,
-            object.type_().clone(),
-            object.has_public_transfer(),
-            used_in_non_entry_move_call,
-            object.contents(),
-        )
-    }
-
-    /// Load an input object from the state_view
-    fn load_object(
-        protocol_config: &ProtocolConfig,
-        vm: &MoveVM,
-        state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
-        override_as_immutable: bool,
-        id: ObjectID,
-    ) -> Result<InputValue, ExecutionError> {
-        let Some(obj) = state_view.read_object(&id) else {
-            // protected by transaction input checker
-            invariant_violation!("Object {} does not exist yet", id);
-        };
-        // override_as_immutable ==> Owner::Shared or Owner::ConsensusV2
-        assert_invariant!(
-            !override_as_immutable
-                || matches!(obj.owner, Owner::Shared { .. } | Owner::ConsensusV2 { .. }),
-            "override_as_immutable should only be set for consensus objects"
-        );
-        let is_mutable_input = match obj.owner {
-            Owner::AddressOwner(_) => true,
-            Owner::Shared { .. } | Owner::ConsensusV2 { .. } => !override_as_immutable,
-            Owner::Immutable => false,
-            Owner::ObjectOwner(_) => {
-                // protected by transaction input checker
-                invariant_violation!("ObjectOwner objects cannot be input")
-            }
-        };
-        let owner = obj.owner.clone();
-        let version = obj.version();
-        let object_metadata = InputObjectMetadata::InputObject {
-            id,
-            is_mutable_input,
-            owner: owner.clone(),
-            version,
-        };
-        let obj_value = value_from_object(protocol_config, vm, linkage_view, new_packages, obj)?;
-        let contained_uids = {
-            let fully_annotated_layout = vm
-                .get_runtime()
-                .type_to_fully_annotated_layout(&obj_value.type_)
-                .map_err(|e| {
-                    convert_vm_error(
-                        e,
-                        vm,
-                        linkage_view,
-                        protocol_config.resolve_abort_locations_to_package_id(),
-                    )
-                })?;
-            let mut bytes = vec![];
-            obj_value.write_bcs_bytes(&mut bytes, None)?;
-            match get_all_uids(&fully_annotated_layout, &bytes) {
-                Err(e) => {
-                    invariant_violation!("Unable to retrieve UIDs for object. Got error: {e}")
-                }
-                Ok(uids) => uids,
-            }
-        };
-        let runtime_input = object_runtime::InputObject {
-            contained_uids,
-            owner,
-            version,
-        };
-        let prev = input_object_map.insert(id, runtime_input);
-        // protected by transaction input checker
-        assert_invariant!(prev.is_none(), "Duplicate input object {}", id);
-        Ok(InputValue::new_object(object_metadata, obj_value))
-    }
-
-    /// Load a CallArg, either an object or a raw set of BCS bytes
-    fn load_call_arg(
-        protocol_config: &ProtocolConfig,
-        vm: &MoveVM,
-        state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
-        call_arg: CallArg,
-    ) -> Result<InputValue, ExecutionError> {
-        Ok(match call_arg {
-            CallArg::Pure(bytes) => InputValue::new_raw(RawValueType::Any, bytes),
-            CallArg::Object(obj_arg) => load_object_arg(
-                protocol_config,
-                vm,
-                state_view,
-                linkage_view,
-                new_packages,
-                input_object_map,
-                obj_arg,
-            )?,
-        })
-    }
-
-    /// Load an ObjectArg from state view, marking if it can be treated as mutable or not
-    fn load_object_arg(
-        protocol_config: &ProtocolConfig,
-        vm: &MoveVM,
-        state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
-        input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
-        obj_arg: ObjectArg,
-    ) -> Result<InputValue, ExecutionError> {
-        match obj_arg {
-            ObjectArg::ImmOrOwnedObject((id, _, _)) => load_object(
-                protocol_config,
-                vm,
-                state_view,
-                linkage_view,
-                new_packages,
-                input_object_map,
-                /* imm override */ false,
-                id,
-            ),
-            ObjectArg::SharedObject { id, mutable, .. } => load_object(
-                protocol_config,
-                vm,
-                state_view,
-                linkage_view,
-                new_packages,
-                input_object_map,
-                /* imm override */ !mutable,
-                id,
-            ),
-            ObjectArg::Receiving((id, version, _)) => {
-                Ok(InputValue::new_receiving_object(id, version))
-            }
-        }
-    }
-
-    /// Generate an additional write for an ObjectValue
-    fn add_additional_write(
-        additional_writes: &mut BTreeMap<ObjectID, AdditionalWrite>,
-        owner: Owner,
-        object_value: ObjectValue,
-    ) -> Result<(), ExecutionError> {
-        let ObjectValue {
-            type_,
-            has_public_transfer,
-            contents,
-            ..
-        } = object_value;
-        let bytes = match contents {
-            ObjectContents::Coin(coin) => coin.to_bcs_bytes(),
-            ObjectContents::Raw(bytes) => bytes,
-        };
-        let object_id = MoveObject::id_opt(&bytes).map_err(|e| {
-            ExecutionError::invariant_violation(format!("No id for Raw object bytes. {e}"))
-        })?;
-        let additional_write = AdditionalWrite {
-            recipient: owner,
-            type_,
-            has_public_transfer,
-            bytes,
-        };
-        additional_writes.insert(object_id, additional_write);
-        Ok(())
-    }
-
-    /// The max budget was deducted from the gas coin at the beginning of the transaction,
-    /// now we return exactly that amount. Gas will be charged by the execution engine
-    fn refund_max_gas_budget(
-        additional_writes: &mut BTreeMap<ObjectID, AdditionalWrite>,
-        gas_charger: &mut GasCharger,
-        gas_id: ObjectID,
-    ) -> Result<(), ExecutionError> {
-        let Some(AdditionalWrite { bytes, .. }) = additional_writes.get_mut(&gas_id) else {
-            invariant_violation!("Gas object cannot be wrapped or destroyed")
-        };
-        let Ok(mut coin) = Coin::from_bcs_bytes(bytes) else {
-            invariant_violation!("Gas object must be a coin")
-        };
-        let Some(new_balance) = coin.balance.value().checked_add(gas_charger.gas_budget()) else {
-            return Err(ExecutionError::new_with_source(
-                ExecutionErrorKind::CoinBalanceOverflow,
-                "Gas coin too large after returning the max gas budget",
-            ));
-        };
-        coin.balance = Balance::new(new_balance);
-        *bytes = coin.to_bcs_bytes();
-        Ok(())
-    }
-
-    /// Generate an MoveObject given an updated/written object
-    /// # Safety
-    ///
-    /// This function assumes proper generation of has_public_transfer, either from the abilities of
-    /// the StructTag, or from the runtime correctly propagating from the inputs
-    unsafe fn create_written_object(
-        vm: &MoveVM,
-        linkage_view: &LinkageView,
-        protocol_config: &ProtocolConfig,
-        objects_modified_at: &BTreeMap<ObjectID, LoadedRuntimeObject>,
-        id: ObjectID,
-        type_: Type,
-        has_public_transfer: bool,
-        contents: Vec<u8>,
-    ) -> Result<MoveObject, ExecutionError> {
-        debug_assert_eq!(
-            id,
-            MoveObject::id_opt(&contents).expect("object contents should start with an id")
-        );
-        let old_obj_ver = objects_modified_at
-            .get(&id)
-            .map(|obj: &LoadedRuntimeObject| obj.version);
-
-        let type_tag = vm.get_runtime().get_type_tag(&type_).map_err(|e| {
-            crate::error::convert_vm_error(
-                e,
-                vm,
-                linkage_view,
-                protocol_config.resolve_abort_locations_to_package_id(),
-            )
-        })?;
-
-        let struct_tag = match type_tag {
-            TypeTag::Struct(inner) => *inner,
-            _ => invariant_violation!("Non struct type for object"),
-        };
-        MoveObject::new_from_execution(
-            struct_tag.into(),
-            has_public_transfer,
-            old_obj_ver.unwrap_or_default(),
-            contents,
-            protocol_config,
-        )
-    }
-
-    enum EitherError {
-        CommandArgument(CommandArgumentError),
-        Execution(ExecutionError),
-    }
-
-    impl From<ExecutionError> for EitherError {
-        fn from(e: ExecutionError) -> Self {
-            EitherError::Execution(e)
-        }
-    }
-
-    impl From<CommandArgumentError> for EitherError {
-        fn from(e: CommandArgumentError) -> Self {
-            EitherError::CommandArgument(e)
-        }
-    }
-
-    impl EitherError {
-        fn into_execution_error(self, command_index: usize) -> ExecutionError {
-            match self {
-                EitherError::CommandArgument(e) => command_argument_error(e, command_index),
-                EitherError::Execution(e) => e,
-            }
+            command: &Command,
+        ) -> Result<LinkedExecutionContext<'_, 'vm, 'state, 'a>, ExecutionError> {
+            let resolved_linkage = self.linkage_analyzer.add_command(
+                command,
+                &ND::SuiDataStore::new(&self.state_view, &self.new_packages),
+            )?;
+            Ok(LinkedExecutionContext::new(self, resolved_linkage))
         }
     }
 }

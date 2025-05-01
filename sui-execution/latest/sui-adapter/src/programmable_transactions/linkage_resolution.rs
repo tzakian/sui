@@ -4,7 +4,10 @@
 use crate::{execution_mode::ExecutionMode, programmable_transactions::data_store::PackageStore};
 use move_binary_format::{binary_config::BinaryConfig, file_format::Visibility};
 // use move_vm_runtime::shared::linkage_context::LinkageContext;
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::{
+    cell::RefCell,
+    collections::{btree_map::Entry, BTreeMap},
+};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     base_types::{ObjectID, SequenceNumber},
@@ -37,7 +40,7 @@ pub trait LinkageAnalysis {
         store: &dyn PackageStore,
     ) -> Result<ResolvedLinkage, ExecutionError>;
 
-    fn resolver(&mut self) -> &mut PTBLinkageResolver;
+    fn resolver(&self) -> &PTBLinkageResolver;
 }
 
 pub fn linkage_analysis_for_protocol_config<Mode: ExecutionMode>(
@@ -63,10 +66,10 @@ pub struct PTBLinkageResolver {
     pub binary_config: BinaryConfig,
     /// Cache for packages that we've loaded so far. Note: We may drop this cache if it grows too
     /// large.
-    pub package_cache: BTreeMap<ObjectID, MovePackage>,
+    pub package_cache: RefCell<BTreeMap<ObjectID, MovePackage>>,
     /// A mapping of the (original package ID)::<module_name>::<type_name> to the defining ID for
     /// that type.
-    pub type_origin_cache: TypeOriginMap,
+    pub type_origin_cache: RefCell<TypeOriginMap>,
 }
 
 /// Configuration for the linkage analysis.
@@ -140,8 +143,8 @@ impl LinkageAnalysis for PerCommandLinkage {
         self.add_command(command, store)
     }
 
-    fn resolver(&mut self) -> &mut PTBLinkageResolver {
-        &mut self.internal
+    fn resolver(&self) -> &PTBLinkageResolver {
+        &self.internal
     }
 }
 
@@ -154,8 +157,8 @@ impl LinkageAnalysis for UnifiedLinkage {
         self.add_command(command, store)
     }
 
-    fn resolver(&mut self) -> &mut PTBLinkageResolver {
-        &mut self.internal
+    fn resolver(&self) -> &PTBLinkageResolver {
+        &self.internal
     }
 }
 
@@ -283,8 +286,12 @@ impl ResolvedLinkage {
         type_name: String,
     ) -> Option<ObjectID> {
         let runtime_id = self.resolve_to_runtime_id(&module_address)?;
-        let package_type_origins = resolver.type_origin_cache.get(&runtime_id)?;
-        package_type_origins.get(&(module_name, type_name)).copied()
+        resolver
+            .type_origin_cache
+            .borrow()
+            .get(&runtime_id)?
+            .get(&(module_name, type_name))
+            .copied()
     }
 }
 
@@ -381,8 +388,8 @@ impl PerCommandLinkage {
             LinkageConfig::per_command_linkage_settings(always_include_system_packages);
         Ok(Self {
             internal: PTBLinkageResolver {
-                package_cache: BTreeMap::new(),
-                type_origin_cache: TypeOriginMap::new(),
+                package_cache: RefCell::new(BTreeMap::new()),
+                type_origin_cache: RefCell::new(TypeOriginMap::new()),
                 linkage_config,
                 binary_config,
             },
@@ -422,10 +429,10 @@ impl UnifiedLinkage {
         )?;
         Ok(Self {
             internal: PTBLinkageResolver {
-                package_cache,
+                package_cache: RefCell::new(package_cache),
+                type_origin_cache: RefCell::new(type_origin_cache),
                 linkage_config,
                 binary_config,
-                type_origin_cache,
             },
             unification_table,
         })
@@ -445,24 +452,23 @@ impl UnifiedLinkage {
 
 impl PTBLinkageResolver {
     pub fn type_linkage(
-        &mut self,
+        &self,
         ids: &[ObjectID],
         store: &dyn PackageStore,
     ) -> Result<ResolvedLinkage, ExecutionError> {
         let mut resolution_table = ResolutionTable::empty();
         for id in ids {
-            let pkg = Self::get_package(
-                &mut self.package_cache,
-                &mut self.type_origin_cache,
-                id,
-                store,
-            )?;
+            let pkg_cache = &mut self.package_cache.borrow_mut();
+            let type_origin_cache = &mut self.type_origin_cache.borrow_mut();
+            let pkg = Self::get_package(pkg_cache, type_origin_cache, id, store)?;
             let transitive_deps = pkg
                 .linkage_table()
                 .values()
                 .map(|info| info.upgraded_id)
                 .collect::<Vec<_>>();
             let package_id = pkg.id();
+            drop(pkg_cache);
+            drop(type_origin_cache);
             self.add_and_unify(
                 &package_id,
                 store,
@@ -513,24 +519,26 @@ impl PTBLinkageResolver {
 impl PTBLinkageResolver {
     pub fn new(linkage_config: LinkageConfig, binary_config: BinaryConfig) -> Self {
         Self {
-            package_cache: BTreeMap::new(),
-            type_origin_cache: TypeOriginMap::new(),
+            package_cache: RefCell::new(BTreeMap::new()),
+            type_origin_cache: RefCell::new(TypeOriginMap::new()),
             linkage_config,
             binary_config,
         }
     }
 
     fn add_command(
-        &mut self,
+        &self,
         command: &Command,
         store: &dyn PackageStore,
         resolution_table: &mut ResolutionTable,
     ) -> Result<ResolutionTable, ExecutionError> {
         match command {
             Command::MoveCall(programmable_move_call) => {
+                let pkg_cache = &mut self.package_cache.borrow_mut();
+                let type_origin_cache = &mut self.type_origin_cache.borrow_mut();
                 let pkg = Self::get_package(
-                    &mut self.package_cache,
-                    &mut self.type_origin_cache,
+                    pkg_cache,
+                    type_origin_cache,
                     &programmable_move_call.package,
                     store,
                 )?;
@@ -613,19 +621,14 @@ impl PTBLinkageResolver {
                 }
             }
             Command::Upgrade(_, deps, _, _) | Command::Publish(_, deps) => {
-                let mut resolution_table =
-                    self.linkage_config.resolution_table_with_native_packages(
-                        &mut self.package_cache,
-                        &mut self.type_origin_cache,
-                        store,
-                    )?;
+                let pkg_cache = &mut self.package_cache.borrow_mut();
+                let type_origin_cache = &mut self.type_origin_cache.borrow_mut();
+
+                let mut resolution_table = self
+                    .linkage_config
+                    .resolution_table_with_native_packages(pkg_cache, type_origin_cache, store)?;
                 for id in deps {
-                    let pkg = Self::get_package(
-                        &mut self.package_cache,
-                        &mut self.type_origin_cache,
-                        id,
-                        store,
-                    )?;
+                    let pkg = Self::get_package(pkg_cache, type_origin_cache, id, store)?;
                     resolution_table.resolution_table.insert(
                         pkg.original_package_id(),
                         ConflictResolution::Exact(pkg.version(), pkg.id()),
@@ -645,7 +648,7 @@ impl PTBLinkageResolver {
     }
 
     fn add_type_input(
-        &mut self,
+        &self,
         ty: &TypeInput,
         store: &dyn PackageStore,
         unification_table: &mut ResolutionTable,
@@ -673,9 +676,11 @@ impl PTBLinkageResolver {
                         unification_table,
                         self.linkage_config.generate_type_constraint(),
                     )?;
+                    let pkg_cache = &mut self.package_cache.borrow_mut();
+                    let type_origin_cache = &mut self.type_origin_cache.borrow_mut();
                     let pkg = Self::get_package(
-                        &mut self.package_cache,
-                        &mut self.type_origin_cache,
+                        pkg_cache,
+                        type_origin_cache,
                         &ObjectID::from(struct_input.address),
                         store,
                     )?;
@@ -745,18 +750,15 @@ impl PTBLinkageResolver {
     // Add a package to the unification table, unifying it with any existing package in the table.
     // Errors if the packages cannot be unified (e.g., if one is exact and the other is not).
     fn add_and_unify(
-        &mut self,
+        &self,
         object_id: &ObjectID,
         store: &dyn PackageStore,
         resolution_table: &mut ResolutionTable,
         resolution_fn: fn(&MovePackage) -> ConflictResolution,
     ) -> Result<(), ExecutionError> {
-        let package = Self::get_package(
-            &mut self.package_cache,
-            &mut self.type_origin_cache,
-            object_id,
-            store,
-        )?;
+        let pkg_cache = &mut self.package_cache.borrow_mut();
+        let type_origin_cache = &mut self.type_origin_cache.borrow_mut();
+        let package = Self::get_package(pkg_cache, type_origin_cache, object_id, store)?;
 
         let resolution = resolution_fn(package);
         let original_pkg_id = package.original_package_id();

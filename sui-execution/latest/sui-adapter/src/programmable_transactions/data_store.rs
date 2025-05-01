@@ -101,8 +101,19 @@ impl DataStore for SuiDataStore<'_, '_> {
 }
 
 pub(crate) mod new {
+    use move_binary_format::errors::VMError;
+    use move_core_types::{
+        language_storage::StructTag,
+        resolver::{LinkageResolver, MoveResolver, ResourceResolver},
+    };
+    use sui_types::{
+        base_types::MoveObjectType,
+        error::{ExecutionError, ExecutionErrorKind, SuiError},
+        object::Object,
+    };
+
     use crate::programmable_transactions::linkage_resolution::{
-        PTBLinkageResolver, ResolvedLinkage,
+        LinkageAnalysis, PTBLinkageResolver, ResolvedLinkage,
     };
 
     use super::*;
@@ -180,6 +191,10 @@ pub(crate) mod new {
         }
     }
 
+    ///////////////////////////////////////////////////////////////////////////
+    // LinkedDataStore
+    ///////////////////////////////////////////////////////////////////////////
+
     // LinkedDataStore(SuiDataStore) is a wrapper around the `SuiDataStore` that holds linkage
     // information. We generally should not, but we may need to, fetch through both the package
     // cache inside of the `resolver` and inside of the underlying `package_store` (i.e., "call out
@@ -189,7 +204,7 @@ pub(crate) mod new {
         link_context: AccountAddress,
         resolved_linkage: &'a ResolvedLinkage,
         resolver: &'a PTBLinkageResolver,
-        package_store: Box<dyn PackageStore + 'a>,
+        package_store: &'a dyn PackageStore,
     }
 
     impl<'a> LinkedDataStore<'a> {
@@ -197,7 +212,7 @@ pub(crate) mod new {
             link_context: AccountAddress,
             resolved_linkage: &'a ResolvedLinkage,
             resolver: &'a PTBLinkageResolver,
-            package_store: Box<dyn PackageStore + 'a>,
+            package_store: &'a dyn PackageStore,
         ) -> Self {
             Self {
                 link_context,
@@ -211,6 +226,7 @@ pub(crate) mod new {
             if let Some(pkg) = self
                 .resolver
                 .package_cache
+                .borrow()
                 .get(&package_storage_id)
                 .cloned()
             {
@@ -281,6 +297,100 @@ pub(crate) mod new {
 
         fn publish_module(&mut self, _module_id: &ModuleId, _blob: Vec<u8>) -> VMResult<()> {
             Ok(())
+        }
+    }
+
+    impl DataStore for &LinkedDataStore<'_> {
+        fn link_context(&self) -> AccountAddress {
+            DataStore::link_context(*self)
+        }
+
+        fn relocate(&self, module_id: &ModuleId) -> PartialVMResult<ModuleId> {
+            DataStore::relocate(*self, module_id)
+        }
+
+        fn defining_module(
+            &self,
+            module_id: &ModuleId,
+            struct_: &IdentStr,
+        ) -> PartialVMResult<ModuleId> {
+            DataStore::defining_module(*self, module_id, struct_)
+        }
+
+        fn load_module(&self, module_id: &ModuleId) -> VMResult<Vec<u8>> {
+            DataStore::load_module(*self, module_id)
+        }
+
+        fn publish_module(&mut self, _module_id: &ModuleId, _blob: Vec<u8>) -> VMResult<()> {
+            Ok(())
+        }
+    }
+
+    impl ModuleResolver for LinkedDataStore<'_> {
+        type Error = SuiError;
+
+        fn get_module(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
+            self.load_module(id).map(|bytes| Some(bytes)).map_err(|_| {
+                SuiError::from(ExecutionErrorKind::VMVerificationOrDeserializationError)
+            })
+        }
+    }
+
+    // TODO: remove
+    impl ResourceResolver for LinkedDataStore<'_> {
+        type Error = SuiError;
+
+        fn get_resource(
+            &self,
+            address: &AccountAddress,
+            tag: &move_core_types::language_storage::StructTag,
+        ) -> Result<Option<Vec<u8>>, Self::Error> {
+            unreachable!("ResourceResolver is not implemented for LinkedDataStore");
+        }
+    }
+
+    impl LinkageResolver for LinkedDataStore<'_> {
+        type Error = SuiError;
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // LinkableStore
+    ///////////////////////////////////////////////////////////////////////////
+
+    pub struct LinkableStore<'a> {
+        linkage_analyzer: &'a mut dyn LinkageAnalysis,
+        store: &'a dyn PackageStore,
+    }
+
+    impl<'a> LinkableStore<'a> {
+        pub fn new(
+            linkage_analyzer: &'a mut dyn LinkageAnalysis,
+            store: &'a dyn PackageStore,
+        ) -> Self {
+            Self {
+                linkage_analyzer,
+                store,
+            }
+        }
+
+        pub fn linked_data_store_for_object_type(
+            &mut self,
+            object_type: &MoveObjectType,
+        ) -> Result<LinkedDataStore<'a>, ExecutionError> {
+            let link_context = object_type.address();
+            let ids: Vec<_> = StructTag::from(object_type.clone())
+                .all_addresses()
+                .into_iter()
+                .map(ObjectID::from)
+                .collect();
+            let resolver = self.linkage_analyzer.resolver();
+            let resolved_linkage = resolver.type_linkage(ids.as_slice(), self.store)?;
+            Ok(LinkedDataStore::new(
+                link_context,
+                &resolved_linkage,
+                &resolver,
+                self.store,
+            ))
         }
     }
 }
