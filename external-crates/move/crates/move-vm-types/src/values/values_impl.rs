@@ -2546,6 +2546,71 @@ impl Vector {
             VectorSpecialization::Container => Value(ValueImpl::Container(Container::Vec(
                 Rc::new(RefCell::new(elements.into_iter().map(|v| v.0).collect())),
             ))),
+||||||| parent of 73c139674d (specialization)
+=======
+        })
+    }
+}
+
+impl Vector {
+    pub fn pack(
+        specialization: VectorSpecialization,
+        elements: Vec<Value>,
+    ) -> PartialVMResult<Value> {
+        let container = match specialization {
+            VectorSpecialization::U8 => Value::vector_u8(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::U16 => Value::vector_u16(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::U32 => Value::vector_u32(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::U64 => Value::vector_u64(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::U128 => Value::vector_u128(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::U256 => Value::vector_u256(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::Bool => Value::vector_bool(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+            VectorSpecialization::Address => Value::vector_address(
+                elements
+                    .into_iter()
+                    .map(|v| v.value_as())
+                    .collect::<PartialVMResult<Vec<_>>>()?,
+            ),
+
+            VectorSpecialization::Container => Value(ValueImpl::Container(Container::Vec(
+                Rc::new(RefCell::new(elements.into_iter().map(|v| v.0).collect())),
+            ))),
+>>>>>>> 73c139674d (specialization)
         };
 
         Ok(container)
