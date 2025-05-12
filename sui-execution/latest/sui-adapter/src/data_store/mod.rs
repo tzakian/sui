@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod cached_data_store;
+pub mod linkable_data_store;
 pub mod linkage_view;
+pub mod linked_data_store;
 pub mod sui_data_store;
 
 use std::rc::Rc;
