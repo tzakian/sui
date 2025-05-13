@@ -4,8 +4,9 @@
 use crate::{
     data_store::PackageStore,
     linkage::analysis::{
-        CachedTypeOriginMap, LinkageAnalysis, PTBLinkageResolver, ResolvedLinkage,
-        shared::{LinkageConfig, ResolutionTable},
+        LinkageAnalysis, ResolvedLinkage,
+        config::{LinkageConfig, ResolutionConfig},
+        resolution::ResolutionTable,
     },
 };
 use move_binary_format::binary_config::BinaryConfig;
@@ -18,7 +19,7 @@ pub struct UnifiedLinkage {
     /// package ID for a package to its current resolution. This is the "constraint set" that we
     /// are building/solving as we progress across the PTB.
     unification_table: RefCell<ResolutionTable>,
-    internal: PTBLinkageResolver,
+    internal: ResolutionConfig,
 }
 
 impl LinkageAnalysis for UnifiedLinkage {
@@ -30,12 +31,13 @@ impl LinkageAnalysis for UnifiedLinkage {
         self.add_command(command, store)
     }
 
-    fn resolver(&self) -> &PTBLinkageResolver {
+    fn config(&self) -> &ResolutionConfig {
         &self.internal
     }
 }
 
 impl UnifiedLinkage {
+    #[allow(dead_code)]
     pub fn new(
         always_include_system_packages: bool,
         binary_config: BinaryConfig,
@@ -43,12 +45,9 @@ impl UnifiedLinkage {
     ) -> Result<Self, ExecutionError> {
         let linkage_config =
             LinkageConfig::unified_linkage_settings(always_include_system_packages);
-        let mut type_origin_cache = CachedTypeOriginMap::new();
-        let unification_table =
-            linkage_config.resolution_table_with_native_packages(&mut type_origin_cache, store)?;
+        let unification_table = linkage_config.resolution_table_with_native_packages(store)?;
         Ok(Self {
-            internal: PTBLinkageResolver {
-                type_origin_cache: RefCell::new(type_origin_cache),
+            internal: ResolutionConfig {
                 linkage_config,
                 binary_config,
             },

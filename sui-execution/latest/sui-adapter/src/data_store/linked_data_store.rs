@@ -1,12 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::rc::Rc;
-
-use crate::{
-    data_store::PackageStore,
-    linkage::{Linkage, analysis::PTBLinkageResolver},
-};
+use crate::{data_store::ResolvablePackageStore, linkage::Linkage};
 use move_binary_format::errors::{Location, PartialVMError, PartialVMResult, VMResult};
 use move_core_types::{
     account_address::AccountAddress,
@@ -18,35 +13,23 @@ use move_core_types::{
 use move_vm_types::data_store::DataStore;
 use sui_types::{
     base_types::ObjectID,
-    error::{ExecutionErrorKind, SuiError, SuiResult},
-    move_package::MovePackage,
+    error::{ExecutionErrorKind, SuiError},
 };
 
-// LinkedDataStore(SuiDataStore) is a wrapper around the `SuiDataStore` that holds linkage
-// information. We generally should not, but we may need to, fetch through both the package
-// cache inside of the `resolver` and inside of the underlying `package_store` (i.e., "call out
-// to disk") in the case where the `package_cache` was dropped due to getting too large.
+/// A `LinkedDataStore` is a wrapper around a `ResolvablePackageStore` (i.e., a package store where
+/// we can also resolve types to defining IDs) along with a specific `linkage`. These two together
+/// allow us to resolve modules and types in a way that is consistent with the `linkage` provided
+/// and allow us to then pass this into the VM. Until we have a linkage set it is not possible to
+/// construct a valid `DataStore` for execution in the VM as it needs to be able to resolve modules
+/// under a specific linkage.
 pub struct LinkedDataStore<'a> {
     pub linkage: &'a Linkage,
-    pub resolver: &'a PTBLinkageResolver,
-    pub package_store: &'a dyn PackageStore,
+    pub store: &'a dyn ResolvablePackageStore,
 }
 
 impl<'a> LinkedDataStore<'a> {
-    pub fn new(
-        linkage: &'a Linkage,
-        resolver: &'a PTBLinkageResolver,
-        package_store: &'a dyn PackageStore,
-    ) -> Self {
-        Self {
-            linkage,
-            resolver,
-            package_store,
-        }
-    }
-
-    pub fn get_package(&self, package_storage_id: ObjectID) -> SuiResult<Option<Rc<MovePackage>>> {
-        self.package_store.get_package(&package_storage_id)
+    pub fn new(linkage: &'a Linkage, store: &'a dyn ResolvablePackageStore) -> Self {
+        Self { linkage, store }
     }
 }
 
@@ -73,13 +56,14 @@ impl DataStore for LinkedDataStore<'_> {
         module_id: &ModuleId,
         struct_: &IdentStr,
     ) -> PartialVMResult<ModuleId> {
-        self.linkage.resolved_linkage
-                .resolve_type_to_defining_id(
-                    self.resolver,
+        self.store
+            .resolve_type_to_defining_id(
                     ObjectID::from(*module_id.address()),
                     module_id.name().to_string(),
                     struct_.to_string(),
                 )
+                .ok()
+                .flatten()
                 .map(|obj_id| ModuleId::new(*obj_id, module_id.name().to_owned()))
                 .ok_or_else(|| {
                     PartialVMError::new(StatusCode::LINKER_ERROR).with_message(format!(
@@ -92,7 +76,8 @@ impl DataStore for LinkedDataStore<'_> {
     fn load_module(&self, module_id: &ModuleId) -> VMResult<Vec<u8>> {
         let package_storage_id = ObjectID::from(*module_id.address());
         match self
-            .get_package(package_storage_id)
+            .store
+            .get_package(&package_storage_id)
             .map(|pkg| pkg.and_then(|pkg| pkg.get_module(module_id).cloned()))
         {
             Ok(Some(bytes)) => Ok(bytes),

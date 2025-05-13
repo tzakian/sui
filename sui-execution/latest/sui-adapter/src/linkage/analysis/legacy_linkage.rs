@@ -4,20 +4,22 @@
 use crate::{
     data_store::PackageStore,
     linkage::analysis::{
-        CachedTypeOriginMap, LinkageAnalysis, PTBLinkageResolver, ResolvedLinkage,
-        shared::{LinkageConfig, ResolutionTable},
+        LinkageAnalysis, ResolvedLinkage,
+        config::{LinkageConfig, ResolutionConfig},
+        resolution::ResolutionTable,
     },
 };
+
 use move_binary_format::binary_config::BinaryConfig;
-use std::{cell::RefCell, collections::BTreeMap};
+use std::collections::BTreeMap;
 use sui_types::{error::ExecutionError, transaction as P};
 
 #[derive(Debug)]
-pub struct PerCommandLinkage {
-    internal: PTBLinkageResolver,
+pub struct LegacyLinkage {
+    internal: ResolutionConfig,
 }
 
-impl LinkageAnalysis for PerCommandLinkage {
+impl LinkageAnalysis for LegacyLinkage {
     fn add_command(
         &self,
         command: &P::Command,
@@ -26,22 +28,21 @@ impl LinkageAnalysis for PerCommandLinkage {
         self.add_command(command, store)
     }
 
-    fn resolver(&self) -> &PTBLinkageResolver {
+    fn config(&self) -> &ResolutionConfig {
         &self.internal
     }
 }
 
-impl PerCommandLinkage {
+impl LegacyLinkage {
+    #[allow(dead_code)]
     pub fn new(
         always_include_system_packages: bool,
         binary_config: BinaryConfig,
         _store: &dyn PackageStore,
     ) -> Result<Self, ExecutionError> {
-        let linkage_config =
-            LinkageConfig::per_command_linkage_settings(always_include_system_packages);
+        let linkage_config = LinkageConfig::legacy_linkage_settings(always_include_system_packages);
         Ok(Self {
-            internal: PTBLinkageResolver {
-                type_origin_cache: RefCell::new(CachedTypeOriginMap::new()),
+            internal: ResolutionConfig {
                 linkage_config,
                 binary_config,
             },
