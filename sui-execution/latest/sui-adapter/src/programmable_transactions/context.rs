@@ -11,6 +11,8 @@ mod checked {
             PackageStore,
             cached_package_store::CachedPackageStore,
             legacy::{linkage_view::LinkageView, sui_data_store::SuiDataStore},
+            linkable_data_store::LinkableStore,
+            linked_data_store::LinkedDataStore,
         },
         error::convert_vm_error,
         execution_mode::ExecutionMode,
@@ -20,6 +22,7 @@ mod checked {
         },
         gas_charger::GasCharger,
         gas_meter::SuiGasMeter,
+        linkage::Linked,
         type_resolver::TypeTagResolver,
     };
     use move_binary_format::{
@@ -1329,8 +1332,7 @@ mod checked {
 
     pub fn load_type_from_struct(
         vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         struct_tag: &StructTag,
     ) -> VMResult<Type> {
         fn verification_error<T>(code: StatusCode) -> VMResult<T> {
@@ -1347,27 +1349,22 @@ mod checked {
         // Load the package that the struct is defined in, in storage
         let defining_id = ObjectID::from_address(*address);
 
-        let data_store = SuiDataStore::new(linkage_view, new_packages);
-        let move_package = get_package(&data_store, defining_id)?;
+        let linkage = linkage_view
+            .linkage_for_struct_tag(struct_tag)
+            .map_err(|e| {
+                PartialVMError::new(StatusCode::LINKER_ERROR)
+                    .with_message(format!("Error loading {struct_tag} from store: {e}"))
+                    .finish(Location::Undefined)
+            })?;
+        let linked_store = linkage_view.linked_data_store_for_linkage(&linkage);
 
-        // Save the link context as we need to set it while loading the struct and we don't want to
-        // clobber it.
-        let saved_linkage = linkage_view.steal_linkage();
-
-        // Set the defining package as the link context while loading the
-        // struct
-        let original_address = linkage_view
-            .set_linkage(&move_package)
-            .expect("Linkage context was just stolen. Therefore must be empty");
-
-        let runtime_id = ModuleId::new(original_address, module.clone());
-        let data_store = SuiDataStore::new(linkage_view, new_packages);
-        let res = vm.get_runtime().load_type(&runtime_id, name, &data_store);
-        linkage_view.reset_linkage();
-        linkage_view
-            .restore_linkage(saved_linkage)
-            .expect("Linkage context was just reset. Therefore must be empty");
-        let (idx, struct_type) = res?;
+        // TODO: may not need this anymore
+        let move_package = get_package(linkage_view.store.as_package_store(), defining_id)?;
+        let original_address = move_package.original_package_id();
+        let runtime_id = ModuleId::new(*original_address, module.clone());
+        let (idx, struct_type) = vm
+            .get_runtime()
+            .load_type(&runtime_id, name, &linked_store)?;
 
         // Recursively load type parameters, if necessary
         let type_param_constraints = struct_type.type_param_constraints();
@@ -1380,7 +1377,7 @@ mod checked {
         } else {
             let loaded_type_params = type_params
                 .iter()
-                .map(|type_param| load_type(vm, linkage_view, new_packages, type_param))
+                .map(|type_param| load_type(vm, linkage_view, type_param))
                 .collect::<VMResult<Vec<_>>>()?;
 
             // Verify that the type parameter constraints on the struct are met
@@ -1402,8 +1399,7 @@ mod checked {
     /// reset after this operation, because during the operation, it may change when loading a struct.
     pub fn load_type(
         vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         type_tag: &TypeTag,
     ) -> VMResult<Type> {
         Ok(match type_tag {
@@ -1417,11 +1413,9 @@ mod checked {
             TypeTag::Address => Type::Address,
             TypeTag::Signer => Type::Signer,
 
-            TypeTag::Vector(inner) => {
-                Type::Vector(Box::new(load_type(vm, linkage_view, new_packages, inner)?))
-            }
+            TypeTag::Vector(inner) => Type::Vector(Box::new(load_type(vm, linkage_view, inner)?)),
             TypeTag::Struct(struct_tag) => {
-                return load_type_from_struct(vm, linkage_view, new_packages, struct_tag);
+                return load_type_from_struct(vm, linkage_view, struct_tag);
             }
         })
     }
@@ -1429,8 +1423,7 @@ mod checked {
     pub(crate) fn make_object_value(
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         type_: MoveObjectType,
         has_public_transfer: bool,
         used_in_non_entry_move_call: bool,
@@ -1446,11 +1439,12 @@ mod checked {
         };
 
         let tag: StructTag = type_.into();
-        let type_ = load_type_from_struct(vm, linkage_view, new_packages, &tag).map_err(|e| {
+        let linked_store = linkage_view.linkage_for_struct_tag(&tag)?;
+        let type_ = load_type_from_struct(vm, linkage_view, &tag).map_err(|e| {
             crate::error::convert_vm_error(
                 e,
                 vm,
-                linkage_view,
+                &linkage_view.linked_data_store_for_linkage(&linked_store),
                 protocol_config.resolve_abort_locations_to_package_id(),
             )
         })?;
@@ -1459,7 +1453,7 @@ mod checked {
                 crate::error::convert_vm_error(
                     e,
                     vm,
-                    linkage_view,
+                    &linkage_view.linked_data_store_for_linkage(&linked_store),
                     protocol_config.resolve_abort_locations_to_package_id(),
                 )
             })?;
@@ -1478,8 +1472,7 @@ mod checked {
     pub(crate) fn value_from_object(
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         object: &Object,
     ) -> Result<ObjectValue, ExecutionError> {
         let ObjectInner {
@@ -1495,7 +1488,6 @@ mod checked {
             protocol_config,
             vm,
             linkage_view,
-            new_packages,
             object.type_().clone(),
             object.has_public_transfer(),
             used_in_non_entry_move_call,
@@ -1508,8 +1500,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
         override_as_immutable: bool,
         id: ObjectID,
@@ -1541,16 +1532,19 @@ mod checked {
             owner: owner.clone(),
             version,
         };
-        let obj_value = value_from_object(protocol_config, vm, linkage_view, new_packages, obj)?;
+        let obj_value = value_from_object(protocol_config, vm, linkage_view, obj)?;
         let contained_uids = {
+            let linked_data_store = &linkage_view.linked_data_store_for_linkage(
+                &linkage_view.linkage_for_object_type(&obj_value.type_)?,
+            );
             let fully_annotated_layout = vm
                 .get_runtime()
                 .type_to_fully_annotated_layout(&obj_value.type_)
                 .map_err(|e| {
                     convert_vm_error(
                         e,
+                        linked_data_store,
                         vm,
-                        linkage_view,
                         protocol_config.resolve_abort_locations_to_package_id(),
                     )
                 })?;
@@ -1579,8 +1573,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
         call_arg: CallArg,
     ) -> Result<InputValue, ExecutionError> {
@@ -1591,7 +1584,6 @@ mod checked {
                 vm,
                 state_view,
                 linkage_view,
-                new_packages,
                 input_object_map,
                 obj_arg,
             )?,
@@ -1603,8 +1595,7 @@ mod checked {
         protocol_config: &ProtocolConfig,
         vm: &MoveVM,
         state_view: &dyn ExecutionState,
-        linkage_view: &mut LinkageView,
-        new_packages: &[MovePackage],
+        linkage_view: &LinkableStore<'_>,
         input_object_map: &mut BTreeMap<ObjectID, object_runtime::InputObject>,
         obj_arg: ObjectArg,
     ) -> Result<InputValue, ExecutionError> {
@@ -1614,7 +1605,6 @@ mod checked {
                 vm,
                 state_view,
                 linkage_view,
-                new_packages,
                 input_object_map,
                 /* imm override */ false,
                 id,
@@ -1624,7 +1614,6 @@ mod checked {
                 vm,
                 state_view,
                 linkage_view,
-                new_packages,
                 input_object_map,
                 /* imm override */ !mutable,
                 id,
@@ -1695,7 +1684,7 @@ mod checked {
     /// the StructTag, or from the runtime correctly propagating from the inputs
     unsafe fn create_written_object(
         vm: &MoveVM,
-        linkage_view: &LinkageView,
+        linkage_view: &LinkableStore<'_>,
         protocol_config: &ProtocolConfig,
         objects_modified_at: &BTreeMap<ObjectID, LoadedRuntimeObject>,
         id: ObjectID,

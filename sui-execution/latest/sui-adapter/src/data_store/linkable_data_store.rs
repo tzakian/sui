@@ -16,13 +16,13 @@ use sui_types::{
 /// LinkableStore is a thin wrapper around a `PackageStore` that allows us to add some convenience
 /// functionality towards building linkages, and to create `LinkedDataStore`s.
 pub struct LinkableStore<'a> {
-    pub store: &'a dyn ResolvablePackageStore,
+    pub store: Box<dyn ResolvablePackageStore + 'a>,
     // TODO: Linkage cache?
 }
 
 impl<'a> LinkableStore<'a> {
     /// Create a new `LinkableStore` with the given `ResolvablePackageStore`.
-    pub fn new(store: &'a dyn ResolvablePackageStore) -> Self {
+    pub fn new(store: Box<dyn ResolvablePackageStore + 'a>) -> Self {
         Self { store }
     }
 
@@ -31,7 +31,7 @@ impl<'a> LinkableStore<'a> {
     where
         'a: 'b,
     {
-        LinkedDataStore::new(linkage, self.store)
+        LinkedDataStore::new(linkage, self.store.as_ref())
     }
 
     /// Compute the `Linkage` for a `MoveObjectType`. All `MoveObjectType`s are expected to be
