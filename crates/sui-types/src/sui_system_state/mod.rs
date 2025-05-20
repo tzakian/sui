@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::base_types::ObjectID;
+use crate::base_types::{MoveObjectType, ObjectID};
 use crate::committee::CommitteeWithNetworkMetadata;
 use crate::dynamic_field::{
     get_dynamic_field_from_store, get_dynamic_field_object_from_store, Field,

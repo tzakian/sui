@@ -398,6 +398,28 @@ impl MoveObjectType {
         }
     }
 
+    pub fn is_inner_system_state_object(&self) -> bool {
+        if !self.is_dynamic_field() {
+            return false;
+        }
+        let Some(field_value) = self.try_extract_field_value().ok() else {
+            return false;
+        };
+        let Some(field_name) = self
+            .try_extract_field_name(&DynamicFieldType::DynamicField)
+            .ok()
+        else {
+            return false;
+        };
+        if field_value != TypeTag::U64 {
+            return false;
+        }
+
+        let TypeTag::Struct(struct_tag) = field_name else {
+            return false;
+        };
+    }
+
     pub fn try_extract_field_name(&self, type_: &DynamicFieldType) -> SuiResult<TypeTag> {
         match &self.0 {
             MoveObjectType_::GasCoin | MoveObjectType_::StakedSui | MoveObjectType_::Coin(_) => {
