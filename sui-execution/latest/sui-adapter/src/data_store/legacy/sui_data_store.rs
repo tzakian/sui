@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::data_store::{PackageStore, linkage_view::LinkageView};
+use crate::data_store::{PackageStore, legacy::linkage_view::LinkageView};
 use move_binary_format::errors::{Location, PartialVMError, PartialVMResult, VMResult};
 use move_core_types::{
     account_address::AccountAddress, identifier::IdentStr, language_storage::ModuleId,
@@ -48,7 +48,7 @@ impl<'state, 'a> SuiDataStore<'state, 'a> {
 //       Leaving this comment around until then as testament to better days to come...
 impl DataStore for SuiDataStore<'_, '_> {
     fn link_context(&self) -> AccountAddress {
-        self.linkage_view.link_context()
+        self.linkage_view.link_context().unwrap()
     }
 
     fn relocate(&self, module_id: &ModuleId) -> PartialVMResult<ModuleId> {

@@ -885,6 +885,8 @@ impl Loader {
         let inst = LoadedFunctionInstantiation {
             parameters,
             return_,
+            instruction_length: func.code.len(),
+            definition_index: func.index(),
         };
         Ok((compiled, loaded, func, inst))
     }

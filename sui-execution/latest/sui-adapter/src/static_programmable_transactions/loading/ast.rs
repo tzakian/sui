@@ -1,14 +1,15 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::rc::Rc;
-
-use move_binary_format::file_format::AbilitySet;
+use crate::static_programmable_transactions::linkage::{Linkage, analysis::ResolvedLinkage};
+use indexmap::IndexSet;
+use move_binary_format::file_format::{AbilitySet, FunctionDefinitionIndex};
 use move_core_types::{
     account_address::AccountAddress,
     identifier::IdentStr,
     language_storage::{ModuleId, StructTag},
 };
+use std::rc::Rc;
 use sui_types::{
     Identifier, TypeTag,
     base_types::{ObjectID, ObjectRef, RESOLVED_TX_CONTEXT, SequenceNumber, TxContextKind},
@@ -85,8 +86,14 @@ pub enum Command {
     SplitCoins(Argument, Vec<Argument>),
     MergeCoins(Argument, Vec<Argument>),
     MakeMoveVec(/* T for vector<T> */ Option<Type>, Vec<Argument>),
-    Publish(Vec<Vec<u8>>, Vec<ObjectID>),
-    Upgrade(Vec<Vec<u8>>, Vec<ObjectID>, ObjectID, Argument),
+    Publish(Vec<Vec<u8>>, Vec<ObjectID>, ResolvedLinkage),
+    Upgrade(
+        Vec<Vec<u8>>,
+        Vec<ObjectID>,
+        ObjectID,
+        Argument,
+        ResolvedLinkage,
+    ),
 }
 
 pub struct LoadedFunctionInstantiation {
@@ -101,6 +108,9 @@ pub struct LoadedFunction {
     pub type_arguments: Vec<Type>,
     pub signature: LoadedFunctionInstantiation,
     pub tx_context: TxContextKind,
+    pub linkage: Linkage,
+    pub instruction_length: usize,
+    pub definition_index: FunctionDefinitionIndex,
 }
 
 pub struct MoveCall {
@@ -167,6 +177,33 @@ impl Type {
             TxContextKind::None
         }
     }
+    pub fn all_addresses(&self) -> IndexSet<AccountAddress> {
+        let mut addresses = IndexSet::new();
+        self.all_addresses_internal(&mut addresses);
+        addresses
+    }
+
+    fn all_addresses_internal(&self, addresses: &mut IndexSet<AccountAddress>) {
+        match self {
+            Type::Bool
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::U128
+            | Type::U256
+            | Type::Address
+            | Type::Signer => {}
+            Type::Vector(v) => v.element_type.all_addresses_internal(addresses),
+            Type::Reference(_, inner) => inner.all_addresses_internal(addresses),
+            Type::Datatype(dt) => {
+                addresses.insert(*dt.module.address());
+                for arg in &dt.type_arguments {
+                    arg.all_addresses_internal(addresses);
+                }
+            }
+        }
+    }
 }
 
 impl Datatype {
@@ -176,6 +213,15 @@ impl Datatype {
             self.module.name(),
             self.name.as_ident_str(),
         )
+    }
+
+    pub fn all_addresses(&self) -> IndexSet<AccountAddress> {
+        let mut addresses = IndexSet::new();
+        addresses.insert(*self.module.address());
+        for arg in &self.type_arguments {
+            arg.all_addresses_internal(&mut addresses);
+        }
+        addresses
     }
 }
 

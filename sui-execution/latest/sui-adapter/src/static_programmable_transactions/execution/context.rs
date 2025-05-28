@@ -39,7 +39,7 @@ use sui_move_natives::object_runtime::{
 };
 use sui_types::{
     TypeTag,
-    base_types::{ObjectID, TxContext, TxContextKind},
+    base_types::{MoveObjectType, ObjectID, TxContext, TxContextKind},
     error::{ExecutionError, ExecutionErrorKind},
     execution::ExecutionResults,
     metrics::LimitsMetrics,
@@ -271,7 +271,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         }
 
         for (id, (recipient, ty, value)) in writes {
-            let ty: Type = todo!("OBJECT RUNTIME TYPETAG");
+            let ty: Type = env.load_type_from_struct(&ty.clone().into())?;
             let abilities = ty.abilities();
             let has_public_transfer = abilities.has_store();
             let layout = env.runtime_layout(&ty)?;
@@ -371,13 +371,8 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         }
         let new_events = events
             .into_iter()
-            .map(|(ty, tag, value)| {
-                let layout = self
-                    .env
-                    .vm
-                    .get_runtime()
-                    .type_to_type_layout(&ty)
-                    .map_err(|e| self.env.convert_vm_error(e))?;
+            .map(|(tag, value)| {
+                let layout = self.env.type_layout_for_struct(&tag)?;
                 let Some(bytes) = value.simple_serialize(&layout) else {
                     invariant_violation!("Failed to deserialize already serialized Move value");
                 };
@@ -533,16 +528,15 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
             )),
         }
         let storage_id = &function.storage_id;
-        let (index, last_instr) = {
-            &function;
-            // access FunctionDefinitionIndex and last instruction CodeOffset
-            todo!("LOADING")
-        };
         let result = {
             function;
             todo!("RUNTIME")
         };
-        self.take_user_events(storage_id, index, last_instr)?;
+        self.take_user_events(
+            storage_id,
+            function.definition_index,
+            function.instruction_length as u16,
+        )?;
         Ok(result)
     }
 
@@ -552,14 +546,16 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas> Context<'env, 'pc, 'vm, 'state, 'li
         ty: Type,
         object: CtxValue,
     ) -> Result<(), ExecutionError> {
-        let ty = {
-            ty;
-            // ty to vm type
-            todo!("OBJECT RUNTIME TYPETAG")
+        let tag = TypeTag::try_from(ty)
+            .map_err(|_| make_invariant_violation!("Unable to convert Type to TypeTag"))?;
+        let TypeTag::Struct(tag) = tag else {
+            invariant_violation!("Expected struct type tag");
         };
+        let ty = MoveObjectType::from(*tag);
         object_runtime_mut!(self)?
             .transfer(recipient, ty, object.0.into())
             .map_err(|e| self.env.convert_vm_error(e.finish(Location::Undefined)))?;
+        Ok(())
     }
 
     pub fn copy_value(&mut self, value: &CtxValue) -> Result<CtxValue, ExecutionError> {

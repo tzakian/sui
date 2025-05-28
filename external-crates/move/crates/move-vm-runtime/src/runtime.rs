@@ -426,6 +426,8 @@ impl VMRuntime {
             LoadedFunctionInstantiation {
                 parameters,
                 return_,
+                instruction_length: _,
+                definition_index: _,
             },
         ) = self
             .loader
@@ -485,6 +487,10 @@ impl VMRuntime {
     ) -> VMResult<(CachedTypeIndex, Arc<CachedDatatype>)> {
         self.loader
             .load_type_by_name(struct_name, module_id, data_store)
+    }
+
+    pub fn load_type_tag(&self, tag: &TypeTag, data_store: &impl DataStore) -> VMResult<Type> {
+        self.loader.load_type(tag, data_store)
     }
 
     pub fn execute_function_bypass_visibility(
