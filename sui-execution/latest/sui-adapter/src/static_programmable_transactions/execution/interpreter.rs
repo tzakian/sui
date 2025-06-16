@@ -221,7 +221,7 @@ fn execute_command<Mode: ExecutionMode>(
             let items: Vec<CtxValue> = context.arguments(items)?;
             vec![CtxValue::vec_pack(ty, items)?]
         }
-        T::Command_::Publish(module_bytes, dep_ids) => {
+        T::Command_::Publish(module_bytes, dep_ids, linkage) => {
             let mut modules =
                 context.deserialize_modules(&module_bytes, /* is upgrade */ false)?;
 
@@ -237,7 +237,13 @@ fn execute_command<Mode: ExecutionMode>(
                 id
             };
 
-            context.publish_and_init_package(runtime_id, modules, &dep_ids, trace_builder_opt)?;
+            context.publish_and_init_package(
+                runtime_id,
+                modules,
+                &dep_ids,
+                linkage,
+                trace_builder_opt,
+            )?;
 
             if <Mode>::packages_are_predefined() {
                 // no upgrade cap for genesis modules
@@ -246,7 +252,13 @@ fn execute_command<Mode: ExecutionMode>(
                 std::vec![context.new_upgrade_cap(runtime_id)]
             }
         }
-        T::Command_::Upgrade(module_bytes, dep_ids, current_package_id, upgrade_ticket) => {
+        T::Command_::Upgrade(
+            module_bytes,
+            dep_ids,
+            current_package_id,
+            upgrade_ticket,
+            linkage,
+        ) => {
             let upgrade_ticket = context
                 .argument::<CtxValue>(upgrade_ticket)?
                 .into_upgrade_ticket()?;
@@ -280,8 +292,13 @@ fn execute_command<Mode: ExecutionMode>(
                 ));
             }
 
-            let upgraded_package_id =
-                context.upgrade(modules, &dep_ids, current_package_id, upgrade_ticket.policy)?;
+            let upgraded_package_id = context.upgrade(
+                modules,
+                &dep_ids,
+                current_package_id,
+                upgrade_ticket.policy,
+                linkage,
+            )?;
 
             vec![context.upgrade_receipt(upgrade_ticket, upgraded_package_id)]
         }
