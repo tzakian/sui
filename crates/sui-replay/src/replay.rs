@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
     sync::Mutex,
 };
-use sui_config::node::ExpensiveSafetyCheckConfig;
+use sui_config::node::{ExpensiveSafetyCheckConfig, NodeStateDumpEncodingType};
 use sui_core::authority::NodeStateDump;
 use sui_execution::Executor;
 use sui_framework::BuiltInFramework;
@@ -407,13 +407,15 @@ impl LocalExec {
 
     pub async fn new_for_state_dump(
         path: &str,
+        format: NodeStateDumpEncodingType,
         backup_rpc_url: Option<String>,
     ) -> Result<Self, ReplayEngineError> {
         // Use a throwaway metrics registry for local execution.
         let registry = prometheus::Registry::new();
         let metrics = Arc::new(LimitsMetrics::new(&registry));
 
-        let state = NodeStateDump::read_from_file(&PathBuf::from(path))?;
+        let state = NodeStateDump::read_from_file(&PathBuf::from(path), format)?;
+        println!("DUMP: {:#?}", state);
         let current_protocol_version = state.protocol_version;
         let fetcher = match backup_rpc_url {
             Some(url) => NodeStateDumpFetcher::new(

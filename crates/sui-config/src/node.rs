@@ -1478,13 +1478,62 @@ impl AuthorityKeyPairWithPath {
     }
 }
 
+/// Format that node state dumps should be encoded in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeStateDumpEncodingType {
+    Json,
+    Bcs,
+}
+
+impl NodeStateDumpEncodingType {
+    pub fn extension_for_encoding_type(&self) -> &'static str {
+        match self {
+            NodeStateDumpEncodingType::Json => "json",
+            NodeStateDumpEncodingType::Bcs => "bcs",
+        }
+    }
+
+    pub fn serialize_dump(&self, data: &impl Serialize) -> Result<Vec<u8>, anyhow::Error> {
+        match self {
+            NodeStateDumpEncodingType::Json => serde_json::to_vec(data)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize data: {e}")),
+            NodeStateDumpEncodingType::Bcs => {
+                bcs::to_bytes(data).map_err(|e| anyhow::anyhow!("Failed to serialize data: {e}"))
+            }
+        }
+    }
+}
+
 /// Configurations which determine how we dump state debug info.
 /// Debug info is dumped when a node forks.
+///
+/// If the `unsafe_always_dump` flag is set a node state dump is created for every transaction in
+/// debug build (the flag is ignored in release builds), and a maximum number of `<num>` dumps will
+/// be allowed before blocking. Enabling this option may consume considerable disk space and should
+/// only be used if you have a specific purpose for it.
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct StateDebugDumpConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dump_file_directory: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding_type: Option<NodeStateDumpEncodingType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unsafe_always_dump: Option<usize>,
+}
+
+impl StateDebugDumpConfig {
+    /// Returns `Some(max_dumps)` if the `unsafe_always_dump` flag was present and if built in a debug build.
+    /// Always returns `None` in a release build no matter the state of the `unsafe_always_dump`
+    /// flag.
+    pub fn always_dump(&self) -> Option<usize> {
+        if cfg!(debug_assertions) {
+            self.unsafe_always_dump.clone()
+        } else {
+            None
+        }
+    }
 }
 
 fn read_credential_from_path_or_literal(value: &str) -> Result<String, std::io::Error> {

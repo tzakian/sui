@@ -817,7 +817,7 @@ impl DataFetcher for NodeStateDumpFetcher {
     }
 
     async fn get_chain_id(&self) -> Result<String, ReplayEngineError> {
-        unimplemented!("get_chain_id for state dump is not implemented")
+        Ok(self.node_state_dump.chain_identifier.clone())
     }
 
     async fn get_child_object(

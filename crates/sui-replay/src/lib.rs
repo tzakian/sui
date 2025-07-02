@@ -8,6 +8,7 @@ use fuzz::ReplayFuzzer;
 use fuzz::ReplayFuzzerConfig;
 use fuzz_mutations::base_fuzzers;
 use std::cmp::max;
+use sui_config::node::NodeStateDumpEncodingType;
 use sui_types::base_types::ObjectID;
 use sui_types::base_types::SequenceNumber;
 use sui_types::digests::get_mainnet_chain_identifier;
@@ -139,6 +140,8 @@ pub enum ReplayToolCommand {
         path: String,
         #[arg(long, short)]
         show_effects: bool,
+        #[arg(long, short, default_value = "json")]
+        format: String,
     },
 
     /// Replay multiple transactions from JSON files that contain the sandbox persisted state.
@@ -270,8 +273,22 @@ pub async fn execute_replay_command(
             fuzzer.run(num_base_transactions).await.unwrap();
             None
         }
-        ReplayToolCommand::ReplayDump { path, show_effects } => {
-            let mut lx = LocalExec::new_for_state_dump(&path, rpc_url).await?;
+        ReplayToolCommand::ReplayDump {
+            path,
+            show_effects,
+            format,
+        } => {
+            let format = match format.as_str() {
+                "json" => NodeStateDumpEncodingType::Json,
+                "bcs" => NodeStateDumpEncodingType::Bcs,
+                _ => {
+                    anyhow::bail!(
+                        "Unsupported format: '{}'. Supported formats are: 'json', 'bcs'",
+                        format
+                    );
+                }
+            };
+            let mut lx = LocalExec::new_for_state_dump(&path, format, rpc_url).await?;
             let (sandbox_state, node_dump_state) = lx.execute_state_dump(safety).await?;
             if show_effects {
                 println!("{:#?}", sandbox_state.local_exec_effects);

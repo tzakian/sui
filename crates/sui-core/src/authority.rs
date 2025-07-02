@@ -56,6 +56,7 @@ use std::{
     sync::Arc,
     vec,
 };
+use sui_config::node::NodeStateDumpEncodingType;
 use sui_config::node::{AuthorityOverloadConfig, StateDebugDumpConfig};
 use sui_config::NodeConfig;
 use sui_protocol_config::PerObjectCongestionControlMode;
@@ -1623,8 +1624,9 @@ impl AuthorityState {
             &epoch_store,
             inner_temporary_store,
             certificate,
+            &debug_dump_config.encoding_type,
         )?
-        .write_to_file(&dump_dir)
+        .write_to_file(&dump_dir, &debug_dump_config.always_dump())
         .map_err(|e| SuiError::FileIOError(e.to_string()))
     }
 
@@ -1858,7 +1860,9 @@ impl AuthorityState {
             );
 
         if let Some(expected_effects_digest) = expected_effects_digest {
-            if effects.digest() != expected_effects_digest {
+            if effects.digest() != expected_effects_digest
+                || self.config.state_debug_dump_config.always_dump().is_some()
+            {
                 // We dont want to mask the original error, so we log it and continue.
                 match self.debug_dump_transaction_state(
                     &tx_digest,
@@ -1879,6 +1883,9 @@ impl AuthorityState {
                         error!("Error dumping state for transaction {}: {e}", tx_digest);
                     }
                 }
+            }
+
+            if effects.digest() != expected_effects_digest {
                 error!(
                     ?tx_digest,
                     ?expected_effects_digest,
@@ -5990,6 +5997,8 @@ pub struct NodeStateDump {
     pub modified_at_versions: Vec<ObjDumpFormat>,
     pub runtime_reads: Vec<ObjDumpFormat>,
     pub input_objects: Vec<ObjDumpFormat>,
+    pub encoding_type: NodeStateDumpEncodingType,
+    pub chain_identifier: String,
 }
 
 impl NodeStateDump {
@@ -6001,6 +6010,7 @@ impl NodeStateDump {
         epoch_store: &Arc<AuthorityPerEpochStore>,
         inner_temporary_store: &InnerTemporaryStore,
         certificate: &VerifiedExecutableTransaction,
+        encoding_type: &Option<NodeStateDumpEncodingType>,
     ) -> SuiResult<Self> {
         // Epoch info
         let executed_epoch = epoch_store.epoch();
@@ -6008,6 +6018,7 @@ impl NodeStateDump {
         let epoch_start_config = epoch_store.epoch_start_config();
         let protocol_version = epoch_store.protocol_version().as_u64();
         let epoch_start_timestamp_ms = epoch_start_config.epoch_data().epoch_start_timestamp();
+        let chain_identifier = epoch_store.get_chain_identifier().to_string();
 
         // Record all system packages at this version
         let mut relevant_system_packages = Vec::new();
@@ -6080,6 +6091,10 @@ impl NodeStateDump {
                 .collect(),
             computed_effects: effects.clone(),
             expected_effects_digest,
+            encoding_type: encoding_type
+                .clone()
+                .unwrap_or(NodeStateDumpEncodingType::Json),
+            chain_identifier,
         })
     }
 
@@ -6094,21 +6109,50 @@ impl NodeStateDump {
         objects
     }
 
-    pub fn write_to_file(&self, path: &Path) -> Result<PathBuf, anyhow::Error> {
+    pub fn write_to_file(
+        &self,
+        path: &Path,
+        maximal_outputs_opt: &Option<usize>,
+    ) -> Result<PathBuf, anyhow::Error> {
         let file_name = format!(
-            "{}_{}_NODE_DUMP.json",
+            "{}_{}_NODE_DUMP.{}",
             self.tx_digest,
-            AuthorityState::unixtime_now_ms()
+            AuthorityState::unixtime_now_ms(),
+            self.encoding_type.extension_for_encoding_type(),
         );
+
         let mut path = path.to_path_buf();
+
+        if let Some(max_dumps) = maximal_outputs_opt {
+            let mut i = 0;
+            while path.exists() && path.read_dir()?.count() >= *max_dumps {
+                tracing::warn!(
+                    "[{i}] Maximum number of node dumps reached: {max_dumps}. \
+                    Blocking until number of dumps has been lowered below {max_dumps}. Retrying in 1sec",
+                );
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                i += 1;
+            }
+        }
+
         path.push(&file_name);
         let mut file = File::create(path.clone())?;
-        file.write_all(serde_json::to_string_pretty(self)?.as_bytes())?;
+        file.write_all(&self.encoding_type.serialize_dump(self)?)?;
         Ok(path)
     }
 
-    pub fn read_from_file(path: &PathBuf) -> Result<Self, anyhow::Error> {
+    pub fn read_from_file(
+        path: &PathBuf,
+        format: NodeStateDumpEncodingType,
+    ) -> Result<Self, anyhow::Error> {
         let file = File::open(path)?;
+        match format {
+            NodeStateDumpEncodingType::Json => {
         serde_json::from_reader(file).map_err(|e| anyhow::anyhow!(e))
+    }
+            NodeStateDumpEncodingType::Bcs => {
+                bcs::from_reader(file).map_err(|e| anyhow::anyhow!(e))
+            }
+        }
     }
 }
