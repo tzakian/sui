@@ -225,6 +225,21 @@ impl TraceValue {
             _ => None,
         }
     }
+
+    pub fn get_global_location(&self) -> Option<TraceIndex> {
+        match self.location() {
+            Some(Location::Global(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    pub fn ref_type(&self) -> Option<RefType> {
+        match self {
+            TraceValue::ImmRef { .. } => Some(RefType::Imm),
+            TraceValue::MutRef { .. } => Some(RefType::Mut),
+            _ => None,
+        }
+    }
 }
 
 impl BufferedEventStream {
