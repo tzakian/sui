@@ -3422,6 +3422,8 @@ impl ProtocolConfig {
                     }
                 }
                 70 => {
+                    // OVERRIDE
+                    // cfg.feature_flags.enable_ptb_execution_v2 = true;
                     if chain != Chain::Mainnet {
                         // Enable smart ancestor selection for testnet
                         cfg.feature_flags.consensus_smart_ancestor_selection = true;
@@ -3588,6 +3590,7 @@ impl ProtocolConfig {
                     }
                 }
                 77 => {
+                    // cfg.feature_flags.enable_ptb_execution_v2 = true;
                     cfg.feature_flags.uncompressed_g1_group_elements = true;
 
                     if chain != Chain::Mainnet {

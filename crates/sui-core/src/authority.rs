@@ -6148,8 +6148,8 @@ impl NodeStateDump {
         let file = File::open(path)?;
         match format {
             NodeStateDumpEncodingType::Json => {
-        serde_json::from_reader(file).map_err(|e| anyhow::anyhow!(e))
-    }
+                serde_json::from_reader(file).map_err(|e| anyhow::anyhow!(e))
+            }
             NodeStateDumpEncodingType::Bcs => {
                 bcs::from_reader(file).map_err(|e| anyhow::anyhow!(e))
             }

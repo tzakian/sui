@@ -822,9 +822,17 @@ impl DataFetcher for NodeStateDumpFetcher {
 
     async fn get_child_object(
         &self,
-        _object_id: &ObjectID,
-        _version_upper_bound: VersionNumber,
+        object_id: &ObjectID,
+        version_upper_bound: VersionNumber,
     ) -> Result<Object, ReplayEngineError> {
-        unimplemented!("get child object is not implemented for state dump");
+        self.node_state_dump
+            .loaded_child_objects
+            .iter()
+            .find(|obj| obj.id == *object_id)
+            .map(|obj| obj.object.clone())
+            .ok_or(ReplayEngineError::ObjectVersionNotFound {
+                id: *object_id,
+                version: version_upper_bound,
+            })
     }
 }

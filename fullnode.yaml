@@ -6,7 +6,8 @@ network-address: "/dns/localhost/tcp/8080/http"
 metrics-address: "0.0.0.0:9184"
 # this address is also used for web socket connections
 json-rpc-address: "0.0.0.0:9000"
-enable-event-processing: true
+enable-event-processing: false 
+enable-index-processing: false
 
 # p2p-config:
 #   listen-address: "0.0.0.0:8084"
@@ -18,9 +19,10 @@ genesis:
   genesis-file-location: "/Users/timothyzakian/mainnet/genesis.blob"
 
 authority-store-pruning-config:
-  num-latest-epoch-dbs-to-retain: 1
+  num-latest-epoch-dbs-to-retain: 0
   epoch-db-pruning-period-secs: 3600
-  num-epochs-to-retain: 1
+  num-epochs-to-retain: 0
+  num-epochs-to-retain-for-checkpoints: 0
   max-checkpoints-in-batch: 10
   max-transactions-in-batch: 1000
   pruning-run-delay-seconds: 60
@@ -31,10 +33,10 @@ state-archive-read-config:
     - ingestion-url: "https://checkpoints.<mainnet|testnet>.sui.io"
       concurrency: 5
 
-state-debug-dump-config:
-  dump-file-directory: "/Users/timothyzakian/mainnet/dumps"
-  encoding-type: "bcs"
-  unsafe-always-dump: 10
+# state-debug-dump-config:
+#   dump-file-directory: "/Users/timothyzakian/mainnet/dumps"
+#   encoding-type: "bcs"
+#   unsafe-always-dump: 30
 
 
 p2p-config:

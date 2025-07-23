@@ -1528,11 +1528,11 @@ impl StateDebugDumpConfig {
     /// Always returns `None` in a release build no matter the state of the `unsafe_always_dump`
     /// flag.
     pub fn always_dump(&self) -> Option<usize> {
-        if cfg!(debug_assertions) {
-            self.unsafe_always_dump.clone()
-        } else {
-            None
-        }
+        // if cfg!(debug_assertions) {
+        self.unsafe_always_dump.clone()
+        // } else {
+        //     None
+        // }
     }
 }
 
