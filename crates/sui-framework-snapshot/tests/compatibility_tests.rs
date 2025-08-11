@@ -15,18 +15,24 @@ mod compatibility_tests {
 
     #[tokio::test]
     async fn test_framework_compatibility() {
-        // This test checks that the current framework is compatible with all previous framework
-        // bytecode snapshots.
-        for (version, _snapshots) in load_bytecode_snapshot_manifest() {
+        // This test checks that the current framework is compatible with the previous framework
+        // bytecode snapshot.
+        let manifest = load_bytecode_snapshot_manifest();
+        let versions = manifest.keys().cloned().collect::<Vec<_>>();
+        for versions in versions.windows(2) {
+            let [version, next_version] = *versions else {
+                panic!("Expected two versions in the window");
+            };
+            let old_framework = load_bytecode_snapshot(version).unwrap();
+            let new_framework = load_bytecode_snapshot(next_version).unwrap();
             let config =
                 ProtocolConfig::get_for_version(ProtocolVersion::new(version), Chain::Unknown);
             let binary_config = to_binary_config(&config);
-            let framework = load_bytecode_snapshot(version).unwrap();
-            let old_framework_store: BTreeMap<_, _> = framework
+            let old_framework_store: BTreeMap<_, _> = old_framework
                 .into_iter()
                 .map(|package| (package.id, package.genesis_object()))
                 .collect();
-            for cur_package in BuiltInFramework::iter_system_packages() {
+            for cur_package in new_framework.iter() {
                 if compare_system_package(
                     &old_framework_store,
                     &cur_package.id,
@@ -37,10 +43,48 @@ mod compatibility_tests {
                 .await
                 .is_none()
                 {
-                    panic!(
-                        "The current Sui framework {:?} is not compatible with version {:?}",
-                        cur_package.id, version
-                    );
+                    // Between protocol versions 63 and 67, there were incompatible upgrades across
+                    // snapshot versions, but not incompatible across the snapshot versions as they
+                    // were released/live on testnet/mainnet.
+                    //
+                    // In particular version 65 at commit
+                    // [`cf3fee71b907969b9308bfa83802c16b9b29bc70`](https://github.com/MystenLabs/sui/tree/cf3fee71b907969b9308bfa83802c16b9b29bc70/crates/sui-framework/packages/move-stdlib/sources)
+                    // was released to testnet (upgrade from version 63).
+                    //
+                    // This commit was never live on mainnet due to safe mode being triggered and the protocol version was not incremented to 65.
+                    //
+                    // Mainnet was then upgraded to protocol version 66 at commit
+                    // [`86fa6e86b62a6984b741bab9c6440adff9aec669`](https://github.com/MystenLabs/sui/tree/86fa6e86b62a6984b741bab9c6440adff9aec669/crates/sui-framework/packages/move-stdlib/sources)
+                    // (upgrade from 64).
+                    //
+                    // cf3fee71b907969b9308bfa83802c16b9b29bc70 contains `std::uq32_32` as a new
+                    // Move module. However, `86fa6e86b62a6984b741bab9c6440adff9aec669` does not
+                    // contain that module.
+                    //
+                    // Later both mainnet and testnet were upgraded to protocol version 67 at
+                    // commit
+                    // [`3ada97c109cc7ae1b451cb384a1f2cfae49c8d3e`](https://github.com/MystenLabs/sui/tree/3ada97c109cc7ae1b451cb384a1f2cfae49c8d3e/crates/sui-framework/packages/move-stdlib/sources)
+                    // which contains the `std::uq32_32` module.
+                    //
+                    // Because of this we have the following upgrade compatibility check on testnet
+                    // (T) and mainnet (M) (where Y means the `std::uq32_32` module is present and N means it is not):
+                    //
+                    // testnet: 63(N) -> 65(Y) -> 67(Y)
+                    // mainnet: 64(N) -> 66(N) -> 67(Y)
+                    //
+                    // These are valid upgrade paths across each network, but the snapshot for `65` is not compatible with `66` since
+                    // `65` contains `std::uq32_32` and `66` does not.
+                    //
+                    // Because of this we special case the check for protocol version 66 to allow
+                    // an incompatibility with the previous version 65.
+                    if next_version == 66 && version == 65 {
+                        continue;
+                    } else {
+                        panic!(
+                            "The Sui framework {:?} at version {version} is not compatible with the next version {next_version}",
+                            cur_package.id,
+                        );
+                    }
                 }
             }
         }
