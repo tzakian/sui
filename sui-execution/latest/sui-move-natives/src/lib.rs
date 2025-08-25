@@ -40,11 +40,11 @@ use self::{
     types::TypesIsOneTimeWitnessCostParams,
     validator::ValidatorValidateMetadataBcsCostParams,
 };
-use crate::crypto::group_ops::GroupOpsCostParams;
 use crate::crypto::poseidon::PoseidonBN254CostParams;
 use crate::crypto::zklogin;
 use crate::crypto::zklogin::{CheckZkloginIdCostParams, CheckZkloginIssuerCostParams};
 use crate::{crypto::group_ops, transfer::PartyTransferInternalCostParams};
+use crate::{crypto::group_ops::GroupOpsCostParams, object_runtime::object_store::CacheInfo};
 use better_any::{Tid, TidAble};
 use crypto::nitro_attestation::{self, NitroAttestationCostParams};
 use crypto::vdf::{self, VDFCostParams};
@@ -1342,8 +1342,44 @@ macro_rules! make_native {
     };
 }
 
+#[macro_export]
+macro_rules! get_extension {
+    ($context: expr, $ext: ty) => {
+        $context.extensions().get::<$ext>()
+    };
+    ($context: expr) => {
+        $context.extensions().get()
+    };
+}
+
+#[macro_export]
+macro_rules! get_extension_mut {
+    ($context: expr, $ext: ty) => {
+        $context.extensions_mut().get_mut::<$ext>()
+    };
+    ($context: expr) => {
+        $context.extensions_mut().get_mut()
+    };
+}
+
 pub(crate) fn legacy_test_cost() -> InternalGas {
     InternalGas::new(0)
+}
+
+pub(crate) fn charge_cache_or_load_gas(
+    protocol_config: &ProtocolConfig,
+    cache_info: &CacheInfo,
+) -> Option<usize> {
+    if !protocol_config.object_runtime_charge_cache_load_gas() {
+        return None;
+    }
+
+    match cache_info {
+        CacheInfo::Cached => None,
+        CacheInfo::Loaded(size) => {
+            Some(*size * protocol_config.obj_access_cost_read_per_byte() as usize)
+        }
+    }
 }
 
 pub(crate) fn abstract_size(protocol_config: &ProtocolConfig, v: &Value) -> AbstractMemorySize {
