@@ -1,9 +1,14 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::static_programmable_transactions::{
-    env::Env, linkage::resolved_linkage::RootedLinkage, loading::ast as L,
+use crate::{
+    gas_charger::GasCharger,
+    gas_meter::SuiGasMeter,
+    static_programmable_transactions::{
+        env::Env, linkage::resolved_linkage::RootedLinkage, loading::ast as L,
+    },
 };
+use move_binary_format::errors::Location;
 use move_core_types::language_storage::StructTag;
 use sui_types::{
     error::ExecutionError,
@@ -11,14 +16,24 @@ use sui_types::{
     transaction::{self as P, CallArg, ObjectArg},
 };
 
+macro_rules! charge_gas {
+    ($env: expr, $gas_charger: expr, $amount: expr) => {
+        $gas_charger
+            .move_gas_status_mut()
+            .deduct_gas($amount.into())
+            .map_err(|e| $env.convert_vm_error(e.finish(Location::Undefined)))?;
+    };
+}
+
 pub fn transaction(
+    gas_charger: &mut GasCharger,
     env: &Env,
     pt: P::ProgrammableTransaction,
 ) -> Result<L::Transaction, ExecutionError> {
     let P::ProgrammableTransaction { inputs, commands } = pt;
     let inputs = inputs
         .into_iter()
-        .map(|arg| input(env, arg))
+        .map(|arg| input(gas_charger, env, arg))
         .collect::<Result<Vec<_>, _>>()?;
     let commands = commands
         .into_iter()
@@ -28,7 +43,11 @@ pub fn transaction(
     Ok(L::Transaction { inputs, commands })
 }
 
-fn input(env: &Env, arg: CallArg) -> Result<(L::InputArg, L::InputType), ExecutionError> {
+fn input(
+    gas_charger: &mut GasCharger,
+    env: &Env,
+    arg: CallArg,
+) -> Result<(L::InputArg, L::InputType), ExecutionError> {
     Ok(match arg {
         CallArg::Pure(bytes) => (L::InputArg::Pure(bytes), L::InputType::Bytes),
         CallArg::Object(ObjectArg::Receiving(oref)) => {
@@ -37,6 +56,12 @@ fn input(env: &Env, arg: CallArg) -> Result<(L::InputArg, L::InputType), Executi
         CallArg::Object(ObjectArg::ImmOrOwnedObject(oref)) => {
             let id = &oref.0;
             let obj = env.read_object(id)?;
+            let bytes = obj.object_size_for_gas_metering();
+            charge_gas!(
+                env,
+                gas_charger,
+                bytes as u64 * env.protocol_config.obj_access_cost_read_per_byte()
+            );
             let Some(ty) = obj.type_() else {
                 invariant_violation!("Object {:?} has does not have a Move type", id);
             };

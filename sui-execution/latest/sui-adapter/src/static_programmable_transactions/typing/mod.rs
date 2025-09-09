@@ -3,6 +3,7 @@
 
 use crate::{
     execution_mode::ExecutionMode,
+    gas_charger::GasCharger,
     static_programmable_transactions::{env, loading::ast as L},
 };
 use sui_types::error::ExecutionError;
@@ -13,6 +14,7 @@ pub mod translate;
 pub mod verify;
 
 pub fn translate_and_verify<Mode: ExecutionMode>(
+    _gas_charger: &mut GasCharger,
     env: &env::Env,
     lt: L::Transaction,
 ) -> Result<ast::Transaction, ExecutionError> {

@@ -51,8 +51,9 @@ pub fn execute<Mode: ExecutionMode>(
         &package_store,
         linkage_analysis.as_ref(),
     );
-    let txn = loading::translate::transaction(&env, txn).map_err(|e| (e, vec![]))?;
-    let txn = typing::translate_and_verify::<Mode>(&env, txn).map_err(|e| (e, vec![]))?;
+    let txn = loading::translate::transaction(gas_charger, &env, txn).map_err(|e| (e, vec![]))?;
+    let txn =
+        typing::translate_and_verify::<Mode>(gas_charger, &env, txn).map_err(|e| (e, vec![]))?;
     execution::interpreter::execute::<Mode>(
         &mut env,
         metrics,
