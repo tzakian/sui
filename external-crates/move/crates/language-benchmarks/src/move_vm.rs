@@ -19,6 +19,7 @@ use move_vm_runtime::{
         in_memory_test_adapter::InMemoryTestAdapter, storage::StoredPackage,
         vm_test_adapter::VMTestAdapter,
     },
+    execution::values::Value,
     natives::move_stdlib::stdlib_native_functions,
 };
 use move_vm_runtime::{runtime::MoveRuntime, shared::gas::UnmeteredGasMeter};
@@ -148,7 +149,7 @@ fn execute<M: Measurement + 'static>(
                             module_id,
                             fun_name,
                             vec![],
-                            Vec::<Vec<u8>>::new(),
+                            Vec::<Value>::new(),
                             &mut UnmeteredGasMeter,
                             None,
                         )
