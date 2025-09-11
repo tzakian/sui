@@ -23,8 +23,7 @@ pub struct BaseHeap {
 }
 
 /// An ID for an entry in a Base Heap.
-#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct BaseHeapId(usize);
+pub type BaseHeapId = usize;
 
 /// The runtime machine "heap" for execution. This allows us to grab and return frame slots and the
 /// like. Note that this isn't a _true_ heap (crrently), it only allows for allocating and freeing
@@ -57,16 +56,22 @@ impl BaseHeap {
         }
     }
 
-    /// Allocate a slot for the value in the base heap, and then
+    /// Allocate a slot for the value in the base heap
+    pub fn allocate_value(&mut self, value: Value) -> BaseHeapId {
+        let next_id = self.next_id;
+        self.next_id += 1;
+        self.values.insert(next_id, MemBox::new(value));
+        next_id
+    }
+
+    /// Allocate a slot for the value in the base heap, and then borrow it
     pub fn allocate_and_borrow_loc(
         &mut self,
         value: Value,
     ) -> PartialVMResult<(BaseHeapId, Value)> {
-        let next_id = BaseHeapId(self.next_id);
-        self.next_id += 1;
-        self.values.insert(next_id, MemBox::new(value));
-        let ref_ = self.borrow_loc(next_id)?;
-        Ok((next_id, ref_))
+        let id = self.allocate_value(value);
+        let ref_ = self.borrow_loc(id)?;
+        Ok((id, ref_))
     }
 
     /// Moves a location out of memory
@@ -93,10 +98,35 @@ impl BaseHeap {
         self.values
             .get(&ndx)
             .ok_or_else(|| {
-                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("Local index out of bounds: {}", ndx))
+                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                    .with_message(format!("Heap index out of bounds: {}", ndx))
             })
             .map(|value| value.as_ref_value())
+    }
+
+    pub fn store_loc(&mut self, ndx: BaseHeapId, x: Value) -> PartialVMResult<()> {
+        let value_box = self.values.get_mut(&ndx).ok_or_else(|| {
+            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                .with_message(format!("Heap index out of bounds: {}", ndx))
+        })?;
+        let _ = value_box.replace(x);
+        Ok(())
+    }
+
+    pub fn move_loc(&mut self, ndx: BaseHeapId) -> PartialVMResult<Value> {
+        let value_box = self.values.get_mut(&ndx).ok_or_else(|| {
+            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                .with_message(format!("Heap index out of bounds: {}", ndx))
+        })?;
+        Ok(value_box.replace(Value::invalid()))
+    }
+
+    pub fn copy_loc(&self, ndx: BaseHeapId) -> PartialVMResult<Value> {
+        let value_box = self.values.get(&ndx).ok_or_else(|| {
+            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                .with_message(format!("Heap index out of bounds: {}", ndx))
+        })?;
+        Ok(value_box.borrow().copy_value())
     }
 
     /// Checks if the value at the location is invalid
@@ -191,17 +221,6 @@ impl StackFrame {
         Ok(())
     }
 
-    /// Returns if the location is invalid
-    pub fn is_invalid(&self, ndx: usize) -> PartialVMResult<bool> {
-        self.slice
-            .get(ndx)
-            .map(|value| matches!(&*value.borrow(), &Value::Invalid))
-            .ok_or_else(|| {
-                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("Local index out of bounds: {}", ndx))
-            })
-    }
-
     /// Gets an index, or returns an error if the index is out of range or the value is unset.
     fn get_valid(&self, ndx: usize) -> PartialVMResult<&MemBox<Value>> {
         self.slice
@@ -287,11 +306,5 @@ impl std::fmt::Display for StackFrame {
             writeln!(f, "  [{}]: {:?}", i, value)?;
         }
         Ok(())
-    }
-}
-
-impl std::fmt::Display for BaseHeapId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "base#{}", self.0)
     }
 }
