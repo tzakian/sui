@@ -89,6 +89,7 @@ pub async fn run_ptb_v2_test(path: &Path) -> Result<(), Box<dyn std::error::Erro
         "upgrade/abort_code_resolution_v46.move",
         "upgrade/type_resolution_v82.move",
         "upgrade/type_resolution.move",
+        "shared/re_share_v45.move",
     ];
     if DISABLED.iter().any(|p| path.ends_with(p)) {
         return Ok(());
