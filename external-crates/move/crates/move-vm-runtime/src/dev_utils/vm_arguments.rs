@@ -51,12 +51,12 @@ impl ValueFrame {
     pub fn allocate_args_for_call(
         mut self,
         vm: &MoveVM<'_>,
-        runtime_id: &ModuleId,
+        original_id: &ModuleId,
         function_name: &IdentStr,
         ty_args: &[Type],
         serialized_args: Vec<impl Borrow<[u8]>>,
     ) -> VMResult<Self> {
-        let f = vm.find_function(runtime_id, function_name, ty_args)?;
+        let f = vm.find_function(original_id, function_name, ty_args)?;
         let arg_types = f
             .parameters
             .into_iter()
