@@ -2949,6 +2949,7 @@ dependencies = [
  "fail",
  "hex",
  "indexmap 2.8.0",
+ "insta",
  "lasso",
  "memory-stats",
  "move-abstract-interpreter",
