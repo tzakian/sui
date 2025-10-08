@@ -1,11 +1,24 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// This module is responsible for the building of the package VTables given a root package storage
-// ID. The VTables are built by loading all the packages that are dependencies of the root package,
-// and once they are loaded creating the VTables for each package, and populating the
-// `loaded_packages` table (keyed by the _runtime_ package ID!) with the VTables for each package
-// in the transitive closure of the root package.
+//! Virtual dispatch tables for cross-package function and type resolution.
+//!
+//! This module builds and manages virtual tables (VTables) that enable efficient
+//! runtime dispatch of functions and type lookups across package boundaries.
+//! VTables are essential for the Move VM's modular loading architecture, allowing packages to call
+//! functions and use types from their dependencies and for those dependencies to be used in
+//! multiple different linkage contexts.
+//!
+//! Key responsibilities:
+//! - Building VTables from loaded packages and their dependencies
+//! - Resolving function calls across package boundaries
+//! - Managing type depth calculations for runtime type checking
+//! - Tracking defining IDs for type origin verification
+//!
+//! The dispatch system integrates with:
+//! - Package loading to build tables from compiled packages
+//! - The interpreter for function resolution during execution
+//! - Type instantiation for generic type parameter substitution
 
 use crate::{
     cache::identifier_interner::{self, IdentifierKey, intern_identifier, resolve_interned},
@@ -45,14 +58,14 @@ use std::{
 // Types
 // -------------------------------------------------------------------------------------------------
 
-/// The data structure that the VM uses to resolve all packages. Packages are loaded into this at
-/// before the beginning of execution, and based on the static call graph of the package that
-/// contains the root package id.
+/// Master dispatch table containing all loaded packages and their virtual tables.
 ///
-/// This is a transient (transaction-scoped) data structure that is created at the beginning of the
-/// transaction, is immutable for the execution of the transaction, and is dropped at the end of
-/// the transaction.
+/// This structure is built once per transaction execution and provides:
+/// - Function resolution across package boundaries
+/// - Type depth information for runtime type checking
+/// - Package origin tracking for type definitions
 ///
+/// The tables are immutable during execution and discarded after the transaction.
 /// FUTURE(vm-rewrite): The representation can be optimized to use a more efficient data structure for
 /// vtable/cross-package function resolution but we will keep it simple for now.
 #[derive(Debug)]
@@ -69,8 +82,8 @@ pub struct VMDispatchTables {
     pub(crate) defining_id_origins: BTreeMap<DefiningTypeId, OriginalId>,
 }
 
-/// A `PackageVTable` is a collection of pointers indexed by the module and name
-/// within the package.
+/// Virtual table for a single package containing function and type pointers.
+/// Enables O(1) lookup of functions and types by their intra-package keys.
 #[derive(Debug)]
 pub struct PackageVirtualTable {
     /// Representation of runtime functions.
@@ -81,13 +94,12 @@ pub struct PackageVirtualTable {
     pub defining_ids: BTreeSet<DefiningTypeId>,
 }
 
-/// This is a lookup-only map for recording information about module members in loaded package
-/// modules. It exposes an intentionally spartan interface to prevent any unexpected behavior
-/// (e.g., unstable iteration ordering) that Rust's standard collections run afoul of.
+/// Specialized map for module member definitions with controlled access patterns.
+/// Provides only lookup operations to ensure deterministic behavior across executions.
 #[derive(Debug)]
 pub struct DefinitionMap<Value>(HashMap<IntraPackageKey, Value>);
 
-/// original_address::module_name::function_name
+/// Full key for cross-package resolution: package_id::module::member.
 /// NB: This relies on no boxing -- if this introduces boxes, the arena allocation in the execution
 /// AST will leak memory.
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -161,6 +173,13 @@ impl VMDispatchTables {
         })
     }
 
+    /// Resolves a package from the dispatch tables.
+    ///
+    /// Looks up the package in the loaded packages by `id: &OriginalId`.
+    /// Returns an `Arc<Package>` if found.
+    ///
+    /// # Errors
+    /// - `VTABLE_KEY_LOOKUP_ERROR` if the package is not found
     pub fn get_package(&self, id: &OriginalId) -> PartialVMResult<Arc<Package>> {
         self.loaded_packages.get(id).cloned().ok_or_else(|| {
             PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
@@ -168,6 +187,13 @@ impl VMDispatchTables {
         })
     }
 
+    /// Resolves a module from the dispatch tables.
+    ///
+    /// Looks up the module in the loaded packages by `original_id`.
+    /// Returns a pointer loaded module if found.
+    ///
+    /// # Errors
+    /// - `VTABLE_KEY_LOOKUP_ERROR` if the package or module is not found
     pub fn resolve_loaded_module(
         &self,
         original_id: &ModuleId,
@@ -188,6 +214,13 @@ impl VMDispatchTables {
             })
     }
 
+    /// Resolves a function pointer from the dispatch tables.
+    ///
+    /// Looks up the function in the package's virtual table using the provided key.
+    /// Returns a pointer to the function for execution.
+    ///
+    /// # Errors
+    /// - `VTABLE_KEY_LOOKUP_ERROR` if the package or function is not found
     pub fn resolve_function(
         &self,
         vtable_key: &VirtualTableKey,
@@ -208,6 +241,13 @@ impl VMDispatchTables {
         }
     }
 
+    /// Resolves a type descriptor from the dispatch tables.
+    ///
+    /// Looks up the type in the package's virtual table using the provided key.
+    /// Used for type instantiation and runtime type checking.
+    ///
+    /// # Errors
+    /// - `VTABLE_KEY_LOOKUP_ERROR` if the package or type is not found
     pub fn resolve_type(
         &self,
         vtable_key: &VirtualTableKey,
@@ -234,9 +274,16 @@ impl VMDispatchTables {
     // Helpers for loading and verification
     // -------------------------------------------
 
-    // Load a type from a TypeTag into a VM type.
-    // NB: the type `TypeTag` _must_ be defining ID based. Otherwise, the type resolution will
-    // fail.
+    /// Loads a type from a [`TypeTag`] into the VM's internal type representation.
+    ///
+    /// Converts external type tags (from transactions or storage) into internal types
+    /// that can be used for execution. Handles primitive types, vectors, and datatypes.
+    ///
+    /// Note: [`TypeTag`] must use defining IDs for proper resolution.
+    ///
+    /// # Errors
+    /// - `TYPE_RESOLUTION_FAILURE` if the defining ID is not found
+    /// - `UNKNOWN_INVARIANT_VIOLATION_ERROR` if ID mismatches are detected
     pub(crate) fn load_type(&self, type_tag: &TypeTag) -> VMResult<Type> {
         Ok(match type_tag {
             TypeTag::Bool => Type::Bool,
@@ -314,8 +361,14 @@ impl VMDispatchTables {
         })
     }
 
-    // Verify the kind (constraints) of an instantiation.
-    // Function invocations call this function to verify correctness of type arguments provided
+    /// Verifies that type arguments satisfy their constraints.
+    ///
+    /// Checks that each type argument has the abilities required by its constraint.
+    /// Called during function invocation and type instantiation.
+    ///
+    /// # Errors
+    /// - `NUMBER_OF_TYPE_ARGUMENTS_MISMATCH` if argument count doesn't match constraints
+    /// - `CONSTRAINT_NOT_SATISFIED` if a type lacks the required abilities
     pub fn verify_ty_args<'a, I>(&self, constraints: I, ty_args: &[Type]) -> PartialVMResult<()>
     where
         I: IntoIterator<Item = &'a AbilitySet>,
@@ -335,6 +388,13 @@ impl VMDispatchTables {
         Ok(())
     }
 
+    /// Computes the abilities of a type.
+    ///
+    /// Determines what operations are allowed on a type (copy, drop, store, key).
+    /// Handles primitive types, vectors, and user-defined types (datatypes) with generic parameters.
+    ///
+    /// # Errors
+    /// Returns errors if type resolution fails or invariants are violated.
     pub(crate) fn abilities(&self, ty: &Type) -> PartialVMResult<AbilitySet> {
         match ty {
             Type::Bool

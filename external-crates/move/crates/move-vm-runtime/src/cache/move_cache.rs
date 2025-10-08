@@ -1,9 +1,24 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// This is the "orchestrator" of loading a package.
-// The package loader is responsible for the management of packages, package loading and caching,
-// and publishing packages to the VM.
+//! Package cache and loader for the Move VM.
+//!
+//! This module serves as the central orchestrator for package management in the Move VM. It
+//! handles the responsibility of loading, publishing, verifying, and caching Move packages to the
+//! VM.
+//!
+//! Key responsibilities:
+//! - **Package caching**: Maintains verified and compiled packages in memory for fast access
+//! - **Concurrent loading**: Handles safe concurrent package loading with proper locking
+//! - **Version management**: Tracks packages by their unique version IDs
+//! - **Memory efficiency**: Shares compiled/loaded package data across VM instances via [`Arc`]s
+//!
+//! Integration with VM architecture:
+//! - Used by the runtime to resolve package dependencies before execution
+//! - Coordinates with the validation layer to verify packages before caching
+//! - Coordinates with the JIT compiler to compile and cache executable code
+//! - Works with the runtime to link and execute cached packages
+//! - Enables package sharing across multiple concurrent executions
 
 use crate::{jit, shared::types::VersionId, validation::verification};
 use move_vm_config::runtime::VMConfig;
@@ -14,6 +29,8 @@ use std::{collections::HashMap, sync::Arc};
 // Types
 // -------------------------------------------------------------------------------------------------
 
+/// Compiled and verified Move package ready for execution.
+/// Contains both the verified AST and runtime AST (for execution).
 #[derive(Debug)]
 pub struct Package {
     pub verified: Arc<verification::ast::Package>,
@@ -22,14 +39,15 @@ pub struct Package {
 
 type PackageCache = HashMap<VersionId, Arc<Package>>;
 
-/// The loader for the VM. This is the data structure is used to resolve packages and cache them
-/// and their types. This is then used to create the VTables for the VM.
+/// Central cache for Move packages in the VM.
+/// Manages package loading, caching, and resolution.
 #[derive(Debug)]
 pub struct MoveCache {
     pub(crate) vm_config: Arc<VMConfig>,
     pub(crate) package_cache: Arc<RwLock<PackageCache>>,
 }
 
+/// Result of a package resolution attempt.
 #[derive(Debug)]
 pub enum ResolvedPackageResult {
     /// The package was found, loaded, and cached.
@@ -43,6 +61,7 @@ pub enum ResolvedPackageResult {
 // -------------------------------------------------------------------------------------------------
 
 impl MoveCache {
+    /// Creates a new package cache with the given VM configuration.
     pub fn new(vm_config: Arc<VMConfig>) -> Self {
         Self {
             vm_config,
@@ -54,14 +73,13 @@ impl MoveCache {
     // Caching Operations
     // -------------------------------------------
 
-    /// Add a package to the cache. If the package is already present, this is a no-op.
+    /// Adds a verified package to the cache.
     ///
-    /// Important: it is not an error if a package is already present when we go to insert a
-    /// package. This can happen in concurrent scenarios where multiple threads attempt to load the
-    /// same package at the same time -- they could both check that the package is not yet cached
-    /// with `cached_package_at`, and then both proceed to independenctly load and verify the
-    /// package. As the write lock is not held between the `cached_package_at` call and the call to
-    /// `add_to_cache` the package could be inserted by another thread in the meantime.
+    /// This operation is idempotent - if the package already exists in the cache it's a no-op.
+    /// Thread-safe for concurrent package loading scenarios where multiple threads
+    /// might verify and attempt to cache the same package.
+    ///
+    /// Takes ownership of the verified and runtime ASTs and wraps them in Arc for sharing.
     pub fn add_to_cache(
         &self,
         package_key: VersionId,
@@ -80,8 +98,10 @@ impl MoveCache {
         package_cache.insert(package_key, Arc::new(package));
     }
 
-    /// Get a package from the cache, if it is present.
-    /// If not present, returns `None`.
+    /// Retrieves a cached package by its version ID.
+    ///
+    /// Returns `None` if the package hasn't been loaded and cached yet.
+    /// The returned `Arc` allows efficient sharing without copying.
     pub fn cached_package_at(&self, package_key: VersionId) -> Option<Arc<Package>> {
         self.package_cache.read().get(&package_key).map(Arc::clone)
     }
@@ -90,7 +110,9 @@ impl MoveCache {
     // Getters
     // -------------------------------------------
 
-    pub fn package_cache(&self) -> &RwLock<PackageCache> {
+    /// Returns a reference to the underlying package cache.
+    #[cfg(test)]
+    pub(crate) fn package_cache(&self) -> &RwLock<PackageCache> {
         &self.package_cache
     }
 
@@ -98,7 +120,8 @@ impl MoveCache {
     // Cache Eviction For Testing
     // -------------------------------------------
 
-    /// For use with unit testing: remove a package, returning `true` if it was present.
+    /// Removes a package from the cache for testing purposes.
+    /// Returns true if the package was present and removed.
     #[cfg(test)]
     pub(crate) fn remove_package(&self, version_id: &VersionId) -> bool {
         self.package_cache.write().remove(version_id).is_some()
@@ -106,6 +129,8 @@ impl MoveCache {
 }
 
 impl Package {
+    /// Creates a new package from pre-Arc'ed verified and runtime ASTs.
+    /// Used internally when packages are already Arc-wrapped.
     pub(crate) fn new(
         verified: Arc<verification::ast::Package>,
         runtime: Arc<jit::execution::ast::Package>,
@@ -113,8 +138,9 @@ impl Package {
         Self { verified, runtime }
     }
 
-    /// Used for testing that the correct number of types are loaded
-    #[allow(dead_code)]
+    /// Returns the number of types loaded in this package.
+    /// Used for testing and verification of package loading.
+    #[cfg(test)]
     pub(crate) fn loaded_types_len(&self) -> usize {
         self.runtime.vtable.types.len()
     }
