@@ -1,6 +1,18 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Gas metering for Move execution.
+//!
+//! This module defines the gas metering interface used to track and limit
+//! computational resources during Move execution. Gas prevents infinite loops
+//! and ensures fair resource usage in blockchain environments.
+//!
+//! Gas is consumed by:
+//! - Bytecode instructions based on their complexity
+//! - Memory allocations and copies
+//! - Native function calls
+//! - Storage operations
+
 use crate::shared::views::{TypeView, ValueView};
 use move_binary_format::errors::PartialVMResult;
 use move_core_types::{

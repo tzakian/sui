@@ -1,6 +1,21 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Package validation and verification framework.
+//!
+//! This module handles the critical task of validating Move packages before execution.
+//! It ensures that all bytecode is well-formed, type-safe, and adheres to Move's
+//! safety guarantees including resource safety and reference safety.
+//!
+//! Key components:
+//! - **Deserialization**: Converting binary packages to internal representation
+//! - **Verification**: Static analysis to ensure type and memory safety
+//! - **Linkage**: Resolving cross-package dependencies
+//!
+//! The validation layer acts as a security barrier, preventing malformed or
+//! malicious code from reaching the execution engine. All packages must pass
+//! validation before being cached and executed.
+
 pub mod deserialization;
 pub mod verification;
 

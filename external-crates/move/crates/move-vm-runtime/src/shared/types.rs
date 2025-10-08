@@ -1,6 +1,18 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Core type definitions for the Move VM.
+//!
+//! This module defines fundamental types used throughout the VM including
+//! identifiers for packages, modules, and types. These types provide
+//! the foundation for the VM's type system and package management.
+//!
+//! Key types:
+//! - **OriginalId**: Runtime package identifier
+//! - **DefiningTypeId**: Unique type definition identifier
+//! - **VersionId**: Package version tracking
+//! - Various identifier types for modules, functions, and fields
+
 use move_core_types::account_address::AccountAddress;
 
 // -------------------------------------------------------------------------------------------------

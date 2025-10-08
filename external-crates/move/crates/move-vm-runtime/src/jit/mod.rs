@@ -1,6 +1,36 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Just-In-Time compilation and optimization framework for Move bytecode.
+//!
+//! This module implements bytecode transformation passes that optimize and prepare
+//! Move bytecode for efficient execution. The JIT system operates in two phases:
+//! compilation (bytecode to AST) and optimization (AST transformations).
+//!
+//! Key components:
+//! - **Execution AST**: Optimized representation for runtime execution
+//! - **Optimization passes**: Dead code elimination and other transformations
+//! - **Translation layer**: Converts between bytecode and AST representations
+//!
+//! The JIT integrates with:
+//! - The validation layer to receive verified bytecode
+//! - The cache system to store compiled packages
+//! - The interpreter which executes the optimized AST
+
+//! Just-In-Time compilation and optimization for the Move VM.
+//!
+//! This module provides bytecode optimization and AST translation capabilities
+//! for the Move VM. It transforms verified Move bytecode into an optimized
+//! runtime representation that can be executed more efficiently.
+//!
+//! Key components:
+//! - **execution**: Runtime AST representation and translation from bytecode
+//! - **optimization**: Bytecode optimization passes for performance improvements
+//!
+//! The JIT system can optionally optimize bytecode based on VM configuration,
+//! performing transformations like dead code elimination while preserving
+//! program semantics.
+
 pub mod execution;
 pub mod optimization;
 
@@ -13,6 +43,9 @@ use crate::{
 use move_binary_format::errors::PartialVMResult;
 use move_vm_config::runtime::VMConfig;
 
+/// Translates a verified Move package into the runtime execution format.
+/// Optionally applies bytecode optimizations based on VM configuration before
+/// generating the final executable representation.
 pub fn translate_package(
     vm_config: &VMConfig,
     natives: &NativeFunctions,

@@ -2,6 +2,19 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Native function registry and dispatch.
+//!
+//! This module manages the registration and lookup of native functions,
+//! providing the mapping between Move function signatures and their native
+//! implementations. It handles function resolution during module loading
+//! and provides efficient dispatch during execution.
+//!
+//! Key features:
+//! - Function registration by module and name
+//! - Type-safe parameter and return value handling
+//! - Gas cost configuration per native function
+//! - Support for both standard and custom natives
+
 //! Native Function Support
 //!
 //! All Move native functions have the following signature:

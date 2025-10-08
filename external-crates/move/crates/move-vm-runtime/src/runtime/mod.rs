@@ -1,6 +1,24 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Core runtime system for the Move VM.
+//!
+//! This module provides the main runtime environment that coordinates all VM components
+//! for executing Move code. It manages the VM instance lifecycle, package loading,
+//! and execution context setup.
+//!
+//! Key responsibilities:
+//! - VM instance management and configuration
+//! - Package loading and caching coordination
+//! - Native function registration
+//! - Execution environment setup
+//!
+//! The runtime serves as the main entry point for external code to:
+//! - Load and verify Move packages
+//! - Execute Move functions
+//! - Query type information
+//! - Manage VM resources
+
 use crate::{
     cache::move_cache::{MoveCache, ResolvedPackageResult},
     dbg_println,

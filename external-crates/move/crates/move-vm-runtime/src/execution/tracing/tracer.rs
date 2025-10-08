@@ -1,6 +1,20 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! VM tracer implementation for recording execution traces.
+//!
+//! This module implements the tracing functionality that captures detailed information
+//! about VM execution including function calls, instruction execution, memory operations,
+//! and state changes. The tracer integrates with the Move trace format to produce
+//! standardized trace output that can be analyzed by external tools.
+//!
+//! The tracer tracks:
+//! - Function entry/exit with type information
+//! - Instruction-level execution with program counter tracking
+//! - Stack and local variable state changes
+//! - Global resource access patterns
+//! - Value transformations and reference handling
+
 use crate::{
     execution::{
         dispatch_tables::VMDispatchTables,
@@ -29,7 +43,9 @@ use move_trace_format::{
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
-/// Internal state for the tracer. This is where the actual tracing logic is implemented.
+/// The main VM tracer that records execution events and builds trace output.
+/// This struct maintains the internal state needed to track execution across
+/// function calls, stack operations, and memory accesses.
 pub(crate) struct VMTracer<'a> {
     trace: &'a mut MoveTraceBuilder,
     pc: Option<u16>,
@@ -39,6 +55,8 @@ pub(crate) struct VMTracer<'a> {
     effects: Vec<EF>,
 }
 
+/// Represents the different states a global value can be in during tracing.
+/// Tracks how values move between different storage locations and contexts.
 #[derive(Debug, Clone)]
 pub(crate) enum GlobalValue {
     // Currently loaded into a local
@@ -52,7 +70,8 @@ pub(crate) enum GlobalValue {
     AtStackOffset(usize),
 }
 
-/// Information about a frame that we keep during trace building
+/// Information about a function call frame maintained during trace building.
+/// Stores metadata needed to properly trace function execution and local variables.
 #[derive(Debug, Clone)]
 struct FrameInfo {
     frame_identifier: TraceIndex,
@@ -61,17 +80,17 @@ struct FrameInfo {
     return_types: Vec<TagWithLayoutInfoOpt>,
 }
 
-/// A type tag, and the move type layout and reference information for that type if it is
-/// computable without error. Due to runtime value depth restrictions you can have a valid type
-/// whose type layout is not computable at runtime without error.
+/// A type tag with optional layout information for tracing.
+/// Layout information may be missing for deeply nested types that exceed runtime limits.
+/// This allows tracing to continue even when complete type information isn't available.
 #[derive(Debug, Clone)]
 struct TagWithLayoutInfoOpt {
     tag: TypeTag,
     layout: (Option<AnnotatedTypeLayout>, Option<Mutability>),
 }
 
-// Information about a function that we use for trace building
-// All types are fully substituted
+/// Complete type information for a function call used during trace building.
+/// All type parameters are fully instantiated with concrete types.
 #[derive(Debug, Clone)]
 struct FunctionTypeInfo {
     ty_args: Vec<TypeTag>,
@@ -79,10 +98,9 @@ struct FunctionTypeInfo {
     return_types: Vec<TagWithLayoutInfoOpt>,
 }
 
-/// A runtime location can refer to the stack to make it easier to refer to values on the stack and
-/// resolving them. However, the stack is not a valid location for a reference and all references
-/// are rooted in a local or global so the Trace `Location` does not include the stack, and
-/// only `Local`, `Global`, and `Indexed` locations.
+/// Runtime representation of where a value is located during execution.
+/// This includes temporary stack locations that don't appear in the final trace,
+/// as all references must be rooted in locals or globals for the trace format.
 #[derive(Debug, Clone)]
 enum RuntimeLocation {
     Stack(usize),

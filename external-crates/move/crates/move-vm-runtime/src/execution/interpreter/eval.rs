@@ -1,6 +1,20 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Core bytecode evaluation engine for the Move interpreter.
+//!
+//! This module contains the main instruction execution loop that processes Move bytecode.
+//! It handles all bytecode instructions including arithmetic operations, control flow,
+//! memory operations, and function calls. The evaluator maintains the operand stack
+//! and manages transitions between stack frames during execution.
+//!
+//! Key responsibilities:
+//! - Instruction dispatch and execution
+//! - Operand stack manipulation
+//! - Function calls and returns
+//! - Reference and borrow checking at runtime
+//! - Integration with native functions
+
 use crate::{
     dbg_println,
     execution::{
@@ -37,17 +51,26 @@ use smallvec::SmallVec;
 
 use std::{collections::VecDeque, sync::Arc};
 
+/// Represents the execution status of a single step in the interpreter.
 #[derive(PartialEq, Eq)]
 enum StepStatus {
+    /// The interpreter should continue executing the next instruction.
     Running,
+    /// Execution has completed (the call stack is empty).
     Done,
 }
 
+/// Context data passed through the execution loop containing VM runtime state.
+/// This aggregates mutable references to various VM components needed during execution.
 struct RunContext<'vm_cache, 'native, 'native_lifetimes, 'tracer, 'trace_builder> {
+    /// Dispatch tables for resolving virtual function calls and type information.
     vtables: &'vm_cache mut VMDispatchTables,
+    /// VM configuration settings.
     vm_config: Arc<VMConfig>,
+    /// Native function extensions provided by the host environment.
     extensions: &'native mut NativeContextExtensions<'native_lifetimes>,
     // TODO: consider making this `Option<&mut VMTracer<'_>>` and passing it like that everywhere?
+    /// Optional tracer for execution debugging and monitoring.
     tracer: &'tracer mut Option<VMTracer<'trace_builder>>,
 }
 
@@ -111,6 +134,9 @@ pub(super) fn run(
     Ok(operand_stack.value)
 }
 
+/// Executes a single instruction step in the interpreter.
+/// Handles function calls and returns specially, delegating other instructions to op_step_impl.
+/// Returns whether execution should continue or is complete.
 fn step(
     state: &mut MachineState,
     run_context: &mut RunContext,
@@ -246,6 +272,8 @@ fn step(
     }
 }
 
+/// Returns true if the instruction is a control flow instruction that modifies the program counter.
+/// Control flow instructions handle their own PC updates, while others increment PC by 1.
 #[inline]
 fn control_flow_instruction(instruction: &Bytecode) -> bool {
     match instruction {
@@ -330,6 +358,9 @@ fn control_flow_instruction(instruction: &Bytecode) -> bool {
     }
 }
 
+/// Executes a single bytecode instruction (excluding function calls and returns).
+/// This function handles the vast majority of Move VM bytecode instructions including
+/// arithmetic, local variable access, field access, and vector operations.
 #[inline]
 fn op_step_impl(
     state: &mut MachineState,
@@ -811,6 +842,9 @@ fn op_step_impl(
     Ok(())
 }
 
+/// Resolves a CallType to the actual function pointer that should be invoked.
+/// Direct calls return the function pointer directly, while virtual calls require
+/// vtable lookup using the dispatch tables.
 #[inline]
 fn call_type_to_function(
     run_context: &RunContext,
@@ -822,6 +856,9 @@ fn call_type_to_function(
     }
 }
 
+/// Calls a function, handling both native functions and Move bytecode functions.
+/// For native functions, executes immediately and returns. For bytecode functions,
+/// pushes a new call frame onto the call stack.
 fn call_function(
     state: &mut MachineState,
     run_context: &mut RunContext,
@@ -895,7 +932,7 @@ fn call_function(
     Ok(())
 }
 
-/// Call a native functions.
+/// Calls a native function and handles error propagation with proper location information.
 fn call_native(
     state: &mut MachineState,
     run_context: &mut RunContext,
@@ -917,6 +954,9 @@ fn call_native(
     Ok(StepStatus::Running)
 }
 
+/// Internal implementation for calling native functions.
+/// Pops arguments from the operand stack, executes the native function,
+/// and pushes return values back onto the operand stack.
 fn call_native_impl(
     state: &mut MachineState,
     run_context: &mut RunContext,
@@ -961,6 +1001,9 @@ fn call_native_impl(
     Ok(())
 }
 
+/// Executes a native function with the provided arguments.
+/// This is used both by the interpreter and for direct native function calls.
+/// Validates argument count, charges gas, and executes the native implementation.
 pub(super) fn call_native_with_args(
     state: Option<&MachineState>,
     vtables: &VMDispatchTables,
@@ -1018,7 +1061,8 @@ pub(super) fn call_native_with_args(
     Ok(return_values)
 }
 
-/// Perform a binary operation to two values at the top of the stack.
+/// Performs a binary operation on two values from the top of the operand stack.
+/// Pops two operands, applies the operation, and pushes the result.
 fn binop<F, T>(state: &mut MachineState, f: F) -> PartialVMResult<()>
 where
     Value: VMValueCast<T>,
@@ -1030,7 +1074,8 @@ where
     state.push_operand(result)
 }
 
-/// Perform a binary operation for integer values.
+/// Performs a binary operation on integer values, handling all integer types.
+/// The operation result is converted back to the appropriate Value type.
 fn binop_int<F>(state: &mut MachineState, f: F) -> PartialVMResult<()>
 where
     F: FnOnce(IntegerValue, IntegerValue) -> PartialVMResult<IntegerValue>,
@@ -1047,7 +1092,8 @@ where
     })
 }
 
-/// Perform a binary operation for boolean values.
+/// Performs a binary operation that returns a boolean result.
+/// Used for comparison operations and logical operations.
 fn binop_bool<F, T>(state: &mut MachineState, f: F) -> PartialVMResult<()>
 where
     Value: VMValueCast<T>,
@@ -1056,6 +1102,8 @@ where
     binop(state, |lhs, rhs| Ok(Value::bool(f(lhs, rhs)?)))
 }
 
+/// Pushes a new call frame onto the call stack for a bytecode function call.
+/// Pops function arguments from the operand stack and sets up the new frame.
 fn push_call_frame(
     state: &mut MachineState,
     function: VMPointer<Function>,
@@ -1068,6 +1116,8 @@ fn push_call_frame(
     state.push_call(function, ty_args, args)
 }
 
+/// Converts a PartialVMResult to a full VMResult by adding location information.
+/// Adds execution state if configured and creates a core dump on critical errors.
 fn partial_error_to_error<T>(
     state: &MachineState,
     run_context: &RunContext,
@@ -1087,6 +1137,8 @@ fn partial_error_to_error<T>(
     })
 }
 
+/// Checks if a type's nesting depth exceeds the configured maximum.
+/// This prevents stack overflow from deeply nested types during execution.
 fn check_depth_of_type(run_context: &mut RunContext, ty: &Type) -> PartialVMResult<u64> {
     let Some(max_depth) = run_context
         .vm_config
@@ -1098,6 +1150,8 @@ fn check_depth_of_type(run_context: &mut RunContext, ty: &Type) -> PartialVMResu
     check_depth_of_type_impl(run_context, ty, 0, max_depth)
 }
 
+/// Recursive implementation for type depth checking.
+/// Traverses type structure and calculates the total nesting depth.
 fn check_depth_of_type_impl(
     run_context: &mut RunContext,
     ty: &Type,

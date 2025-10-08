@@ -1,6 +1,24 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Stack-based bytecode interpreter for Move execution.
+//!
+//! This module implements the core interpreter that executes Move bytecode instructions.
+//! The interpreter manages a call stack of frames, each with its own operand stack and locals,
+//! following a traditional stack machine architecture.
+//!
+//! Key components:
+//! - **Evaluation engine**: Executes bytecode instructions
+//! - **Call stack**: Manages function frames and returns
+//! - **Locals management**: Handles function parameters and local variables
+//! - **Machine state**: Maintains interpreter execution state
+//!
+//! The interpreter integrates with:
+//! - Dispatch tables for function resolution
+//! - Native extensions for host functions
+//! - Gas metering for resource accounting
+//! - Execution tracing for debugging
+
 use crate::{
     execution::{
         dispatch_tables::VMDispatchTables,
@@ -21,8 +39,26 @@ pub(crate) mod helpers;
 pub mod locals;
 pub(crate) mod state;
 
-/// Entrypoint into the interpreter. All external calls need to be routed through this
-/// function.
+/// Main entry point for executing a Move function.
+///
+/// Sets up the execution environment and runs either native or bytecode functions.
+/// Handles initial frame setup, gas metering, and tracing throughout execution.
+///
+/// # Parameters
+/// - `vtables`: Dispatch tables for function and type resolution
+/// - `vm_config`: Configuration parameters for the VM
+/// - `extensions`: Native function extensions
+/// - `tracer`: Optional execution tracer for debugging
+/// - `gas_meter`: Gas metering for resource accounting
+/// - `function`: The function to execute
+/// - `ty_args`: Type arguments for generic functions
+/// - `args`: Runtime arguments to the function
+///
+/// # Returns
+/// Vector of return values from the function execution
+///
+/// # Errors
+/// Returns VM errors for execution failures, type mismatches, or gas exhaustion
 pub(crate) fn run(
     vtables: &mut VMDispatchTables,
     vm_config: Arc<VMConfig>,

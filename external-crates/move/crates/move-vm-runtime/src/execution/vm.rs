@@ -1,6 +1,31 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Main VM execution context and entry points.
+//!
+//! This module provides the high-level VM interface for executing Move functions,
+//! managing the execution environment, and coordinating between different VM components.
+//! It serves as the bridge between external callers and the internal execution engine.
+//!
+//! Key responsibilities:
+//! - Function execution setup and teardown
+//! - Argument validation and conversion
+//! - Result handling and error propagation
+//! - Integration with dispatch tables and gas metering
+
+//! Virtual Machine execution engine for Move bytecode.
+//!
+//! This module provides the main execution interface for running Move functions.
+//! The MoveVM struct serves as the primary entry point for executing Move code,
+//! managing virtual tables, native extensions, and execution context.
+//!
+//! Key responsibilities:
+//! - Function execution with type checking and gas metering
+//! - Entry point validation and visibility checking
+//! - Integration with native function extensions
+//! - Tracing and debugging support
+//! - VM configuration management
+
 use crate::{
     cache::identifier_interner::{intern_ident_str, intern_identifier},
     dbg_println,
@@ -38,11 +63,13 @@ use super::{
 // Types
 // -------------------------------------------------------------------------------------------------
 
-/// A runnable Instance of a Virtual Machine. This is an instance holding the Runtime VTables in
-/// order to invoke functions from it. This instance is the main "execution" context for a virtual
-/// machine, allowing calls to `execute_function` to run Move code located in the VM Cache.
-///
-/// Note this does NOT support publication. See `vm.rs` for publication.
+/// A runnable instance of the Move Virtual Machine.
+/// 
+/// This is the main execution context that holds runtime dispatch tables and provides
+/// the interface for executing Move functions. It manages the execution environment
+/// including native extensions, gas metering, and configuration settings.
+/// 
+/// Note: This struct handles execution only. Module publication is handled elsewhere.
 #[allow(dead_code)]
 pub struct MoveVM<'extensions> {
     /// The VM cache
@@ -55,13 +82,16 @@ pub struct MoveVM<'extensions> {
     pub(crate) vm_config: Arc<VMConfig>,
 }
 
+/// Internal representation of a Move function ready for execution.
+/// Contains the function pointer and resolved type information.
 pub(crate) struct MoveVMFunction {
     function: VMPointer<Function>,
     pub(crate) parameters: Vec<Type>,
     pub(crate) return_type: Vec<Type>,
 }
 
-/// Externally visibile information about a function that can be asked and the VM will answer.
+/// Public information about a loaded function that can be queried.
+/// Provides metadata useful for external tools and validation.
 pub struct LoadedFunctionInformation {
     pub is_entry: bool,
     pub is_native: bool,
@@ -72,11 +102,15 @@ pub struct LoadedFunctionInformation {
     pub return_: Vec<Type>,
 }
 
+/// Public information about a loaded type including its abilities and metadata.
+/// Used for type introspection and validation by external tools.
 pub struct LoadedTypeInformation {
     pub abilities: AbilitySet,
     pub datatype_info: Option<DatatypeInfo>,
 }
 
+/// Metadata about a datatype including its identity and location.
+/// Tracks both the original definition and current defining context.
 pub struct DatatypeInfo {
     pub original_id: OriginalId,
     pub defining_id: DefiningTypeId,

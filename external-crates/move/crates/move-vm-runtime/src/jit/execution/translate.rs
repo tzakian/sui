@@ -203,7 +203,7 @@ pub fn package(
         version_id,
         original_id,
         loaded_modules: IndexMap::new(),
-        package_arena: Arena::new(),
+        package_arena: Arena::default(),
         vtable_funs: DefinitionMap::empty(),
         vtable_types: DefinitionMap::empty(),
         type_origin_table,

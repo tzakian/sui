@@ -2,6 +2,19 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Runtime value implementation for the Move VM.
+//!
+//! This module contains the concrete implementation of all Move values during execution.
+//! It provides the memory management, type safety, and operations that make Move's
+//! value system work at runtime.
+//!
+//! Key concepts:
+//! - **Value**: The core enum representing all possible Move values
+//! - **Reference types**: Safe borrowing mechanisms for accessing values
+//! - **Memory management**: Reference counting and lifetime tracking
+//! - **Type specialization**: Optimized storage for primitive vectors
+//! - **Global storage**: Integration with Move's global storage model
+
 // THIS IS TO SUPRESS CI ERRORS -- DO NOT MERGE IT
 #![allow(deprecated)]
 
@@ -51,6 +64,8 @@ macro_rules! debug_writeln {
 //  concrete Move concepts and may carry additional information that is not defined by the
 //  language, but required by the implementation.
 
+/// A reference-counted memory box that provides shared mutable access to values.
+/// Used throughout the VM to manage value lifetimes and enable Move's borrowing semantics.
 pub struct MemBox<T: Sized>(std::rc::Rc<std::cell::RefCell<T>>);
 
 impl<T: Debug> std::fmt::Debug for MemBox<T> {
@@ -61,6 +76,9 @@ impl<T: Debug> std::fmt::Debug for MemBox<T> {
     }
 }
 
+/// The core runtime representation of all Move values.
+/// This enum covers all possible values that can exist during Move program execution,
+/// including primitives, containers, and references.
 #[derive(Debug)]
 pub enum Value {
     Invalid,
@@ -85,6 +103,8 @@ pub enum Value {
     Reference(Reference),
 }
 
+/// Optimized storage for vectors of primitive types.
+/// These avoid the overhead of boxing each individual element.
 #[derive(Debug)]
 pub enum PrimVec {
     VecU8(Vec<u8>),
@@ -97,10 +117,14 @@ pub enum PrimVec {
     VecAddress(Vec<AccountAddress>),
 }
 
+/// A fixed-size vector of values, used for struct fields and similar contexts.
+/// Once created, the size cannot be changed, but individual elements can be modified.
 #[derive(Debug)]
 pub struct FixedSizeVec(Box<[MemBox<Value>]>);
 
-/// Runtime representation of a Move value.
+/// Runtime representation of a Move reference.
+/// References provide safe access to values without transferring ownership,
+/// supporting both direct value references and indexed references into containers.
 #[derive(Debug)]
 pub enum Reference {
     Value(MemBox<Value>),
@@ -115,8 +139,8 @@ pub enum Reference {
 // representation, acting as public interfaces. The methods they provide closely resemble the Move
 // concepts their names suggest: move_local, borrow_field, pack, unpack, etc.
 //
-/// An integer value in Move.
-
+/// An integer value in Move, abstracting over all integer types.
+/// Supports operations and conversions between different integer sizes.
 #[derive(Debug)]
 pub enum IntegerValue {
     U8(u8),
@@ -127,35 +151,39 @@ pub enum IntegerValue {
     U256(u256::U256),
 }
 
+/// A Move struct containing an ordered list of field values.
+/// Provides operations for accessing and modifying struct fields.
 #[derive(Debug)]
 pub struct Struct(FixedSizeVec);
 
+/// A Move enum variant containing a tag and field values.
+/// Supports pattern matching and safe access to variant data.
 #[derive(Debug)]
 pub struct Variant(Box<(VariantTag, FixedSizeVec)>);
 
-// A vector. This is an alias for a Container for now but we may change
-// it once Containers are restructured.
-// It's used from vector native functions to get a vector and operate on that.
-// There is an impl for Vector which implements the API private to this module.
+/// A Move vector that can contain any type of value.
+/// Supports dynamic resizing and efficient access patterns.
+/// Used by vector native functions for runtime vector operations.
 #[derive(Debug)]
 pub struct Vector(Value);
 
-/// A reference to a Move struct that allows you to take a reference to one of its fields.
+/// A reference to a Move struct that allows borrowing individual fields.
+/// Provides safe access to struct internals without moving the struct.
 #[derive(Debug)]
 pub struct StructRef(MemBox<Value>);
 
-// A reference to a signer. Clients can attempt a cast to this struct if they are
-// expecting a Signer on the stack or as an argument.
+/// A reference to a signer value, used for authentication in Move.
+/// Signers represent the authority to access certain resources and perform operations.
 #[derive(Debug)]
 pub struct SignerRef(MemBox<Value>);
 
-// A reference to a vector. This is an alias for a ContainerRef for now but we may change
-// it once Containers are restructured.
-// It's used from vector native functions to get a reference to a vector and operate on that.
-// There is an impl for VectorRef which implements the API private to this module.
+/// A reference to a Move vector, allowing modification of the vector and its elements.
+/// Used by vector native functions to perform in-place vector operations.
 #[derive(Debug)]
 pub struct VectorRef(MemBox<Value>);
 
+/// A reference to a Move enum variant, allowing access to variant fields.
+/// Supports safe pattern matching and field access operations.
 #[derive(Debug)]
 pub struct VariantRef(MemBox<Value>);
 
@@ -170,9 +198,9 @@ struct VectorMatchRef<'v>(VectorMatch<&'v Vec<MemBox<Value>>, &'v PrimVec>);
 #[repr(transparent)]
 struct VectorMatchRefMut<'v>(VectorMatch<&'v mut Vec<MemBox<Value>>, &'v mut PrimVec>);
 
-/// A special "slot" in global storage that can hold a resource. It also keeps track of the status
-/// of the resource relative to the global state, which is necessary to compute the effects to emit
-/// at the end of transaction execution.
+/// Implementation of a global storage slot that can hold a resource.
+/// Tracks the state of resources relative to global storage for effect computation.
+/// Used to determine what changes need to be committed at transaction end.
 #[derive(Debug)]
 pub enum GlobalValueImpl {
     /// No resource resides in this slot or in storage.
@@ -184,12 +212,13 @@ pub enum GlobalValueImpl {
     Filled(MemBox<Value>),
 }
 
-/// A wrapper around `GlobalValueImpl`, representing a "slot" in global storage that can
-/// hold a resource.
+/// A wrapper around GlobalValueImpl representing a slot in global storage.
+/// Provides the interface for accessing and modifying global resources.
 #[derive(Debug)]
 pub struct GlobalValue(GlobalValueImpl);
 
-/// Constant representation of a Move value.
+/// Compile-time constant values that can be embedded in Move bytecode.
+/// These are resolved to runtime values during execution.
 #[derive(Debug)]
 pub(crate) enum ConstantValue {
     U8(u8),
@@ -360,18 +389,23 @@ impl Value {
 }
 
 impl<T: Debug> MemBox<T> {
+    /// Creates a new MemBox containing the given value.
     pub fn new(t: T) -> MemBox<T> {
         Self(std::rc::Rc::new(std::cell::RefCell::new(t)))
     }
 
+    /// Borrows the contained value immutably.
     pub fn borrow(&self) -> std::cell::Ref<'_, T> {
         self.0.borrow()
     }
 
+    /// Borrows the contained value mutably.
     pub fn borrow_mut(&self) -> std::cell::RefMut<'_, T> {
         self.0.borrow_mut()
     }
 
+    /// Extracts the value from the MemBox, ensuring no other references exist.
+    /// Returns an error if there are still outstanding references.
     pub fn take(self) -> PartialVMResult<T> {
         match std::rc::Rc::try_unwrap(self.0) {
             Ok(refcell) => Ok(refcell.into_inner()),
@@ -383,6 +417,7 @@ impl<T: Debug> MemBox<T> {
         }
     }
 
+    /// Replaces the contained value and returns the previous value.
     pub fn replace(&mut self, t: T) -> T {
         self.0.replace(t)
     }

@@ -1,6 +1,32 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Local variable management for the Move interpreter.
+//!
+//! This module handles storage and access to local variables within function frames.
+//! Each function frame maintains its own set of locals including parameters and
+//! variables declared within the function body. The module ensures safe access
+//! to locals with proper borrow checking and move semantics.
+//!
+//! Key features:
+//! - Indexed access to local variables
+//! - Move and copy operations respecting ownership
+//! - Reference creation and management
+//! - Safe destruction of locals when frames exit
+
+//! Memory management structures for the Move VM interpreter.
+//!
+//! This module provides the heap and stack frame abstractions that manage
+//! local variables and references during bytecode execution. The VM maintains
+//! two separate memory spaces:
+//!
+//! - **BaseHeap**: Stores values that outlive individual function calls, such as
+//!   arguments passed to native functions and objects referenced across frames.
+//! - **MachineHeap**: Manages stack frames for function local variables during execution.
+//!
+//! Stack frames contain local variables for a single function call, with proper
+//! lifetime management to ensure references don't outlive their referenced values.
+
 #![allow(unsafe_code)]
 
 use crate::execution::values::{MemBox, values_impl::Value};
@@ -14,26 +40,29 @@ use std::collections::HashMap;
 // Heap
 // -------------------------------------------------------------------------------------------------
 
-/// The Move VM's base heap. This is PTBs and arguments to invocation functions are stored, so that
-/// we can handle references to/from them.
+/// The Move VM's base heap stores values that persist beyond individual function calls.
+/// This includes arguments to native functions and values that can be referenced
+/// across different execution contexts. Each value is assigned a unique ID for tracking.
 #[derive(Debug)]
 pub struct BaseHeap {
     next_id: usize,
     values: HashMap<BaseHeapId, MemBox<Value>>,
 }
 
-/// An ID for an entry in a Base Heap.
+/// Unique identifier for values stored in the BaseHeap.
+/// Used to track and access values that outlive individual function calls.
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct BaseHeapId(usize);
 
-/// The runtime machine "heap" for execution. This allows us to grab and return frame slots and the
-/// like. Note that this isn't a _true_ heap (crrently), it only allows for allocating and freeing
-/// stackframes.
+/// The runtime machine heap manages stack frames during function execution.
+/// Currently simplified to just allocate and deallocate stack frames,
+/// but provides the foundation for more sophisticated memory management.
 #[derive(Debug)]
 pub struct MachineHeap {}
 
-/// A stack frame is an allocated frame. It was allocated starting at `start` in the heap. When it
-/// is freed, we need to check that we are freeing the one on the end of the heap.
+/// A stack frame containing local variables for a single function call.
+/// Manages the lifetime of local variables and ensures proper cleanup
+/// when the function returns or encounters an error.
 #[derive(Debug)]
 pub struct StackFrame {
     slice: Vec<MemBox<Value>>,
@@ -57,7 +86,8 @@ impl BaseHeap {
         }
     }
 
-    /// Allocate a slot for the value in the base heap
+    /// Allocates a slot for a value in the base heap and returns its ID.
+    /// The value will persist until explicitly removed or the heap is dropped.
     pub fn allocate_value(&mut self, value: Value) -> BaseHeapId {
         let next_id = BaseHeapId(self.next_id);
         self.next_id += 1;
@@ -65,7 +95,8 @@ impl BaseHeap {
         next_id
     }
 
-    /// Allocate a slot for the value in the base heap, and then borrow it
+    /// Allocates a value in the base heap and immediately creates a reference to it.
+    /// Returns both the heap ID and a reference value for immediate use.
     pub fn allocate_and_borrow_loc(
         &mut self,
         value: Value,
@@ -75,7 +106,8 @@ impl BaseHeap {
         Ok((id, ref_))
     }
 
-    /// Moves a location out of memory
+    /// Moves a value out of the base heap, replacing it with an invalid marker.
+    /// The caller takes ownership of the value, and the slot becomes unusable.
     pub fn take_loc(&mut self, ndx: BaseHeapId) -> PartialVMResult<Value> {
         if self.is_invalid(ndx)? {
             return Err(
@@ -93,7 +125,8 @@ impl BaseHeap {
         Ok(value_box.replace(Value::invalid()))
     }
 
-    /// Borrows the specified location
+    /// Creates a reference to a value in the base heap without moving it.
+    /// The original value remains in the heap and can be borrowed multiple times.
     pub fn borrow_loc(&self, ndx: BaseHeapId) -> PartialVMResult<Value> {
         self.values
             .get(&ndx)
@@ -104,7 +137,8 @@ impl BaseHeap {
             .map(|value| value.as_ref_value())
     }
 
-    /// Checks if the value at the location is invalid
+    /// Checks if the value at the given location has been moved out (invalid).
+    /// Invalid values cannot be used and will cause runtime errors if accessed.
     pub fn is_invalid(&self, ndx: BaseHeapId) -> PartialVMResult<bool> {
         self.values
             .get(&ndx)
@@ -131,8 +165,9 @@ impl MachineHeap {
         Self {}
     }
 
-    /// Allocates a stack frame with the given size.
-    /// If there is not enough space in the heap, it returns an error.
+    /// Allocates a new stack frame for function local variables.
+    /// Initializes the frame with the provided parameter values and fills
+    /// remaining slots with invalid markers.
     pub fn allocate_stack_frame(
         &mut self,
         params: Vec<Value>,
@@ -153,7 +188,8 @@ impl MachineHeap {
         })
     }
 
-    /// Frees the given stack frame, ensuring that it is the last frame on the heap.
+    /// Frees a stack frame and releases its resources.
+    /// Currently a no-op since frames are automatically cleaned up on drop.
     pub fn free_stack_frame(&mut self, _frame: StackFrame) -> PartialVMResult<()> {
         Ok(())
     }
@@ -168,12 +204,14 @@ impl StackFrame {
         self.slice.iter()
     }
 
-    /// Makes a copy of the value, via `value.copy_value`
+    /// Creates a copy of the value at the specified local variable index.
+    /// The original value remains in the frame unchanged.
     pub fn copy_loc(&self, ndx: usize) -> PartialVMResult<Value> {
         self.get_valid(ndx).map(|value| value.borrow().copy_value())
     }
 
-    /// Moves a location out of memory, swapping it with `ValueImpl::Invalid`
+    /// Moves a value out of a local variable slot, marking it as invalid.
+    /// The caller takes ownership and the slot cannot be used again.
     pub fn move_loc(&mut self, ndx: usize) -> PartialVMResult<Value> {
         let value_slot = self.get_valid_mut(ndx)?;
         Ok(std::mem::replace(
@@ -182,11 +220,14 @@ impl StackFrame {
         ))
     }
 
+    /// Creates a reference to a local variable without moving the value.
+    /// The original value remains accessible in the frame.
     pub fn borrow_loc(&mut self, ndx: usize) -> PartialVMResult<Value> {
         self.get_valid_mut(ndx).map(|value| value.as_ref_value())
     }
 
-    /// Stores the value at the location
+    /// Stores a value in the specified local variable slot.
+    /// Overwrites any existing value at that location.
     pub fn store_loc(&mut self, ndx: usize, x: Value) -> PartialVMResult<()> {
         if ndx >= self.slice.len() {
             return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
@@ -196,7 +237,8 @@ impl StackFrame {
         Ok(())
     }
 
-    /// Gets an index, or returns an error if the index is out of range or the value is unset.
+    /// Gets a valid value reference by index, ensuring it's not out of bounds or invalid.
+    /// Returns an error if the index is invalid or the slot contains an invalid value.
     fn get_valid(&self, ndx: usize) -> PartialVMResult<&MemBox<Value>> {
         self.slice
             .get(ndx)
@@ -214,7 +256,8 @@ impl StackFrame {
             })
     }
 
-    /// Gets an index, or returns an error if the index is out of range or the value is unset.
+    /// Gets a mutable reference to a valid value by index.
+    /// Returns an error if the index is invalid or the slot contains an invalid value.
     fn get_valid_mut(&mut self, ndx: usize) -> PartialVMResult<&mut MemBox<Value>> {
         self.slice
             .get_mut(ndx)
@@ -232,6 +275,9 @@ impl StackFrame {
             })
     }
 
+    /// Drops all non-reference values from the stack frame for cleanup.
+    /// References are invalidated but not dropped to avoid use-after-free issues.
+    /// Returns an iterator over the dropped values for gas charging purposes.
     pub fn drop_all_values(&mut self) -> impl Iterator<Item = Value> {
         self.slice
             .iter_mut()

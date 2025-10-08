@@ -1,6 +1,21 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Shared utilities and common types for the Move VM.
+//!
+//! This module contains cross-cutting concerns used throughout the VM implementation,
+//! including constants, type definitions, and utility functions that don't belong
+//! to a specific subsystem.
+//!
+//! Key components:
+//! - **Constants**: System limits and configuration values
+//! - **Types**: Common type definitions and identifiers
+//! - **Gas**: Gas metering interfaces and implementations
+//! - **Views**: Type system abstractions
+//! - **VM Pointer**: Smart pointer for VM data structures
+//! - **Binary cache**: Caching for deserialized binary data
+//! - **Linkage context**: Package linking and dependency management
+
 use std::{collections::HashMap, hash::Hash};
 
 pub mod binary_cache;

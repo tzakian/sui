@@ -2,6 +2,15 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Extension context for native functions.
+//!
+//! This module provides the context and state management for native function execution.
+//! Extensions allow native functions to maintain state across calls and access
+//! VM-provided services like gas metering and type resolution.
+//!
+//! The extension system supports modular native function implementations where
+//! different chains or environments can provide their own native extensions.
+
 use better_any::{Tid, TidExt};
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::vm_status::StatusCode;

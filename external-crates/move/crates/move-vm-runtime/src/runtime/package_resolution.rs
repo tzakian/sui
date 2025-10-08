@@ -1,6 +1,23 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Package loading and dependency resolution.
+//!
+//! This module handles the complex process of loading Move packages and their
+//! dependencies, ensuring all required code is available for execution.
+//! It coordinates between storage, verification, and caching layers.
+//!
+//! Key features:
+//! - Transitive dependency loading
+//! - Circular dependency detection
+//! - Package verification before caching
+//! - Efficient reuse of already-loaded packages
+//!
+//! The resolution process ensures that all packages are:
+//! - Properly linked with their dependencies
+//! - Verified for type safety
+//! - Cached for efficient execution
+
 // -------------------------------------------------------------------------------------------------
 // Package Operations
 // -------------------------------------------------------------------------------------------------

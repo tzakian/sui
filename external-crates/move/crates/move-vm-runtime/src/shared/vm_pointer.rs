@@ -1,6 +1,19 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+//! VM-specific smart pointer implementation.
+//!
+//! This module provides a specialized pointer type for the VM that allows
+//! efficient sharing of immutable data structures without reference counting
+//! overhead. VMPointer is designed for arena-allocated data that lives
+//! for the duration of VM execution.
+//!
+//! Key features:
+//! - Zero-cost abstraction over raw pointers
+//! - Safe sharing of immutable VM data
+//! - Explicit cloning semantics
+//! - Integration with arena allocation
+
 #![allow(unsafe_code)]
 
 use std::mem::MaybeUninit;
