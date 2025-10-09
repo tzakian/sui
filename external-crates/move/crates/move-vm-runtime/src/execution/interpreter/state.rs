@@ -401,7 +401,7 @@ impl ValueStack {
     fn last_n(&self, n: usize) -> PartialVMResult<impl ExactSizeIterator<Item = &Value>> {
         if self.value.len() < n {
             return Err(PartialVMError::new(StatusCode::EMPTY_VALUE_STACK)
-                .with_message("Failed to get last n arguments on the argument stack".to_string()));
+                .with_message(VMErrorMessage::FailedToGetArgumentsFromStack));
         }
         Ok(self.value[(self.value.len() - n)..].iter())
     }

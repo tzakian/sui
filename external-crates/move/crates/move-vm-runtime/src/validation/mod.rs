@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use move_binary_format::{
     IndexKind,
-    errors::{Location, PartialVMError, VMResult, verification_error},
+    errors::{Location, PartialVMError, VMErrorMessage, VMResult, verification_error},
 };
 use move_core_types::{resolver::SerializedPackage, vm_status::StatusCode};
 use move_vm_config::runtime::VMConfig;
@@ -85,7 +85,7 @@ pub fn validate_package(
     // Packages must be non-empty
     if pkg.modules.is_empty() {
         return Err(PartialVMError::new(StatusCode::EMPTY_PACKAGE)
-            .with_message("Empty packages are not allowed.".to_string())
+            .with_message(VMErrorMessage::EmptyPackage)
             .finish(Location::Package(pkg.version_id)));
     }
     // NB: We don't check for cycles inside of the package just yet since we may need to load

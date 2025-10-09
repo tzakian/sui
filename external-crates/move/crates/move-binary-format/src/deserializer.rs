@@ -113,17 +113,18 @@ where
     u64: TryInto<T>,
 {
     let x = cursor.read_uleb128_as_u64().map_err(|_| {
-        PartialVMError::new(StatusCode::MALFORMED).with_message("Bad Uleb".to_string())
+        PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::BadUleb)
     })?;
     if x > max {
-        return Err(PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Uleb greater than max requested".to_string()));
+        return Err(
+            PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::UlebTooLarge)
+        );
     }
 
     x.try_into().map_err(|_| {
         // TODO: review this status code.
-        let msg = "Failed to convert u64 to target integer type. This should not happen. Is the maximum value correct?".to_string();
-        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(msg)
+        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+            .with_message(VMErrorMessage::UlebTooLarge)
     })
 }
 
@@ -390,7 +391,7 @@ fn read_table(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Table> {
         Ok(kind) => kind,
         Err(_) => {
             return Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Error reading table".to_string()));
+                .with_message(VMErrorMessage::ErrorReadingTable));
         }
     };
     let table_offset = load_table_offset(cursor)?;
@@ -526,14 +527,13 @@ fn build_common_tables(
         macro_rules! check_table_size {
             ($vec:expr, $max:expr) => {
                 if $vec.len() > $max as usize {
-                    return Err(
-                        PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                            "Exceeded size ({} > {})  in {:?}",
-                            $vec.len(),
-                            $max,
-                            table.kind,
-                        )),
-                    );
+                    return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                        VMErrorMessage::SizeExceeded {
+                            actual: $vec.len(),
+                            limit: $max as usize,
+                            context: format!("{:?}", table.kind),
+                        },
+                    ));
                 }
             };
         }
@@ -571,12 +571,11 @@ fn build_common_tables(
             }
             TableType::METADATA => {
                 if binary.check_no_extraneous_bytes() || binary.version() < VERSION_5 {
-                    return Err(
-                        PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                            "metadata declarations not applicable in bytecode version {}",
-                            binary.version()
-                        )),
-                    );
+                    return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                        VMErrorMessage::MetadataNotApplicableInVersion {
+                            version: binary.version(),
+                        },
+                    ));
                 }
                 load_metadata(binary, table, common.get_metadata())?;
                 // we do not read metadata, nothing to check
@@ -602,8 +601,9 @@ fn build_common_tables(
             | TableType::VARIANT_INST_HANDLES => {
                 if binary.version() < VERSION_7 {
                     return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
-                        "Enum declarations not supported in bytecode versions less than 7"
-                            .to_string(),
+                        VMErrorMessage::EnumNotSupportedInVersion {
+                            version: binary.version(),
+                        },
                     ));
                 }
             }
@@ -611,7 +611,9 @@ fn build_common_tables(
                 // friend declarations do not exist before VERSION_2
                 if binary.version() < VERSION_2 {
                     return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
-                        "Friend declarations not applicable in bytecode version 1".to_string(),
+                        VMErrorMessage::FriendNotApplicableInVersion {
+                            version: binary.version(),
+                        },
                     ));
                 }
             }
@@ -653,14 +655,13 @@ fn build_module_tables(
         macro_rules! check_table_size {
             ($vec:expr, $max:expr) => {
                 if $vec.len() > $max as usize {
-                    return Err(
-                        PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                            "Exceeded size ({} > {})  in {:?}",
-                            $vec.len(),
-                            $max,
-                            table.kind,
-                        )),
-                    );
+                    return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                        VMErrorMessage::SizeExceeded {
+                            actual: $vec.len(),
+                            limit: $max as usize,
+                            context: format!("{:?}", table.kind),
+                        },
+                    ));
                 }
             };
         }
@@ -882,11 +883,11 @@ fn load_identifiers(
         if let Ok(count) = cursor.read(&mut buffer) {
             if count != size {
                 return Err(PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Bad Identifier pool size".to_string()));
+                    .with_message(VMErrorMessage::BadIdentifierPoolSize));
             }
             let s = Identifier::from_utf8(buffer).map_err(|_| {
                 PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Invalid Identifier".to_string())
+                    .with_message(VMErrorMessage::InvalidIdentifier)
             })?;
             identifiers.push(s);
         }
@@ -903,14 +904,14 @@ fn load_address_identifiers(
     let mut start = table.offset as usize;
     if table.count as usize % AccountAddress::LENGTH != 0 {
         return Err(PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Bad Address Identifier pool size".to_string()));
+            .with_message(VMErrorMessage::BadAddressPoolSize));
     }
     for _i in 0..table.count as usize / AccountAddress::LENGTH {
         let end_addr = start + AccountAddress::LENGTH;
         let address = binary.slice(start, end_addr).try_into();
         if address.is_err() {
             return Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Invalid Address format".to_string()));
+                .with_message(VMErrorMessage::InvalidAddressFormat));
         }
         start = end_addr;
 
@@ -972,11 +973,12 @@ fn load_byte_blob(
     let mut data: Vec<u8> = vec![0u8; size];
     let count = cursor.read(&mut data).map_err(|_| {
         PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Unexpected end of table".to_string())
+            .with_message(VMErrorMessage::UnexpectedEndOfTable)
     })?;
     if count != size {
-        return Err(PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Bad byte blob size".to_string()));
+        return Err(
+            PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::BadByteBlob)
+        );
     }
     Ok(data)
 }
@@ -1099,12 +1101,11 @@ fn load_signature_token(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Sign
         if let Ok(byte) = cursor.read_u8() {
             match S::from_u8(byte)? {
                 S::U16 | S::U32 | S::U256 if (cursor.version() < VERSION_6) => {
-                    return Err(
-                        PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                            "u16, u32, u256 integers not supported in bytecode version {}",
-                            cursor.version()
-                        )),
-                    );
+                    return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                        VMErrorMessage::IntegerTypesNotSupportedInVersion {
+                            version: cursor.version(),
+                        },
+                    ));
                 }
                 _ => (),
             };
@@ -1131,7 +1132,7 @@ fn load_signature_token(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Sign
                     let arity = load_type_parameter_count(cursor)?;
                     if arity == 0 {
                         return Err(PartialVMError::new(StatusCode::MALFORMED)
-                            .with_message("Struct inst with arity 0".to_string()));
+                            .with_message(VMErrorMessage::StructInstWithZeroArity));
                     }
                     T::StructInst {
                         sh_idx,
@@ -1146,7 +1147,7 @@ fn load_signature_token(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Sign
             })
         } else {
             Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Unexpected EOF".to_string()))
+                .with_message(VMErrorMessage::UnexpectedEOF))
         }
     };
 
@@ -1158,7 +1159,7 @@ fn load_signature_token(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Sign
     loop {
         if stack.len() > SIGNATURE_TOKEN_DEPTH_MAX {
             return Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Maximum recursion depth reached".to_string()));
+                .with_message(VMErrorMessage::MaxRecursionDepth));
         }
         if stack.last().unwrap().is_saturated() {
             let tok = stack.pop().unwrap().unwrap_saturated();
@@ -1204,7 +1205,7 @@ fn load_ability_set(
             Ok(byte) => byte,
             Err(_) => {
                 return Err(PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Unexpected EOF".to_string()));
+                    .with_message(VMErrorMessage::UnexpectedEOF));
             }
         };
         match pos {
@@ -1297,7 +1298,7 @@ fn load_struct_defs(
             Ok(byte) => SerializedNativeStructFlag::from_u8(byte)?,
             Err(_) => {
                 return Err(PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Invalid field info in struct".to_string()));
+                    .with_message(VMErrorMessage::InvalidFieldInfoInStruct));
             }
         };
         let field_information = match field_information_flag {
@@ -1351,7 +1352,7 @@ fn load_enum_defs(
             Ok(byte) => SerializedEnumFlag::from_u8(byte)?,
             Err(_) => {
                 return Err(PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Invalid field info in enum".to_string()));
+                    .with_message(VMErrorMessage::InvalidFieldInfoInEnum));
             }
         };
         let variants = match field_information_flag {
@@ -1370,7 +1371,7 @@ fn load_variant_defs(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Vec<Var
     let variant_count = load_variant_count(cursor)?;
     if variant_count == 0 {
         return Err(PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Enum type with no variants".to_string()));
+            .with_message(VMErrorMessage::EnumTypeWithNoVariants));
     }
     for _ in 0..variant_count {
         variants.push(load_variant_def(cursor)?);
@@ -1490,7 +1491,7 @@ fn load_function_def(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Functio
     let function = load_function_handle_index(cursor)?;
 
     let mut flags = cursor.read_u8().map_err(|_| {
-        PartialVMError::new(StatusCode::MALFORMED).with_message("Unexpected EOF".to_string())
+        PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::UnexpectedEOF)
     })?;
 
     // NOTE: changes compared with VERSION_1
@@ -1513,22 +1514,22 @@ fn load_function_def(cursor: &mut VersionedCursor) -> BinaryLoaderResult<Functio
         } else {
             let vis = flags.try_into().map_err(|_| {
                 PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Invalid visibility byte".to_string())
+                    .with_message(VMErrorMessage::InvalidVisibilityByte)
             })?;
             (vis, false)
         };
         let extra_flags = cursor.read_u8().map_err(|_| {
-            PartialVMError::new(StatusCode::MALFORMED).with_message("Unexpected EOF".to_string())
+            PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::UnexpectedEOF)
         })?;
         (vis, is_entry, extra_flags)
     } else {
         let vis = flags.try_into().map_err(|_| {
             PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Invalid visibility byte".to_string())
+                .with_message(VMErrorMessage::InvalidVisibilityByte)
         })?;
 
         let mut extra_flags = cursor.read_u8().map_err(|_| {
-            PartialVMError::new(StatusCode::MALFORMED).with_message("Unexpected EOF".to_string())
+            PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::UnexpectedEOF)
         })?;
         let is_entry = (extra_flags & FunctionDefinition::ENTRY) != 0;
         if is_entry {
@@ -1608,7 +1609,7 @@ fn load_jump_table(cursor: &mut VersionedCursor) -> BinaryLoaderResult<VariantJu
     let branches = load_jump_table_branch_count(cursor)?;
     let Ok(byte) = cursor.read_u8() else {
         return Err(PartialVMError::new(StatusCode::MALFORMED)
-            .with_message("Invalid jump table type".to_string()));
+            .with_message(VMErrorMessage::InvalidJumpTableType));
     };
     let jump_table = match SerializedJumpTableFlag::from_u8(byte)? {
         SerializedJumpTableFlag::FULL => {
@@ -1628,12 +1629,11 @@ fn load_jump_table(cursor: &mut VersionedCursor) -> BinaryLoaderResult<VariantJu
 
 fn check_cursor_version_enum_compatible(cursor_version: u32) -> BinaryLoaderResult<()> {
     if cursor_version < VERSION_7 {
-        Err(
-            PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                "enums not supported in bytecode version {}",
-                cursor_version
-            )),
-        )
+        Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+            VMErrorMessage::EnumNotSupportedInVersion {
+                version: cursor_version,
+            },
+        ))
     } else {
         Ok(())
     }
@@ -1645,7 +1645,7 @@ fn load_code(cursor: &mut VersionedCursor, code: &mut Vec<Bytecode>) -> BinaryLo
 
     while code.len() < bytecode_count {
         let byte = cursor.read_u8().map_err(|_| {
-            PartialVMError::new(StatusCode::MALFORMED).with_message("Unexpected EOF".to_string())
+            PartialVMError::new(StatusCode::MALFORMED).with_message(VMErrorMessage::UnexpectedEOF)
         })?;
         let opcode = Opcodes::from_u8(byte)?;
         // version checking
@@ -1659,12 +1659,11 @@ fn load_code(cursor: &mut VersionedCursor, code: &mut Vec<Bytecode>) -> BinaryLo
             | Opcodes::VEC_UNPACK
             | Opcodes::VEC_SWAP => {
                 if cursor.version() < VERSION_4 {
-                    return Err(
-                        PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                            "Vector operations not available before bytecode version {}",
-                            VERSION_4
-                        )),
-                    );
+                    return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                        VMErrorMessage::VectorOperationsNotSupportedInVersion {
+                            version: VERSION_4,
+                        },
+                    ));
                 }
             }
             _ => {}
@@ -1679,12 +1678,11 @@ fn load_code(cursor: &mut VersionedCursor, code: &mut Vec<Bytecode>) -> BinaryLo
             | Opcodes::CAST_U256
                 if (cursor.version() < VERSION_6) =>
             {
-                return Err(
-                    PartialVMError::new(StatusCode::MALFORMED).with_message(format!(
-                        "Loading or casting u16, u32, u256 integers not supported in bytecode version {}",
-                        cursor.version()
-                    )),
-                );
+                return Err(PartialVMError::new(StatusCode::MALFORMED).with_message(
+                    VMErrorMessage::IntegerTypesNotSupportedInVersion {
+                        version: cursor.version(),
+                    },
+                ));
             }
             _ => (),
         };
@@ -1699,7 +1697,7 @@ fn load_code(cursor: &mut VersionedCursor, code: &mut Vec<Bytecode>) -> BinaryLo
             Opcodes::LD_U8 => {
                 let value = cursor.read_u8().map_err(|_| {
                     PartialVMError::new(StatusCode::MALFORMED)
-                        .with_message("Unexpected EOF".to_string())
+                        .with_message(VMErrorMessage::UnexpectedEOF)
                 })?;
                 Bytecode::LdU8(value)
             }
@@ -2116,22 +2114,22 @@ impl<'a, 'b> VersionedBinary<'a, 'b> {
             let mut magic = [0u8; BinaryConstants::MOVE_MAGIC_SIZE];
             let Ok(count) = cursor.read(&mut magic) else {
                 return Err(PartialVMError::new(StatusCode::MALFORMED)
-                    .with_message("Bad binary header".to_string()));
+                    .with_message(VMErrorMessage::BadBinaryHeader));
             };
             match BinaryConstants::decode_magic(magic, count) {
                 Ok(MagicKind::Normal) => true,
                 Ok(MagicKind::Unpublishable) if binary_config.allow_unpublishable() => false,
                 Ok(MagicKind::Unpublishable) => {
                     return Err(PartialVMError::new(StatusCode::BAD_MAGIC)
-                        .with_message("Binary header not allowed".to_string()));
+                        .with_message(VMErrorMessage::BinaryHeaderNotAllowed));
                 }
                 Err(MagicError::BadSize) => {
                     return Err(PartialVMError::new(StatusCode::BAD_MAGIC)
-                        .with_message("Binary header too short".to_string()));
+                        .with_message(VMErrorMessage::BinaryHeaderTooShort));
                 }
                 Err(MagicError::BadNumber) => {
                     return Err(PartialVMError::new(StatusCode::BAD_MAGIC)
-                        .with_message("Unexpected binary header".to_string()));
+                        .with_message(VMErrorMessage::UnexpectedBinaryHeader));
                 }
             }
         };
@@ -2139,7 +2137,7 @@ impl<'a, 'b> VersionedBinary<'a, 'b> {
         // load binary version
         let Ok(flavored_version) = read_u32(&mut cursor) else {
             return Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Bad binary header".to_string()));
+                .with_message(VMErrorMessage::BadBinaryHeader));
         };
 
         let version = BinaryFlavor::decode_version(flavored_version);
@@ -2168,7 +2166,7 @@ impl<'a, 'b> VersionedBinary<'a, 'b> {
         let table_size = check_tables(&mut tables, binary_len)?;
         if table_size as u64 + versioned_cursor.position() > binary_len as u64 {
             return Err(PartialVMError::new(StatusCode::MALFORMED)
-                .with_message("Table size too big".to_string()));
+                .with_message(VMErrorMessage::TableSizeTooBig));
         }
 
         // save "start offset" for table content (data)

@@ -7,7 +7,7 @@
 //! non-generic flavors. It also checks constraints on instructions like VecPack/VecUnpack.
 
 use move_binary_format::{
-    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{
         Bytecode, CodeOffset, CodeUnit, CompiledModule, DatatypeHandleIndex, EnumDefinitionIndex,
         FieldHandleIndex, FunctionDefinitionIndex, FunctionHandleIndex, StructDefinitionIndex,
@@ -121,7 +121,7 @@ impl<'a> InstructionConsistency<'a> {
                     if *num > u16::MAX as u64 {
                         return Err(PartialVMError::new(StatusCode::CONSTRAINT_NOT_SATISFIED)
                             .at_code_offset(self.current_function(), offset as CodeOffset)
-                            .with_message("VecPack/VecUnpack argument out of range".to_string()));
+                            .with_message(VMErrorMessage::VecPackUnpackArgumentOutOfRange));
                     }
                 }
 

@@ -87,7 +87,9 @@ impl DepthFormula {
             let Some(mut u_form) = map.remove(t_i) else {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("{t_i:?} missing mapping")),
+                        .with_message(VMErrorMessage::MissingMapping {
+                            type_param: format!("{:?}", t_i),
+                        }),
                 );
             };
             u_form.add(*c_i);
@@ -105,7 +107,9 @@ impl DepthFormula {
                 None => {
                     return Err(
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                            .with_message(format!("{t_i:?} missing mapping")),
+                            .with_message(VMErrorMessage::MissingMapping {
+                            type_param: format!("{:?}", t_i),
+                        }),
                     )
                 }
                 Some(ty_depth) => depth = max(depth, ty_depth.saturating_add(*c_i)),
@@ -173,7 +177,9 @@ impl CachedDatatype {
             x @ Datatype::Enum(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("Expected struct type but got {:?}", x))),
+            .with_message(VMErrorMessage::ExpectedStruct {
+                found: format!("{:?}", x),
+            })),
         }
     }
 
@@ -183,7 +189,9 @@ impl CachedDatatype {
             x @ Datatype::Struct(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("Expected enum type but got {:?}", x))),
+            .with_message(VMErrorMessage::ExpectedVariant {
+                found: format!("{:?}", x),
+            })),
         }
     }
 }
@@ -263,11 +271,11 @@ impl Type {
                 Some(ty) => ty.clone_impl(depth),
                 None => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!(
-                            "type substitution failed: index out of bounds -- len {} got {}",
-                            ty_args.len(),
-                            idx
-                        )),
+                        .with_message(VMErrorMessage::IndexOutOfBounds {
+                            index: idx as u64,
+                            limit: ty_args.len() as u64,
+                            kind: "type substitution".to_string(),
+                        }),
                 ),
             },
             1,
@@ -318,14 +326,18 @@ impl Type {
             S::Datatype(_) | S::DatatypeInstantiation(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Unable to load const type signature".to_string()),
+                        .with_message(VMErrorMessage::TypeNotFound {
+                            type_name: "const type signature".to_string(),
+                        }),
                 )
             }
             // Not allowed/Not meaningful
             S::TypeParameter(_) | S::Reference(_) | S::MutableReference(_) | S::Signer => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Unable to load const type signature".to_string()),
+                        .with_message(VMErrorMessage::TypeNotFound {
+                            type_name: "const type signature".to_string(),
+                        }),
                 )
             }
         })
@@ -340,7 +352,9 @@ impl Type {
                 }
                 _ => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("VecMutBorrow expects a vector reference".to_string()),
+                        .with_message(VMErrorMessage::ExpectedVector {
+                            found: "non-vector reference".to_string(),
+                        }),
                 ),
             },
             Type::Reference(inner) if !is_mut => match &**inner {
@@ -350,7 +364,9 @@ impl Type {
                 }
                 _ => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("VecMutBorrow expects a vector reference".to_string()),
+                        .with_message(VMErrorMessage::ExpectedVector {
+                            found: "non-vector reference".to_string(),
+                        }),
                 ),
             },
             _ => Err(
@@ -364,7 +380,10 @@ impl Type {
         if self != other {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                    format!("Type mismatch: expected {:?}, got {:?}", self, other),
+                    VMErrorMessage::TypeMismatch {
+                        expected: format!("{:?}", self),
+                        actual: format!("{:?}", other),
+                    },
                 ),
             );
         }

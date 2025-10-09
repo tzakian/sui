@@ -280,7 +280,9 @@ fn take_unique_ownership<T: Debug>(r: Rc<RefCell<T>>) -> PartialVMResult<T> {
         Ok(cell) => Ok(cell.into_inner()),
         Err(r) => Err(
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(format!("moving value {:?} with dangling references", r)),
+                .with_message(VMErrorMessage::MovingValueWithDanglingReferences {
+                    value: format!("{:?}", r),
+                }),
         ),
     }
 }
@@ -318,7 +320,10 @@ macro_rules! impl_vm_value_ref {
                 match self {
                     ValueImpl::$tc(x) => Ok(x),
                     _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot take {:?} as &{}", self, stringify!($ty)))),
+                        .with_message(VMErrorMessage::CannotCast {
+                            from_type: format!("{:?}", self),
+                            to_type: format!("&{}", stringify!($ty)),
+                        })),
                 }
             }
         }
@@ -413,7 +418,7 @@ impl Container {
             Self::Locals(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("cannot copy a Locals container".to_string()),
+                        .with_message(VMErrorMessage::CannotCopyInvalidValue { index: 0 }),
                 )
             }
         })
@@ -512,7 +517,10 @@ impl ValueImpl {
             | (ContainerRef(_), _)
             | (IndexedRef(_), _) => {
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("cannot compare values: {:?}, {:?}", self, other)))
+                    .with_message(VMErrorMessage::CannotCompareValues {
+                        value1: format!("{:?}", self),
+                        value2: format!("{:?}", other),
+                    }))
             }
         };
 
@@ -578,10 +586,12 @@ impl Container {
             | (VecAddress(_), _)
             | (Variant { .. }, _) => {
                 return Err(
-                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
-                        "cannot compare container values: {:?}, {:?}",
-                        self, other
-                    )),
+                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                        VMErrorMessage::CannotCompareValues {
+                            value1: format!("{:?}", self),
+                            value2: format!("{:?}", other),
+                        },
+                    ),
                 )
             }
         };
@@ -750,7 +760,10 @@ impl IndexedRef {
             | (VecBool(_), _)
             | (VecAddress(_), _) => {
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("cannot compare references {:?}, {:?}", self, other)))
+                    .with_message(VMErrorMessage::CannotCompareReferences {
+                        ref1: format!("{:?}", self),
+                        ref2: format!("{:?}", other),
+                    }))
             }
         };
         Ok(res)
@@ -839,9 +852,7 @@ impl ContainerRef {
                                 return Err(PartialVMError::new(
                                     StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                                 )
-                                .with_message(
-                                    "failed to write_ref: container type mismatch".to_string(),
-                                ))
+                                .with_message(VMErrorMessage::FailedWriteRefTypeMismatch))
                             }
                         };
                         *$r1.borrow_mut() = take_unique_ownership(r)?;
@@ -858,9 +869,7 @@ impl ContainerRef {
                             return Err(PartialVMError::new(
                                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                             )
-                            .with_message(
-                                "failed to write_ref: container type mismatch".to_string(),
-                            ))
+                            .with_message(VMErrorMessage::FailedWriteRefTypeMismatch))
                         }
                     },
                     Container::Vec(r) => assign!(r, Vec),
@@ -876,7 +885,7 @@ impl ContainerRef {
                         return Err(PartialVMError::new(
                             StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                         )
-                        .with_message("cannot overwrite Container::Locals".to_string()))
+                        .with_message(VMErrorMessage::CannotMoveFromInvalidLocation))
                     }
                 }
                 self.mark_dirty();
@@ -884,10 +893,10 @@ impl ContainerRef {
             _ => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!(
-                            "cannot write value {:?} to container ref {:?}",
-                            v, self
-                        )),
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("{:?}", v),
+                            to_type: format!("container ref {:?}", self),
+                        }),
                 )
             }
         }
@@ -904,10 +913,9 @@ impl IndexedRef {
             | ValueImpl::Container(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!(
-                            "cannot write value {:?} to indexed ref {:?}",
-                            x, self
-                        )),
+                        .with_message(VMErrorMessage::InvalidIndexedReference {
+                            reference: format!("{:?}", self),
+                        }),
                 )
             }
             _ => (),
@@ -939,10 +947,12 @@ impl IndexedRef {
             | (Container::VecBool(_), _)
             | (Container::VecAddress(_), _) => {
                 return Err(
-                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
-                        "cannot write value {:?} to indexed ref {:?}",
-                        x, self
-                    )),
+                    PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                        VMErrorMessage::CannotCastValue {
+                            value: format!("{:?}", x),
+                            to_type: format!("{:?}", self),
+                        },
+                    ),
                 )
             }
         }
@@ -981,10 +991,11 @@ impl ContainerRef {
         if idx >= len {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                    format!(
-                        "index out of bounds when borrowing container element: got: {}, len: {}",
-                        idx, len
-                    ),
+                    VMErrorMessage::IndexOutOfBounds {
+                        index: idx as u64,
+                        limit: len as u64,
+                        kind: "container element".to_string(),
+                    },
                 ),
             );
         }
@@ -1064,20 +1075,21 @@ impl VariantRef {
             | Container::VecU16(_)
             | Container::VecU32(_)
             | Container::VecU256(_) => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!(
-                    "expected variant container, got {:?}",
-                    self.0.container()
-                ))),
+                .with_message(VMErrorMessage::ExpectedVariant {
+                    found: format!("{:?}", self.0.container()),
+                })),
         }
     }
     pub fn check_tag(&self, expected_tag: VariantTag) -> PartialVMResult<()> {
         let tag = self.get_tag()?;
         if tag != expected_tag {
             Err(
-                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(format!(
-                    "Variant tag mismatch: expected {}, got {}",
-                    expected_tag, tag
-                )),
+                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(
+                    VMErrorMessage::TagMismatch {
+                        expected: expected_tag,
+                        actual: tag,
+                    },
+                ),
             )
         } else {
             Ok(())
@@ -1120,10 +1132,10 @@ impl VariantRef {
                             return Err(PartialVMError::new(
                                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                             )
-                            .with_message(format!(
-                            "cannot unpack a reference value {:?} held inside a variant ref {:?}",
-                            x, self
-                        )))
+                            .with_message(VMErrorMessage::CannotCastValue {
+                                value: format!("{:?}", x),
+                                to_type: format!("variant ref {:?}", self),
+                            }))
                         }
                     };
                     res.push(Value(ref_));
@@ -1141,10 +1153,9 @@ impl VariantRef {
             | Container::VecU16(_)
             | Container::VecU32(_)
             | Container::VecU256(_) => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!(
-                    "expected variant container, got {:?}",
-                    self.0.container()
-                ))),
+                .with_message(VMErrorMessage::ExpectedVariant {
+                    found: format!("{:?}", self.0.container()),
+                })),
         }
     }
 }
@@ -1158,11 +1169,11 @@ impl Locals {
         if idx >= v.len() {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                    format!(
-                        "index out of bounds when borrowing local: got: {}, len: {}",
-                        idx,
-                        v.len()
-                    ),
+                    VMErrorMessage::IndexOutOfBounds {
+                        index: idx as u64,
+                        limit: v.len() as u64,
+                        kind: "local".to_string(),
+                    },
                 ),
             );
         }
@@ -1186,7 +1197,9 @@ impl Locals {
 
             ValueImpl::ContainerRef(_) | ValueImpl::Invalid | ValueImpl::IndexedRef(_) => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("cannot borrow local {:?}", &v[idx])),
+                    .with_message(VMErrorMessage::CannotBorrowLocal {
+                        local: format!("{:?}", &v[idx]),
+                    }),
             ),
         }
     }
@@ -1218,11 +1231,11 @@ impl Locals {
             Some(ValueImpl::Invalid) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("cannot copy invalid value at index {}", idx))),
+            .with_message(VMErrorMessage::CannotCopyInvalidValue { index: idx })),
             Some(v) => Ok(Value(v.copy_value()?)),
             None => Err(
                 PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    format!("local index out of bounds: got {}, len: {}", idx, v.len()),
+                    VMErrorMessage::LocalIndexOutOfBounds { index: idx },
                 ),
             ),
         }
@@ -1238,9 +1251,9 @@ impl Locals {
                             return Err(PartialVMError::new(
                                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                             )
-                            .with_message(
-                                "moving container with dangling references".to_string(),
-                            ));
+                            .with_message(VMErrorMessage::MovingValueWithDanglingReferences {
+                                value: "container".to_string(),
+                            }));
                         }
                     }
                 }
@@ -1248,7 +1261,7 @@ impl Locals {
             }
             None => Err(
                 PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    format!("local index out of bounds: got {}, len: {}", idx, v.len()),
+                    VMErrorMessage::LocalIndexOutOfBounds { index: idx },
                 ),
             ),
         }
@@ -1259,7 +1272,7 @@ impl Locals {
             Value(ValueImpl::Invalid) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("cannot move invalid value at index {}", idx))),
+            .with_message(VMErrorMessage::CannotMoveInvalidValue { index: idx })),
             v => Ok(v),
         }
     }
@@ -1303,7 +1316,7 @@ impl Locals {
             Some(_) => Ok(false),
             None => Err(
                 PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    format!("local index out of bounds: got {}, len: {}", idx, v.len()),
+                    VMErrorMessage::LocalIndexOutOfBounds { index: idx },
                 ),
             ),
         }
@@ -1455,7 +1468,10 @@ macro_rules! impl_vm_value_cast {
                 match self.0 {
                     ValueImpl::$tc(x) => Ok(x),
                     v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot cast {:?} to {}", v, stringify!($ty)))),
+                        .with_message(VMErrorMessage::CannotCast {
+                            from_type: format!("{:?}", v),
+                            to_type: stringify!($ty).to_string(),
+                        })),
                 }
             }
         }
@@ -1469,7 +1485,10 @@ macro_rules! impl_vm_value_cast_boxed {
                 match self.0 {
                     ValueImpl::$tc(x) => Ok(*x),
                     v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot cast {:?} to {}", v, stringify!($ty)))),
+                        .with_message(VMErrorMessage::CannotCast {
+                            from_type: format!("{:?}", v),
+                            to_type: stringify!($ty).to_string(),
+                        })),
                 }
             }
         }
@@ -1497,7 +1516,10 @@ impl VMValueCast<IntegerValue> for Value {
             ValueImpl::U128(x) => Ok(IntegerValue::U128(*x)),
             ValueImpl::U256(x) => Ok(IntegerValue::U256(*x)),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to integer", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "integer".to_string(),
+                })),
         }
     }
 }
@@ -1508,7 +1530,10 @@ impl VMValueCast<Reference> for Value {
             ValueImpl::ContainerRef(r) => Ok(Reference(ReferenceImpl::ContainerRef(*r))),
             ValueImpl::IndexedRef(r) => Ok(Reference(ReferenceImpl::IndexedRef(*r))),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to reference", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "reference".to_string(),
+                })),
         }
     }
 }
@@ -1518,7 +1543,10 @@ impl VMValueCast<Container> for Value {
         match self.0 {
             ValueImpl::Container(c) => Ok(c),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to container", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "container".to_string(),
+                })),
         }
     }
 }
@@ -1530,7 +1558,10 @@ impl VMValueCast<Struct> for Value {
                 fields: take_unique_ownership(r)?,
             }),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to struct", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "struct".to_string(),
+                })),
         }
     }
 }
@@ -1543,7 +1574,10 @@ impl VMValueCast<Variant> for Value {
                 Ok(Variant { tag, fields })
             }
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to enum variant", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "enum variant".to_string(),
+                })),
         }
     }
 }
@@ -1565,7 +1599,10 @@ impl VMValueCast<Vec<u8>> for Value {
         match self.0 {
             ValueImpl::Container(Container::VecU8(r)) => take_unique_ownership(r),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to vector<u8>", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "vector<u8>".to_string(),
+                })),
         }
     }
 }
@@ -1575,7 +1612,10 @@ impl VMValueCast<Vec<u64>> for Value {
         match self.0 {
             ValueImpl::Container(Container::VecU64(r)) => take_unique_ownership(r),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to vector<u64>", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "vector<u64>".to_string(),
+                })),
         }
     }
 }
@@ -1594,14 +1634,17 @@ impl VMValueCast<Vec<Value>> for Value {
             | ValueImpl::U64(_)
             | ValueImpl::U128(_)
             | ValueImpl::U256(_) => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(
-                    "cannot cast a specialized vector into a non-specialized one".to_string(),
-                )),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: "specialized vector".to_string(),
+                    to_type: "non-specialized vector".to_string(),
+                })),
             v => Err(
-                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
-                    "cannot cast {:?} to vector<non-specialized-type>",
-                    v,
-                )),
+                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::CannotCast {
+                        from_type: format!("{:?}", v),
+                        to_type: "vector<non-specialized-type>".to_string(),
+                    },
+                ),
             ),
         }
     }
@@ -1612,7 +1655,10 @@ impl VMValueCast<SignerRef> for Value {
         match self.0 {
             ValueImpl::ContainerRef(r) => Ok(SignerRef(*r)),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to Signer reference", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "Signer reference".to_string(),
+                })),
         }
     }
 }
@@ -1622,7 +1668,10 @@ impl VMValueCast<VectorRef> for Value {
         match self.0 {
             ValueImpl::ContainerRef(r) => Ok(VectorRef(*r)),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to vector reference", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "vector reference".to_string(),
+                })),
         }
     }
 }
@@ -1632,7 +1681,10 @@ impl VMValueCast<Vector> for Value {
         match self.0 {
             ValueImpl::Container(c) => Ok(Vector(c)),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to vector", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "vector".to_string(),
+                })),
         }
     }
 }
@@ -1651,7 +1703,10 @@ impl VMValueCast<u8> for IntegerValue {
         match self {
             Self::U8(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u8", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u8".to_string(),
+                })),
         }
     }
 }
@@ -1661,7 +1716,10 @@ impl VMValueCast<u16> for IntegerValue {
         match self {
             Self::U16(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u16", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u16".to_string(),
+                })),
         }
     }
 }
@@ -1671,7 +1729,10 @@ impl VMValueCast<u32> for IntegerValue {
         match self {
             Self::U32(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u32", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u32".to_string(),
+                })),
         }
     }
 }
@@ -1681,7 +1742,10 @@ impl VMValueCast<u64> for IntegerValue {
         match self {
             Self::U64(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u64", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u64".to_string(),
+                })),
         }
     }
 }
@@ -1691,7 +1755,10 @@ impl VMValueCast<u128> for IntegerValue {
         match self {
             Self::U128(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u128", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u128".to_string(),
+                })),
         }
     }
 }
@@ -1701,7 +1768,10 @@ impl VMValueCast<u256::U256> for IntegerValue {
         match self {
             Self::U256(x) => Ok(x),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to u256", v,))),
+                .with_message(VMErrorMessage::CannotCast {
+                    from_type: format!("{:?}", v),
+                    to_type: "u256".to_string(),
+                })),
         }
     }
 }
@@ -1734,7 +1804,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => u256::U256::checked_add(l, r).map(IntegerValue::U256),
             (l, r) => {
                 let msg = format!("Cannot add {:?} and {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         };
         res.ok_or_else(|| PartialVMError::new(StatusCode::ARITHMETIC_ERROR))
@@ -1751,7 +1826,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => u256::U256::checked_sub(l, r).map(IntegerValue::U256),
             (l, r) => {
                 let msg = format!("Cannot sub {:?} from {:?}", r, l);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         };
         res.ok_or_else(|| PartialVMError::new(StatusCode::ARITHMETIC_ERROR))
@@ -1768,7 +1848,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => u256::U256::checked_mul(l, r).map(IntegerValue::U256),
             (l, r) => {
                 let msg = format!("Cannot mul {:?} and {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         };
         res.ok_or_else(|| PartialVMError::new(StatusCode::ARITHMETIC_ERROR))
@@ -1785,7 +1870,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => u256::U256::checked_div(l, r).map(IntegerValue::U256),
             (l, r) => {
                 let msg = format!("Cannot div {:?} by {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         };
         res.ok_or_else(|| PartialVMError::new(StatusCode::ARITHMETIC_ERROR))
@@ -1802,7 +1892,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => u256::U256::checked_rem(l, r).map(IntegerValue::U256),
             (l, r) => {
                 let msg = format!("Cannot rem {:?} by {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         };
         res.ok_or_else(|| PartialVMError::new(StatusCode::ARITHMETIC_ERROR))
@@ -1819,7 +1914,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => IntegerValue::U256(l | r),
             (l, r) => {
                 let msg = format!("Cannot bit_or {:?} and {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -1835,7 +1935,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => IntegerValue::U256(l & r),
             (l, r) => {
                 let msg = format!("Cannot bit_and {:?} and {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -1851,7 +1956,12 @@ impl IntegerValue {
             (U256(l), U256(r)) => IntegerValue::U256(l ^ r),
             (l, r) => {
                 let msg = format!("Cannot bit_xor {:?} and {:?}", l, r);
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -1947,7 +2057,12 @@ impl IntegerValue {
                     "Cannot compare {:?} and {:?}: incompatible integer types",
                     l, r
                 );
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -1967,7 +2082,12 @@ impl IntegerValue {
                     "Cannot compare {:?} and {:?}: incompatible integer types",
                     l, r
                 );
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -1987,7 +2107,12 @@ impl IntegerValue {
                     "Cannot compare {:?} and {:?}: incompatible integer types",
                     l, r
                 );
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -2007,7 +2132,12 @@ impl IntegerValue {
                     "Cannot compare {:?} and {:?}: incompatible integer types",
                     l, r
                 );
-                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
+                return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::TypeMismatch {
+                        expected: "compatible numeric types".to_string(),
+                        actual: msg,
+                    },
+                ));
             }
         })
     }
@@ -2035,7 +2165,10 @@ impl IntegerValue {
             U16(x) => {
                 if x > (u8::MAX as u16) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u16({}) to u8", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u16({})", x),
+                            to_type: "u8".to_string(),
+                        }))
                 } else {
                     Ok(x as u8)
                 }
@@ -2043,7 +2176,10 @@ impl IntegerValue {
             U32(x) => {
                 if x > (u8::MAX as u32) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u32({}) to u8", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u32({})", x),
+                            to_type: "u8".to_string(),
+                        }))
                 } else {
                     Ok(x as u8)
                 }
@@ -2051,7 +2187,10 @@ impl IntegerValue {
             U64(x) => {
                 if x > (u8::MAX as u64) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u64({}) to u8", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u64({})", x),
+                            to_type: "u8".to_string(),
+                        }))
                 } else {
                     Ok(x as u8)
                 }
@@ -2059,7 +2198,10 @@ impl IntegerValue {
             U128(x) => {
                 if x > (u8::MAX as u128) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u128({}) to u8", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u128({})", x),
+                            to_type: "u8".to_string(),
+                        }))
                 } else {
                     Ok(x as u8)
                 }
@@ -2067,7 +2209,10 @@ impl IntegerValue {
             U256(x) => {
                 if x > (u256::U256::from(u8::MAX)) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u256({}) to u8", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u256({})", x),
+                            to_type: "u8".to_string(),
+                        }))
                 } else {
                     Ok(x.unchecked_as_u8())
                 }
@@ -2084,7 +2229,10 @@ impl IntegerValue {
             U32(x) => {
                 if x > (u16::MAX as u32) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u32({}) to u16", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u32({})", x),
+                            to_type: "u16".to_string(),
+                        }))
                 } else {
                     Ok(x as u16)
                 }
@@ -2092,7 +2240,10 @@ impl IntegerValue {
             U64(x) => {
                 if x > (u16::MAX as u64) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u64({}) to u16", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u64({})", x),
+                            to_type: "u16".to_string(),
+                        }))
                 } else {
                     Ok(x as u16)
                 }
@@ -2100,7 +2251,10 @@ impl IntegerValue {
             U128(x) => {
                 if x > (u16::MAX as u128) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u128({}) to u16", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u128({})", x),
+                            to_type: "u16".to_string(),
+                        }))
                 } else {
                     Ok(x as u16)
                 }
@@ -2108,7 +2262,10 @@ impl IntegerValue {
             U256(x) => {
                 if x > (u256::U256::from(u16::MAX)) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u256({}) to u16", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u256({})", x),
+                            to_type: "u16".to_string(),
+                        }))
                 } else {
                     Ok(x.unchecked_as_u16())
                 }
@@ -2126,7 +2283,10 @@ impl IntegerValue {
             U64(x) => {
                 if x > (u32::MAX as u64) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u64({}) to u32", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u64({})", x),
+                            to_type: "u32".to_string(),
+                        }))
                 } else {
                     Ok(x as u32)
                 }
@@ -2134,7 +2294,10 @@ impl IntegerValue {
             U128(x) => {
                 if x > (u32::MAX as u128) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u128({}) to u32", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u128({})", x),
+                            to_type: "u32".to_string(),
+                        }))
                 } else {
                     Ok(x as u32)
                 }
@@ -2142,7 +2305,10 @@ impl IntegerValue {
             U256(x) => {
                 if x > (u256::U256::from(u32::MAX)) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u128({}) to u32", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u128({})", x),
+                            to_type: "u32".to_string(),
+                        }))
                 } else {
                     Ok(x.unchecked_as_u32())
                 }
@@ -2161,7 +2327,10 @@ impl IntegerValue {
             U128(x) => {
                 if x > (u64::MAX as u128) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u128({}) to u64", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u128({})", x),
+                            to_type: "u64".to_string(),
+                        }))
                 } else {
                     Ok(x as u64)
                 }
@@ -2169,7 +2338,10 @@ impl IntegerValue {
             U256(x) => {
                 if x > (u256::U256::from(u64::MAX)) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u256({}) to u64", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u256({})", x),
+                            to_type: "u64".to_string(),
+                        }))
                 } else {
                     Ok(x.unchecked_as_u64())
                 }
@@ -2189,7 +2361,10 @@ impl IntegerValue {
             U256(x) => {
                 if x > (u256::U256::from(u128::MAX)) {
                     Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
-                        .with_message(format!("Cannot cast u256({}) to u128", x)))
+                        .with_message(VMErrorMessage::CannotCastValue {
+                            value: format!("u256({})", x),
+                            to_type: "u128".to_string(),
+                        }))
                 } else {
                     Ok(x.unchecked_as_u128())
                 }
@@ -2244,7 +2419,9 @@ fn check_elem_layout(ty: &Type, v: &Container) -> PartialVMResult<()> {
 
         (Type::Reference(_), _) | (Type::MutableReference(_), _) | (Type::TyParam(_), _) => Err(
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(format!("invalid type param for vector: {:?}", ty)),
+                .with_message(VMErrorMessage::InvalidTypeParamForVector {
+                    type_param: format!("{:?}", ty),
+                }),
         ),
 
         (Type::U8, _)
@@ -2261,10 +2438,10 @@ fn check_elem_layout(ty: &Type, v: &Container) -> PartialVMResult<()> {
         | (Type::DatatypeInstantiation(_), _) => Err(PartialVMError::new(
             StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
         )
-        .with_message(format!(
-            "vector elem layout mismatch, expected {:?}, got {:?}",
-            ty, v
-        ))),
+        .with_message(VMErrorMessage::TypeMismatch {
+            expected: format!("{:?}", ty),
+            actual: format!("{:?}", v),
+        })),
     }
 }
 
@@ -2311,7 +2488,9 @@ impl VectorRef {
         if size >= (capacity as usize) {
             return Err(PartialVMError::new(StatusCode::VECTOR_OPERATION_ERROR)
                 .with_sub_status(VEC_SIZE_LIMIT_REACHED)
-                .with_message(format!("vector size limit is {capacity}",)));
+                .with_message(VMErrorMessage::VectorSizeLimit {
+                    limit: capacity as u64,
+                }));
         }
 
         match c {
@@ -2505,7 +2684,9 @@ impl Vector {
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("invalid type param for vector: {:?}", type_param)),
+                        .with_message(VMErrorMessage::InvalidTypeParamForVector {
+                            type_param: format!("{:?}", type_param),
+                        }),
                 )
             }
         };
@@ -2577,7 +2758,9 @@ impl Vector {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("expected vector<u8>".to_string()),
+                    .with_message(VMErrorMessage::ExpectedVector {
+                        found: "not vector<u8>".to_string(),
+                    }),
             )
         }
     }
@@ -2757,7 +2940,10 @@ impl Variant {
     pub fn check_tag(&self, tag: VariantTag) -> PartialVMResult<()> {
         if tag != self.tag {
             Err(PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH)
-                .with_message(format!("tag mismatch: expected {}, got {}", tag, self.tag)))
+                .with_message(VMErrorMessage::TagMismatch {
+                    expected: tag,
+                    actual: self.tag,
+                }))
         } else {
             Ok(())
         }
@@ -2786,7 +2972,10 @@ impl GlobalValueImpl {
             }
             val => Err((
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("failed to publish cached: not a resource".to_string()),
+                    .with_message(VMErrorMessage::TypeMismatch {
+                        expected: "resource".to_string(),
+                        actual: "cached non-resource".to_string(),
+                    }),
                 val,
             )),
         }
@@ -2797,7 +2986,10 @@ impl GlobalValueImpl {
             ValueImpl::Container(Container::Struct(fields)) => Ok(Self::Fresh { fields }),
             val => Err((
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("failed to publish fresh: not a resource".to_string()),
+                    .with_message(VMErrorMessage::TypeMismatch {
+                        expected: "resource".to_string(),
+                        actual: "fresh non-resource".to_string(),
+                    }),
                 val,
             )),
         }
@@ -2820,7 +3012,9 @@ impl GlobalValueImpl {
         if Rc::strong_count(&fields) != 1 {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("moving global resource with dangling reference".to_string()),
+                    .with_message(VMErrorMessage::MovingValueWithDanglingReferences {
+                        value: "global resource".to_string(),
+                    }),
             );
         }
         Ok(ValueImpl::Container(Container::Struct(fields)))
@@ -3203,7 +3397,7 @@ pub mod debug {
             Container::Locals(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message("debug print - invalid container: Locals".to_string())),
+            .with_message(VMErrorMessage::ContainerIsNotStruct)),
         }
     }
 
@@ -3221,7 +3415,11 @@ pub mod debug {
             Some(x) => print(buf, x),
             None => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("ref index out of bounds".to_string()),
+                    .with_message(VMErrorMessage::IndexOutOfBounds {
+                        index: idx as u64,
+                        limit: v.len() as u64,
+                        kind: "ref index".to_string(),
+                    }),
             ),
         }
     }

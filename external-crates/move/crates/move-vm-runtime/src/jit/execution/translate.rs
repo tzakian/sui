@@ -25,7 +25,7 @@ use crate::{
 };
 use indexmap::IndexMap;
 use move_binary_format::{
-    errors::{PartialVMError, PartialVMResult},
+    errors::{PartialVMError, PartialVMResult, VMErrorMessage},
     file_format::{
         self as FF, CompiledModule, FunctionDefinition, FunctionDefinitionIndex,
         FunctionHandleIndex, SignatureIndex, SignatureToken, StructFieldInformation, TableIndex,
@@ -143,18 +143,20 @@ impl FunctionContext<'_, '_> {
         let Some(tys) = self.definitions.signatures.get(signature_index.0 as usize) else {
             return Err(
                 PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    "could not find the signature for a vector-related bytecode \
-                        in the signature table"
-                        .to_owned(),
+                    VMErrorMessage::SignatureLookupFailed {
+                        context: "could not find the signature for a vector-related bytecode in the signature table".to_string(),
+                    },
                 ),
             );
         };
         if tys.to_ref().len() != 1 {
             return Err(
                 PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    "the type argument for vector-related bytecode \
-                        expects one and only one signature token"
-                        .to_owned(),
+                    VMErrorMessage::SignatureArity {
+                        expected: 1,
+                        actual: tys.to_ref().len(),
+                        context: "vector-related bytecode".to_string(),
+                    },
                 ),
             );
         };
@@ -406,8 +408,10 @@ fn datatypes(
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::LOOKUP_FAILED).with_message(
                     match name.to_string() {
-                        Ok(name_str) => format!("Type origin not found for type {}", name_str),
-                        Err(_) => "Type origin not found for unnamed type".to_string(),
+                        Ok(name_str) => VMErrorMessage::TypeNotFound { type_name: name_str },
+                        Err(_) => VMErrorMessage::TypeNotFound {
+                            type_name: "unnamed type".to_string(),
+                        },
                     },
                 )
             })?;
@@ -809,7 +813,7 @@ fn constants(
             let value = Value::deserialize_constant(constant)
                 .ok_or_else(|| {
                     PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                        "Verifier failed to verify the deserialization of constants".to_owned(),
+                        VMErrorMessage::ConstantDeserializationFailure,
                     )
                 })?
                 .into_constant_value(&context.package_arena)?;
@@ -857,10 +861,9 @@ fn functions(
     )
     .map_err(|key| match key.member_name() {
         Ok(fn_name) => PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-            .with_message(format!(
-                "Duplicate function key {}::{}",
-                package_context.version_id, fn_name,
-            )),
+            .with_message(VMErrorMessage::DuplicateKey {
+                key: format!("{}::{}", package_context.version_id, fn_name),
+            }),
         Err(err) => err,
     })?;
 
@@ -878,13 +881,15 @@ fn functions(
         let Some(opt_fun) = optimized_fns.remove(&fun.index) else {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                    format!(
-                        "failed to find function {}::{} in optimized function list",
-                        package_context.version_id,
-                        fun.name
-                            .to_short_string()
-                            .unwrap_or_else(|_| "unknown".to_string()),
-                    ),
+                    VMErrorMessage::FunctionLookupFailed {
+                        context: format!(
+                            "failed to find function {}::{} in optimized function list",
+                            package_context.version_id,
+                            fun.name
+                                .to_short_string()
+                                .unwrap_or_else(|_| "unknown".to_string()),
+                        ),
+                    },
                 ),
             );
         };

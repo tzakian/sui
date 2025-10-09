@@ -11,7 +11,7 @@ use crate::{
     shared::views::{ValueView, ValueVisitor},
 };
 use move_binary_format::{
-    errors::*,
+    errors::{PartialVMError, PartialVMResult, VMErrorMessage},
     file_format::{Constant, SignatureToken, VariantTag},
 };
 use move_core_types::{
@@ -30,7 +30,7 @@ macro_rules! debug_write {
     ($($toks: tt)*) => {
         write!($($toks)*).map_err(|_|
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message("failed to write to buffer".to_string())
+                .with_message(VMErrorMessage::FailedToWriteToBuffer)
         )
     };
 }
@@ -39,7 +39,7 @@ macro_rules! debug_writeln {
     ($($toks: tt)*) => {
         writeln!($($toks)*).map_err(|_|
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message("failed to write to buffer".to_string())
+                .with_message(VMErrorMessage::FailedToWriteToBuffer)
         )
     };
 }
@@ -287,7 +287,9 @@ impl Value {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("{:?} is not a variant", self)),
+                    .with_message(VMErrorMessage::ValueIsNotVariant {
+                        value: format!("{:?}", self),
+                    }),
             )
         }
     }
@@ -298,7 +300,9 @@ impl Value {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("{:?} is not a primitive vector", self)),
+                    .with_message(VMErrorMessage::ValueIsNotPrimitiveVector {
+                        value: format!("{:?}", self),
+                    }),
             )
         }
     }
@@ -309,7 +313,9 @@ impl Value {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("{:?} is not a primitive vector", self)),
+                    .with_message(VMErrorMessage::ValueIsNotPrimitiveVector {
+                        value: format!("{:?}", self),
+                    }),
             )
         }
     }
@@ -332,7 +338,9 @@ impl Value {
             | Value::Reference(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("{:?} is not a vector", self))),
+            .with_message(VMErrorMessage::ValueIsNotVector {
+                value: format!("{:?}", self),
+            })),
         }
     }
 
@@ -354,7 +362,9 @@ impl Value {
             | Value::Reference(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message(format!("{:?} is not a vector", self))),
+            .with_message(VMErrorMessage::ValueIsNotVector {
+                value: format!("{:?}", self),
+            })),
         }
     }
 }
@@ -377,7 +387,9 @@ impl<T: Debug> MemBox<T> {
             Ok(refcell) => Ok(refcell.into_inner()),
             Err(val) => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                    format!("Tried to take value {:?} with dangling references", val),
+                    VMErrorMessage::MovingValueWithDanglingReferences {
+                        value: format!("{:?}", val),
+                    },
                 ),
             ),
         }
@@ -573,11 +585,11 @@ impl Value {
             Value::Invalid => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message("invalid value in constant".to_string())),
+            .with_message(VMErrorMessage::InvalidValueInConstant)),
             Value::Reference(_) => Err(PartialVMError::new(
                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
             )
-            .with_message("invalid reference in constant".to_string())),
+            .with_message(VMErrorMessage::InvalidReferenceInConstant)),
             // TODO: auto-gen this?
             Value::U8(value) => Ok(ConstantValue::U8(value)),
             Value::U16(value) => Ok(ConstantValue::U16(value)),
@@ -753,7 +765,10 @@ impl Value {
                     rhs,
                     lhs == rhs,
                     PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot compare values: {:?}, {:?}", v1, v2))
+                        .with_message(VMErrorMessage::CannotCompareValues {
+                            value1: format!("{:?}", v1),
+                            value2: format!("{:?}", v2),
+                        })
                 )?),
             (Self::Vec(v1), Self::Vec(v2)) => Ok(v1.len() == v2.len()
                 && v1.iter().zip(v2.iter()).try_fold(true, |acc, (a, b)| {
@@ -773,7 +788,10 @@ impl Value {
                     })?)
             }
             _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot compare values: {:?}, {:?}", self, other))),
+                .with_message(VMErrorMessage::CannotCompareValues {
+                    value1: format!("{:?}", self),
+                    value2: format!("{:?}", other),
+                })),
         }
     }
 }
@@ -799,7 +817,10 @@ impl Reference {
                     items2,
                     items1[*ndx_1] == items2[*ndx_2],
                     PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot compare values: {:?}, {:?}", self, other))
+                        .with_message(VMErrorMessage::CannotCompareReferences {
+                            ref1: format!("{:?}", self),
+                            ref2: format!("{:?}", other),
+                        })
                 )
             }
             (Reference::Value(mem_box), Reference::Indexed(entry))
@@ -808,7 +829,9 @@ impl Reference {
                 let (vec, ndx) = entry.as_ref();
                 let Value::PrimVec(vec) = &*vec.borrow() else {
                     return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("invalid indexed reference: {:?}", vec)));
+                        .with_message(VMErrorMessage::InvalidIndexedReference {
+                            reference: format!("{:?}", vec),
+                        }));
                 };
                 match (vec, box_value) {
                     (PrimVec::VecU8(lhs), Value::U8(rhs)) => Ok(lhs[*ndx] == *rhs),
@@ -820,7 +843,10 @@ impl Reference {
                     (PrimVec::VecBool(lhs), Value::Bool(rhs)) => Ok(lhs[*ndx] == *rhs),
                     (PrimVec::VecAddress(lhs), Value::Address(rhs)) => Ok(lhs[*ndx] == **rhs),
                     _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot compare values: {:?}, {:?}", self, other))),
+                        .with_message(VMErrorMessage::CannotCompareValues {
+                            value1: format!("{:?}", self),
+                            value2: format!("{:?}", other),
+                        })),
                 }
             }
         }
@@ -831,10 +857,13 @@ impl FixedSizeVec {
     pub fn equals(&self, other: &FixedSizeVec) -> PartialVMResult<bool> {
         if self.len() != other.len() {
             return Err(
-                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
-                    "cannot compare fixed size vectors of different lengths: {:?}, {:?}",
-                    self, other
-                )),
+                PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
+                    VMErrorMessage::SizeExceeded {
+                        actual: self.len(),
+                        limit: other.len(),
+                        context: "fixed size vector comparison".to_string(),
+                    },
+                ),
             );
         }
         for (a, b) in self.iter().zip(other.iter()) {
@@ -883,15 +912,15 @@ impl Reference {
                     (Box, $vec:expr, $ndx:expr, $variant:ident, $value:expr) => {{
                         let Some(target) = $vec.get_mut($ndx) else {
                             return Err(PartialVMError::new(StatusCode::INDEX_OUT_OF_BOUNDS)
-                                .with_message(
-                                    "failed in write_ref: index lookup failure".to_string(),
-                                ));
+                                .with_message(VMErrorMessage::IndexLookupFailed {
+                                    context: "write_ref index lookup failure".to_string(),
+                                }));
                         };
                         let Value::$variant(val_box) = $value else {
                             return Err(PartialVMError::new(
                                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                             )
-                            .with_message("failed in write_ref: type mismatch".to_string()));
+                            .with_message(VMErrorMessage::FailedWriteRefTypeMismatch));
                         };
                         *target = *val_box;
                     }};
@@ -899,15 +928,15 @@ impl Reference {
                     ($vec:expr, $ndx:expr, $variant:ident, $value:expr) => {{
                         let Some(target) = $vec.get_mut($ndx) else {
                             return Err(PartialVMError::new(StatusCode::INDEX_OUT_OF_BOUNDS)
-                                .with_message(
-                                    "failed in write_ref: index lookup failure".to_string(),
-                                ));
+                                .with_message(VMErrorMessage::IndexLookupFailed {
+                                    context: "write_ref index lookup failure".to_string(),
+                                }));
                         };
                         let Value::$variant(inner_val) = $value else {
                             return Err(PartialVMError::new(
                                 StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                             )
-                            .with_message("failed in write_ref: type mismatch".to_string()));
+                            .with_message(VMErrorMessage::FailedWriteRefTypeMismatch));
                         };
                         *target = inner_val;
                     }};
@@ -951,7 +980,7 @@ impl StructRef {
             // If not a struct, return an error.
             _ => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Container is not a struct".to_string()),
+                    .with_message(VMErrorMessage::ContainerIsNotStruct),
             ),
         }
     }
@@ -973,7 +1002,7 @@ impl StructRef {
             }
             _ => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Container is not a struct".to_string()),
+                    .with_message(VMErrorMessage::ContainerIsNotStruct),
             ),
         }
     }
@@ -992,10 +1021,12 @@ impl VariantRef {
             Ok(())
         } else {
             Err(
-                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(format!(
-                    "Variant tag mismatch: expected {:?}, found {:?}",
-                    expected_tag, tag
-                )),
+                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(
+                    VMErrorMessage::TagMismatch {
+                        expected: expected_tag,
+                        actual: tag,
+                    },
+                ),
             )
         }
     }
@@ -1016,7 +1047,9 @@ impl VariantRef {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Value is not a variant".to_string()),
+                    .with_message(VMErrorMessage::ValueIsNotVariant {
+                        value: format!("{:?}", self),
+                    }),
             )
         }
     }
@@ -1035,7 +1068,7 @@ impl VectorRef {
                 if index >= vec.len() {
                     return Err(PartialVMError::new(StatusCode::VECTOR_OPERATION_ERROR)
                         .with_sub_status(INDEX_OUT_OF_BOUNDS)
-                        .with_message("Index out of bounds in Vec".to_string()));
+                        .with_message(VMErrorMessage::IndexOutOfBoundsInVec));
                 }
                 let elem = &vec[index];
                 // Return a reference value to the element.
@@ -1057,7 +1090,7 @@ impl VectorRef {
                 if index >= len {
                     return Err(PartialVMError::new(StatusCode::VECTOR_OPERATION_ERROR)
                         .with_sub_status(INDEX_OUT_OF_BOUNDS)
-                        .with_message("Index out of bounds in PrimVec".to_string()));
+                        .with_message(VMErrorMessage::IndexOutOfBoundsInPrimVec));
                 }
                 // Return an indexed reference.
                 Ok(Value::Reference(Reference::Indexed(Box::new((
@@ -1067,7 +1100,7 @@ impl VectorRef {
             }
             // If the container is neither a Vec nor a PrimVec, signal an error.
             _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message("Container is not a vector".to_string())),
+                .with_message(VMErrorMessage::ContainerIsNotVector)),
         }
     }
 }
@@ -1096,7 +1129,7 @@ impl SignerRef {
             }
             _ => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Container is not a signer".to_string()),
+                    .with_message(VMErrorMessage::SignerExpected),
             ),
         }
     }
@@ -1265,7 +1298,7 @@ impl VMValueCast<StructRef> for Value {
             }
             // Otherwise, it's not a struct.
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Struct, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedStruct { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1284,7 +1317,7 @@ impl VMValueCast<VariantRef> for Value {
                         } else {
                             Err(
                                 PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                    format!("Expected a Variant in reference, found {:?}", inner),
+                                    VMErrorMessage::ExpectedVariant { found: format!("{:?}", inner) },
                                 ),
                             )
                         }
@@ -1294,13 +1327,13 @@ impl VMValueCast<VariantRef> for Value {
                         StatusCode::INTERNAL_TYPE_ERROR,
                     )
                     .with_message(
-                        "Expected a Variant reference, got an Indexed reference".to_string(),
+                        VMErrorMessage::ExpectedVariant { found: "Indexed reference".to_string() },
                     )),
                 }
             }
             // Otherwise, it's not a struct.
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Variant, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedVariant { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1316,17 +1349,16 @@ impl VMValueCast<SignerRef> for Value {
                         if let Value::Struct(struct_) = &*inner {
                             if struct_.len() != 1 {
                                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                                    .with_message(format!(
-                                        "Expected signer struct with one field, found {} fields",
-                                        struct_.len()
-                                    )));
+                                    .with_message(VMErrorMessage::ExpectedStringStructWithOneField {
+                                        num_fields: struct_.len()
+                                    }));
                             };
                             // The reference holds a struct; return a StructRef by cloning the pointer.
                             Ok(SignerRef(mem_box.ptr_clone()))
                         } else {
                             Err(
                                 PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(
-                                    format!("Expected a Struct in reference, found {:?}", inner),
+                                    VMErrorMessage::ExpectedStruct { found: format!("{:?}", inner) },
                                 ),
                             )
                         }
@@ -1336,13 +1368,13 @@ impl VMValueCast<SignerRef> for Value {
                         StatusCode::INTERNAL_TYPE_ERROR,
                     )
                     .with_message(
-                        "Expected a Struct reference, got an Indexed reference".to_string(),
+                        VMErrorMessage::ExpectedStruct { found: "Indexed reference".to_string() },
                     )),
                 }
             }
             // Otherwise, it's not a struct.
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Struct, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedStruct { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1359,20 +1391,19 @@ impl VMValueCast<VectorRef> for Value {
                     match &*inner {
                         Value::Vec(_) | Value::PrimVec(_) => Ok(VectorRef(mem_box.ptr_clone())),
                         _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                            .with_message(format!(
-                                "Expected a vector container in reference, found {:?}",
-                                inner
-                            ))),
+                            .with_message(VMErrorMessage::ExpectedVectorInReference {
+                                found: format!("{:?}", inner)
+                            })),
                     }
                 }
                 Reference::Indexed(_) => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
                     .with_message(
-                        "Expected a vector container, got an Indexed reference".to_string(),
+                        VMErrorMessage::ExpectedVectorContainer { found: "Indexed reference".to_string() },
                     )),
             },
             // Otherwise, the value isn't a vector-like container.
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a vector container, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedVectorContainer { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1383,7 +1414,7 @@ impl VMValueCast<Vector> for Value {
             // Accept both container forms.
             Value::Vec(_) | Value::PrimVec(_) => Ok(Vector(self)),
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Vector, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedVector { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1394,7 +1425,7 @@ impl VMValueCast<Struct> for Value {
             // Accept both container forms.
             Value::Struct(struct_) => Ok(struct_),
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Struct, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedStruct { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1405,7 +1436,7 @@ impl VMValueCast<Variant> for Value {
             // Accept both container forms.
             Value::Variant(struct_) => Ok(struct_),
             other => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Expected a Variant, found {:?}", other))),
+                .with_message(VMErrorMessage::ExpectedVariant { found: format!("{:?}", other) })),
         }
     }
 }
@@ -1421,7 +1452,7 @@ impl VMValueCast<IntegerValue> for Value {
             Value::U128(x) => Ok(IntegerValue::U128(*x)),
             Value::U256(x) => Ok(IntegerValue::U256(*x)),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("cannot cast {:?} to integer", v))),
+                .with_message(VMErrorMessage::CannotCastToInt { value: format!("{:?}", v) })),
         }
     }
 }
@@ -1824,10 +1855,9 @@ impl Variant {
         let variant_tag = self.0.as_ref().0;
         if expected_tag != variant_tag {
             Err(
-                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(format!(
-                    "tag mismatch: expected {}, got {}",
-                    expected_tag, variant_tag
-                )),
+                PartialVMError::new(StatusCode::VARIANT_TAG_MISMATCH).with_message(
+                    VMErrorMessage::TagMismatch { expected: expected_tag, actual: variant_tag }
+                ),
             )
         } else {
             Ok(())
@@ -1851,14 +1881,17 @@ fn check_elem_layout(ty: &Type, v: &Value) -> PartialVMResult<()> {
             match $ty {
                 Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("invalid type param for vector: {:?}", ty)),
+                        .with_message(VMErrorMessage::InvalidTypeParamForVector { type_param: format!("{:?}", ty) }),
                 ),
                 $(
                     $allowed => Ok(()),
                 )+
                 _ => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("vector elem layout mismatch, expected {:?}, got {:?}", $ty, $v))
+                        .with_message(VMErrorMessage::VectorElemLayoutMismatch {
+                            expected: format!("{:?}", $ty),
+                            got: format!("{:?}", $v)
+                        })
                 ),
             }
         };
@@ -1891,7 +1924,7 @@ fn check_elem_layout(ty: &Type, v: &Value) -> PartialVMResult<()> {
         | Value::Reference(_) => Err(PartialVMError::new(
             StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
         )
-        .with_message(format!("value {:?} is not a vector", v))),
+        .with_message(VMErrorMessage::ValueIsNotVector { value: format!("{:?}", v) })),
     }
 }
 
@@ -1981,7 +2014,7 @@ impl VectorRef {
         if size >= (capacity as usize) {
             return Err(PartialVMError::new(StatusCode::VECTOR_OPERATION_ERROR)
                 .with_sub_status(VEC_SIZE_LIMIT_REACHED)
-                .with_message(format!("vector size limit is {capacity}",)));
+                .with_message(VMErrorMessage::VectorSizeLimit { limit: capacity }));
         }
 
         match_vec_ref_container!(
@@ -2123,7 +2156,7 @@ impl TryFrom<&Type> for VectorSpecialization {
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("invalid type param for vector: {:?}", ty)),
+                        .with_message(VMErrorMessage::InvalidTypeParamForVector { type_param: format!("{:?}", ty) }),
                 );
             }
         })
@@ -2179,7 +2212,7 @@ impl Vector {
             value => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("{:?} is not a vector", value)),
+                        .with_message(VMErrorMessage::ValueIsNotVector { value: format!("{:?}", value) }),
                 );
             }
         };
@@ -2204,7 +2237,7 @@ impl Vector {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("expected vector<u8>".to_string()),
+                    .with_message(VMErrorMessage::VectorU8Expected),
             )
         }
     }
@@ -2224,7 +2257,7 @@ impl GlobalValueImpl {
             container @ Value::Struct(_) => Ok(Self::Filled(MemBox::new(container))),
             val => Err((
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("failed to publish fresh: not a resource".to_string()),
+                    .with_message(VMErrorMessage::NotAResource),
                 val,
             )),
         }

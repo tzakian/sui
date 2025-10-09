@@ -14,7 +14,7 @@
 //! terminate eventually.
 
 use move_binary_format::{
-    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{
         Bytecode, CompiledModule, FunctionDefinition, FunctionDefinitionIndex, FunctionHandleIndex,
         SignatureIndex, SignatureToken, TypeParameterIndex,
@@ -115,7 +115,8 @@ impl<'a> InstantiationLoopChecker<'a> {
                     "edges with constructors: [{}], nodes: [{}]",
                     msg_edges, msg_nodes
                 );
-                Err(PartialVMError::new(StatusCode::LOOP_IN_INSTANTIATION_GRAPH).with_message(msg))
+                Err(PartialVMError::new(StatusCode::LOOP_IN_INSTANTIATION_GRAPH)
+                    .with_message(VMErrorMessage::LoopInInstantiationGraph { message: msg }))
             }
         }
     }

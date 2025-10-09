@@ -12,7 +12,7 @@
 use crate::absint::FunctionContext;
 use move_abstract_interpreter::control_flow_graph::{BlockId, ControlFlowGraph};
 use move_binary_format::{
-    errors::{PartialVMError, PartialVMResult},
+    errors::{PartialVMError, PartialVMResult, VMErrorMessage},
     file_format::{Bytecode, CodeUnit, FunctionDefinitionIndex, Signature, StructFieldInformation},
     CompiledModule,
 };
@@ -276,7 +276,7 @@ impl<'a> StackUsageVerifier<'a> {
             | Bytecode::VariantSwitch(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Unexpected variant opcode in version 2".to_string()),
+                        .with_message(VMErrorMessage::UnexpectedVariantOpcodeInVersion { version: 2 }),
                 );
             }
         })

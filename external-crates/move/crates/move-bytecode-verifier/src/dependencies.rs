@@ -5,7 +5,9 @@
 //! This module contains verification of usage of dependencies for modules and scripts.
 use move_binary_format::{
     IndexKind,
-    errors::{Location, PartialVMError, PartialVMResult, VMResult, verification_error},
+    errors::{
+        Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult, verification_error,
+    },
     file_format::{
         AbilitySet, Bytecode, CodeOffset, CompiledModule, DatatypeHandleIndex, DatatypeTyParameter,
         FunctionDefinitionIndex, FunctionHandleIndex, ModuleHandleIndex, SignatureToken,
@@ -545,11 +547,7 @@ fn verify_script_visibility_usage(
                     StatusCode::CALLED_SCRIPT_VISIBLE_FROM_NON_SCRIPT_VISIBLE,
                 )
                 .at_code_offset(fdef_idx, idx)
-                .with_message(
-                    "script-visible functions can only be called from scripts or other \
-                    script-visible functions"
-                        .to_string(),
-                ));
+                .with_message(VMErrorMessage::ScriptVisibleFunctionCalledFromNonScriptVisible));
             }
             _ => (),
         }

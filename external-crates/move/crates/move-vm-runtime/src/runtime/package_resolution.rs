@@ -14,7 +14,7 @@ use crate::{
     shared::{logging::expect_no_verification_errors, types::VersionId},
     validation::{validate_package, verification},
 };
-use move_binary_format::errors::{Location, PartialVMError, VMResult};
+use move_binary_format::errors::{Location, PartialVMError, VMErrorMessage, VMResult};
 use move_core_types::{
     resolver::{ModuleResolver, SerializedPackage},
     vm_status::StatusCode,
@@ -45,9 +45,7 @@ pub fn resolve_package(
         debug_assert!(false, "A different package was loaded than was requested");
         return Err(
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(
-                    "Package not found in loaded cache despite just loading it".to_string(),
-                )
+                .with_message(VMErrorMessage::PackageNotFoundAfterLoading)
                 .finish(Location::Package(package_to_read)),
         );
     };
@@ -60,9 +58,7 @@ pub fn resolve_package(
         error!("[VM] More than one package was loaded when only one was requested: {packages:#?}");
         return Err(
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(
-                    "More than one package was loaded when only one was requested".to_string(),
-                )
+                .with_message(VMErrorMessage::MultiplePackagesLoaded)
                 .finish(Location::Package(package_to_read)),
         );
     }
@@ -158,16 +154,19 @@ fn load_packages(
             .map(|(idx, pkg)| {
                 pkg.ok_or_else(|| {
                     PartialVMError::new(StatusCode::LINKER_ERROR)
-                        .with_message(format!("Cannot find package {:?} in data cache", ids[idx],))
+                        .with_message(VMErrorMessage::CannotFindPackageInCache {
+                            package: format!("{:?}", ids[idx]),
+                        })
                         .finish(Location::Package(ids[idx]))
                 })
             })
             .collect::<VMResult<Vec<_>>>()?,
         Err(err) => {
-            let msg = format!("Unexpected storage error: {:?}", err);
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(msg)
+                    .with_message(VMErrorMessage::UnexpectedStorageError {
+                        error: format!("{:?}", err),
+                    })
                     .finish(Location::Undefined),
             );
         }
@@ -223,7 +222,7 @@ pub fn jit_and_cache_package(
 
     cache.cached_package_at(version_id).ok_or_else(|| {
         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-            .with_message("Package not found in cache after loading".to_string())
+            .with_message(VMErrorMessage::PackageNotFoundAfterLoading)
             .finish(Location::Package(version_id))
     })
 }

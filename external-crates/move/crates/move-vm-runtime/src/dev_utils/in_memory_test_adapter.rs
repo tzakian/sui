@@ -16,7 +16,7 @@ use crate::{
     },
     validation::verification::ast as verif_ast,
 };
-use move_binary_format::errors::{Location, PartialVMError, VMResult};
+use move_binary_format::errors::{Location, PartialVMError, VMErrorMessage, VMResult};
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::{
     account_address::AccountAddress,
@@ -56,10 +56,9 @@ impl InMemoryTestAdapter {
     pub fn get_package(&self, original_id: &OriginalId) -> VMResult<SerializedPackage> {
         let Ok([Some(pkg)]) = self.storage.get_packages_static([*original_id]) else {
             return Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                .with_message(format!(
-                    "Cannot find package {:?} in data cache",
-                    original_id
-                ))
+                .with_message(VMErrorMessage::CannotFindPackageInCache {
+                    package: format!("{:?}", original_id),
+                })
                 .finish(Location::Package(*original_id)));
         };
         Ok(pkg)
@@ -85,10 +84,9 @@ impl InMemoryTestAdapter {
             // Attempt to retrieve the package's modules from the store
             let Ok([Some(pkg)]) = self.storage.get_packages_static([package_id]) else {
                 return Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                    .with_message(format!(
-                        "Cannot find {:?} in data cache when building linkage context",
-                        package_id
-                    ))
+                    .with_message(VMErrorMessage::CannotFindPackageInCache {
+                        package: format!("{:?} when building linkage context", package_id),
+                    })
                     .finish(Location::Undefined));
             };
 

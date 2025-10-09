@@ -15,7 +15,7 @@ use crate::{
     },
 };
 use move_binary_format::{
-    errors::{Location, PartialVMError, VMError, VMResult},
+    errors::{Location, PartialVMError, VMError, VMErrorMessage, VMResult},
     file_format::{AbilitySet, CodeOffset, FunctionDefinitionIndex, Visibility},
 };
 use move_core_types::{
@@ -279,12 +279,14 @@ impl<'extensions> MoveVM<'extensions> {
     fn convert_to_external_resolution_error(err: VMError, msg: String) -> VMError {
         if err.major_status().status_type() == StatusType::InvariantViolation {
             PartialVMError::new(StatusCode::EXTERNAL_RESOLUTION_REQUEST_ERROR)
-                .with_message(format!(
-                    "{msg}{}",
-                    err.message()
-                        .map(|s| format!(": {}", s))
-                        .unwrap_or_default()
-                ))
+                .with_message(VMErrorMessage::ExternalResolutionRequestError {
+                    context: format!(
+                        "{msg}{}",
+                        err.message()
+                            .map(|s| format!(": {}", s))
+                            .unwrap_or_default()
+                    ),
+                })
                 .finish(Location::Undefined)
         } else {
             err

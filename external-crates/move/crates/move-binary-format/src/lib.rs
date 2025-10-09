@@ -140,7 +140,10 @@ macro_rules! safe_unwrap {
                 let err = move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                 )
-                .with_message(format!("{}:{} (none)", file!(), line!()));
+                .with_message($crate::errors::VMErrorMessage::SafeUnwrapNone {
+                    file: file!(),
+                    line: line!(),
+                });
                 if cfg!(debug_assertions) {
                     panic!("{:?}", err);
                 } else {
@@ -159,7 +162,11 @@ macro_rules! safe_unwrap_err {
             Ok(x) => x,
             Err(e) => {
                 let err = PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("{}:{} {:#}", file!(), line!(), e));
+                    .with_message($crate::errors::VMErrorMessage::SafeUnwrapErr {
+                        file: file!(),
+                        line: line!(),
+                        error: format!("{:#}", e),
+                    });
                 if cfg!(debug_assertions) {
                     panic!("{:?}", err);
                 } else {
@@ -176,7 +183,10 @@ macro_rules! safe_assert {
     ($e:expr) => {{
         if !$e {
             let err = PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(format!("{}:{} (assert)", file!(), line!()));
+                .with_message($crate::errors::VMErrorMessage::SafeAssertFailed {
+                    file: file!(),
+                    line: line!(),
+                });
             if cfg!(debug_assertions) {
                 panic!("{:?}", err)
             } else {

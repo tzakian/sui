@@ -280,7 +280,9 @@ fn take_unique_ownership<T: Debug>(r: Rc<RefCell<T>>) -> PartialVMResult<T> {
         Ok(cell) => Ok(cell.into_inner()),
         Err(r) => Err(
             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                .with_message(format!("moving value {:?} with dangling references", r)),
+                .with_message(VMErrorMessage::MovingValueWithDanglingReferences {
+                    value: format!("{:?}", r),
+                }),
         ),
     }
 }
@@ -318,7 +320,10 @@ macro_rules! impl_vm_value_ref {
                 match self {
                     ValueImpl::$tc(x) => Ok(x),
                     _ => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("cannot take {:?} as &{}", self, stringify!($ty)))),
+                        .with_message(VMErrorMessage::CannotCast {
+                            from_type: format!("{:?}", self),
+                            to_type: format!("&{}", stringify!($ty)),
+                        })),
                 }
             }
         }

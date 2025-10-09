@@ -2,7 +2,7 @@ use crate::validation::deserialization::ast::Package;
 
 use move_binary_format::{
     CompiledModule,
-    errors::{Location, PartialVMError, VMResult},
+    errors::{Location, PartialVMError, VMErrorMessage, VMResult},
 };
 use move_core_types::{resolver::SerializedPackage, vm_status::StatusCode};
 use move_vm_config::runtime::VMConfig;
@@ -24,7 +24,7 @@ pub(crate) fn package(vm_config: &VMConfig, pkg: SerializedPackage) -> VMResult<
     // Packages must be non-empty
     if modules.is_empty() {
         return Err(PartialVMError::new(StatusCode::EMPTY_PACKAGE)
-            .with_message("Empty packages are not allowed.".to_string())
+            .with_message(VMErrorMessage::EmptyPackage)
             .finish(Location::Package(pkg.version_id)));
     }
 

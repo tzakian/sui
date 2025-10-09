@@ -1,7 +1,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use move_binary_format::errors::{PartialVMError, PartialVMResult};
+use move_binary_format::errors::{PartialVMError, PartialVMResult, VMErrorMessage};
 use move_core_types::{
     identifier::{IdentStr, Identifier},
     vm_status::StatusCode,
@@ -113,7 +113,9 @@ impl IdentifierInterner {
         } else {
             Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("Failed to find {key_type} key in ident interner.")),
+                    .with_message(VMErrorMessage::FailedToFindKeyInInterner {
+                        key_type: key_type.to_string(),
+                    }),
             )
         }
     }
@@ -138,7 +140,10 @@ impl IdentifierInterner {
         match self.0.try_get_or_intern(string) {
             Ok(result) => Ok(IdentifierKey(result)),
             Err(err) => Err(PartialVMError::new(StatusCode::INTERNER_LIMIT_REACHED)
-                .with_message(format!("Failed to intern {string} ident; error: {err:?}."))),
+                .with_message(VMErrorMessage::IntererLimitReached {
+                    ident: string.to_string(),
+                    error: format!("{err:?}"),
+                })),
         }
     }
 }

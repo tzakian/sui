@@ -5,7 +5,7 @@
 
 use crate::execution::values::{MemBox, values_impl::Value};
 
-use move_binary_format::errors::{PartialVMError, PartialVMResult};
+use move_binary_format::errors::{PartialVMError, PartialVMResult, VMErrorMessage};
 use move_core_types::vm_status::StatusCode;
 
 use std::collections::HashMap;
@@ -80,14 +80,16 @@ impl BaseHeap {
         if self.is_invalid(ndx)? {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Cannot move from an invalid memory location".to_string()),
+                    .with_message(VMErrorMessage::CannotMoveFromInvalidLocation),
             );
         }
 
         let Some(value_box) = self.values.get_mut(&ndx) else {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("Invalid index: {}", ndx)),
+                    .with_message(VMErrorMessage::InvalidIndex {
+                        index: ndx.to_string(),
+                    }),
             );
         };
         Ok(value_box.replace(Value::invalid()))
@@ -99,7 +101,9 @@ impl BaseHeap {
             .get(&ndx)
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("Heap index invalid: {}", ndx))
+                    .with_message(VMErrorMessage::HeapIndexInvalid {
+                        index: ndx.to_string(),
+                    })
             })
             .map(|value| value.as_ref_value())
     }
@@ -111,7 +115,9 @@ impl BaseHeap {
             .map(|value| matches!(&*value.borrow(), &Value::Invalid))
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("Invalid index: {}", ndx))
+                    .with_message(VMErrorMessage::InvalidIndex {
+                        index: ndx.to_string(),
+                    })
             })
     }
 }
@@ -184,7 +190,7 @@ impl StackFrame {
     pub fn store_loc(&mut self, ndx: usize, x: Value) -> PartialVMResult<()> {
         if ndx >= self.slice.len() {
             return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                .with_message(format!("Local index out of bounds: {}", ndx)));
+                .with_message(VMErrorMessage::LocalIndexOutOfBounds { index: ndx }));
         }
         let _ = self.slice[ndx].replace(x);
         Ok(())
@@ -196,12 +202,12 @@ impl StackFrame {
             .get(ndx)
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("Local index out of bounds: {}", ndx))
+                    .with_message(VMErrorMessage::LocalIndexOutOfBounds { index: ndx })
             })
             .and_then(|value| {
                 if matches!(&*value.borrow(), &Value::Invalid) {
                     Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("Local index {} is unset", ndx)))
+                        .with_message(VMErrorMessage::LocalIndexUnset { index: ndx }))
                 } else {
                     Ok(value)
                 }
@@ -214,12 +220,12 @@ impl StackFrame {
             .get_mut(ndx)
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                    .with_message(format!("Local index out of bounds: {}", ndx))
+                    .with_message(VMErrorMessage::LocalIndexOutOfBounds { index: ndx })
             })
             .and_then(|value| {
                 if matches!(&*value.borrow(), &Value::Invalid) {
                     Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("Local index {} is unset", ndx)))
+                        .with_message(VMErrorMessage::LocalIndexUnset { index: ndx }))
                 } else {
                     Ok(value)
                 }

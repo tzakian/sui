@@ -27,7 +27,9 @@ use crate::{
     },
 };
 use fail::fail_point;
-use move_binary_format::errors::*;
+use move_binary_format::errors::{
+    Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult,
+};
 use move_core_types::{
     gas_algebra::{NumArgs, NumBytes},
     vm_status::StatusCode,
@@ -128,7 +130,7 @@ fn step(
     fail_point!("move_vm::interpreter_loop", |_| {
         Err(state.set_location(
             PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION)
-                .with_message("Injected move_vm::interpreter verifier failure".to_owned()),
+                .with_message(VMErrorMessage::InjectedVerifierFailure),
         ))
     });
 
@@ -645,11 +647,10 @@ fn op_step_impl(
             let error_code = state.pop_operand_as::<u64>()?;
             let error = PartialVMError::new(StatusCode::ABORTED)
                 .with_sub_status(error_code)
-                .with_message(format!(
-                    "{} at offset {}",
-                    state.call_stack.current_frame.function().pretty_string(),
-                    state.call_stack.current_frame.pc,
-                ));
+                .with_message(VMErrorMessage::AbortContext {
+                    function: state.call_stack.current_frame.function().pretty_string(),
+                    offset: state.call_stack.current_frame.pc,
+                });
             return Err(error);
         }
         Bytecode::Eq => {
@@ -1010,9 +1011,8 @@ pub(super) fn call_native_with_args(
     // returns a different number of values than its declared types will trigger this check
     if return_values.len() != return_type_count {
         return Err(
-            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                "Arity mismatch: return value count does not match return type count".to_string(),
-            ),
+            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                .with_message(VMErrorMessage::ArityMismatchReturnValues),
         );
     }
     Ok(return_values)
@@ -1151,7 +1151,7 @@ fn check_depth_of_type_impl(
         Type::TyParam(_) => {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Type parameter should be fully resolved".to_string()),
+                    .with_message(VMErrorMessage::TypeParameterNotFullyResolved),
             );
         }
     };

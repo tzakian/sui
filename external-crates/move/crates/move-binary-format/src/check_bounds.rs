@@ -5,7 +5,7 @@
 use crate::{
     IndexKind,
     errors::{
-        PartialVMError, PartialVMResult, bounds_error,
+        PartialVMError, PartialVMResult, VMErrorMessage, bounds_error,
         offset_out_of_bounds as offset_out_of_bounds_error, verification_error,
     },
     file_format::{
@@ -664,10 +664,10 @@ impl<'a> BoundsChecker<'a> {
                     IndexKind::VariantTag,
                     jt_len as TableIndex,
                 )
-                .with_message(format!(
-                    "Jump table length {} does not equal number of variants {}",
-                    jt_len, num_variants,
-                )));
+                .with_message(VMErrorMessage::JumpTableLengthMismatch {
+                    table_length: jt_len,
+                    variant_count: num_variants,
+                }));
             }
             for offset in jump_table {
                 if *offset as usize >= code_len {
@@ -697,10 +697,13 @@ impl<'a> BoundsChecker<'a> {
                             return Err(PartialVMError::new(
                                 StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH,
                             )
-                            .with_message(format!(
-                                "expected {} type parameters got 0 (Struct)",
-                                sh.type_parameters.len(),
-                            )));
+                            .with_message(
+                                VMErrorMessage::TypeParameterCountMismatch {
+                                    expected: sh.type_parameters.len(),
+                                    actual: 0,
+                                    context: Some("Struct".to_string()),
+                                },
+                            ));
                         }
                     }
                 }
@@ -712,11 +715,13 @@ impl<'a> BoundsChecker<'a> {
                             return Err(PartialVMError::new(
                                 StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH,
                             )
-                            .with_message(format!(
-                                "expected {} type parameters got {}",
-                                sh.type_parameters.len(),
-                                type_params.len(),
-                            )));
+                            .with_message(
+                                VMErrorMessage::TypeParameterCountMismatch {
+                                    expected: sh.type_parameters.len(),
+                                    actual: type_params.len(),
+                                    context: None,
+                                },
+                            ));
                         }
                     }
                 }
@@ -809,13 +814,12 @@ impl<'a> BoundsChecker<'a> {
         cur_bytecode_offset: CodeOffset,
     ) -> PartialVMError {
         match self.context {
-            BoundsCheckingContext::Module => {
-                let msg = format!(
-                    "Indexing into bytecode {} during bounds checking but 'current_function' was not set",
-                    cur_bytecode_offset
-                );
-                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(msg)
-            }
+            BoundsCheckingContext::Module => PartialVMError::new(
+                StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+            )
+            .with_message(VMErrorMessage::CurrentFunctionNotSetDuringBoundsChecking {
+                offset: cur_bytecode_offset,
+            }),
             BoundsCheckingContext::ModuleFunction(current_function_index) => {
                 offset_out_of_bounds_error(
                     status,

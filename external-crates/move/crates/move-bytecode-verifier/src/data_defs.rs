@@ -7,7 +7,9 @@
 //! each module in isolation guarantees that there is no structural recursion globally.
 use move_binary_format::{
     IndexKind,
-    errors::{Location, PartialVMError, PartialVMResult, VMResult, verification_error},
+    errors::{
+        Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult, verification_error,
+    },
     file_format::{
         CompiledModule, DatatypeHandleIndex, EnumDefinitionIndex, SignatureToken,
         StructDefinitionIndex, TableIndex,
@@ -76,10 +78,11 @@ impl<'a> DataDefGraphBuilder<'a> {
             {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!(
-                            "Duplicate struct handle index {} for struct definitions {:?} and {}",
-                            sh_idx, other, idx
-                        )),
+                        .with_message(VMErrorMessage::DuplicateStructHandleIndex {
+                            handle_idx: sh_idx.0,
+                            def1: format!("{:?}", other),
+                            def2: idx,
+                        }),
                 );
             }
         }
@@ -89,10 +92,11 @@ impl<'a> DataDefGraphBuilder<'a> {
             if let Some(other) = handle_to_def.insert(sh_idx, DataIndex::Enum(idx as TableIndex)) {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!(
-                            "Duplicate enum handle index {} for enum definitions {:?} and {}",
-                            sh_idx, other, idx
-                        )),
+                        .with_message(VMErrorMessage::DuplicateEnumHandleIndex {
+                            handle_idx: sh_idx.0,
+                            def1: format!("{:?}", other),
+                            def2: idx,
+                        }),
                 );
             }
         }
@@ -180,7 +184,7 @@ impl<'a> DataDefGraphBuilder<'a> {
             T::Reference(_) | T::MutableReference(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Reference field when checking recursive structs".to_owned()),
+                        .with_message(VMErrorMessage::ReferenceFieldInRecursiveStruct),
                 );
             }
             T::Vector(inner) => self.add_signature_token(neighbors, cur_idx, inner)?,

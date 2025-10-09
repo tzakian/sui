@@ -3,7 +3,7 @@
 
 use move_binary_format::{
     IndexKind,
-    errors::{Location, PartialVMError, PartialVMResult, VMResult, verification_error},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult, verification_error},
     file_format::{CompiledModule, SignatureToken, StructFieldInformation, TableIndex},
 };
 use move_core_types::{runtime_value::MoveValue, vm_status::StatusCode};
@@ -190,7 +190,7 @@ impl<'a> LimitsVerifier<'a> {
                     if let Some(lim) = config.max_constant_vector_len {
                         if cons.len() > lim as usize {
                             return Err(PartialVMError::new(StatusCode::TOO_MANY_VECTOR_ELEMENTS)
-                                .with_message(format!("vector size limit is {}", lim)));
+                                .with_message(VMErrorMessage::VectorSizeLimit { limit: lim }));
                         }
                     }
                 } else {

@@ -7,11 +7,11 @@
 //! top-level in all tokens.  Additionally, references cannot occur at all in field types.
 use move_binary_format::{
     IndexKind,
-    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{
         AbilitySet, Bytecode, CodeUnit, CompiledModule, DatatypeTyParameter, EnumDefinition,
-        FunctionDefinition, FunctionHandle, Signature, SignatureIndex, SignatureToken,
-        StructDefinition, StructFieldInformation, TableIndex,
+        FunctionDefinition, FunctionDefinitionIndex, FunctionHandle, Signature, SignatureIndex,
+        SignatureToken, StructDefinition, StructFieldInformation, TableIndex,
     },
     file_format_common::VERSION_6,
 };
@@ -226,10 +226,11 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
                         return Err(PartialVMError::new(
                             StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH,
                         )
-                        .with_message(format!(
-                            "expected 1 type token for vector operations, got {}",
-                            type_arguments.len()
-                        )));
+                        .with_message(VMErrorMessage::TypeParameterCountMismatch {
+                            expected: 1,
+                            actual: type_arguments.len(),
+                            context: Some("vector operations".to_string()),
+                        }));
                     }
                     self.check_signature_tokens(type_arguments)
                 }
@@ -319,7 +320,7 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
                 | UnpackVariantMutRef(_) => Ok(()),
             };
             result.map_err(|err| {
-                err.append_message_with_separator(' ', format!("at offset {} ", offset))
+                err.at_code_offset(FunctionDefinitionIndex(0), offset as u16)
             })?
         }
         Ok(())
@@ -350,9 +351,10 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
                     return Err(PartialVMError::new(
                         StatusCode::INVALID_PHANTOM_TYPE_PARAM_POSITION,
                     )
-                    .with_message(
-                        "phantom type parameter cannot be used in non-phantom position".to_string(),
-                    ));
+                    .with_message(VMErrorMessage::TypeMismatch {
+                        expected: "phantom position".to_string(),
+                        actual: "non-phantom position".to_string(),
+                    }));
                 }
             }
 
@@ -406,7 +408,10 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
                 // TODO: Prop tests expect us to NOT check the inner types.
                 // Revisit this once we rework prop tests.
                 Err(PartialVMError::new(StatusCode::INVALID_SIGNATURE_TOKEN)
-                    .with_message("reference not allowed".to_string()))
+                    .with_message(VMErrorMessage::TypeMismatch {
+                        expected: "non-reference type".to_string(),
+                        actual: "reference".to_string(),
+                    }))
             }
             Vector(ty) => self.check_signature_token(ty),
             DatatypeInstantiation(inst) => {
@@ -494,15 +499,12 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
         global_abilities: &[AbilitySet],
     ) -> PartialVMResult<()> {
         if type_arguments.len() != constraints.len() {
-            return Err(
-                PartialVMError::new(StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH).with_message(
-                    format!(
-                        "expected {} type argument(s), got {}",
-                        constraints.len(),
-                        type_arguments.len()
-                    ),
-                ),
-            );
+            return Err(PartialVMError::new(StatusCode::NUMBER_OF_TYPE_ARGUMENTS_MISMATCH)
+                .with_message(VMErrorMessage::TypeParameterCountMismatch {
+                    expected: constraints.len(),
+                    actual: type_arguments.len(),
+                    context: None,
+                }));
         }
 
         let meter: &mut M = self.meter;
@@ -512,11 +514,10 @@ impl<'env, 'a, 'b, M: Meter + ?Sized> SignatureChecker<'env, 'a, 'b, M> {
                 module_ability_cache.abilities(Scope::Module, meter, global_abilities, ty)?;
             if !constraint.is_subset(given) {
                 return Err(PartialVMError::new(StatusCode::CONSTRAINT_NOT_SATISFIED)
-                    .with_message(format!(
-                        "expected type with abilities {:?} got type actual {:?} with incompatible \
-                        abilities {:?}",
-                        constraint, ty, given
-                    )));
+                    .with_message(VMErrorMessage::TypeMismatch {
+                        expected: format!("type with abilities {:?}", constraint),
+                        actual: format!("type {:?} with incompatible abilities {:?}", ty, given),
+                    }));
             }
         }
         Ok(())

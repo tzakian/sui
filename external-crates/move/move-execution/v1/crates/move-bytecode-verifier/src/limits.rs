@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use move_binary_format::{
-    errors::{verification_error, Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{verification_error, Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{CompiledModule, SignatureToken, StructFieldInformation, TableIndex},
     IndexKind,
 };
@@ -172,7 +172,7 @@ impl<'a> LimitsVerifier<'a> {
                     if let Some(lim) = config.max_constant_vector_len {
                         if cons.len() > lim as usize {
                             return Err(PartialVMError::new(StatusCode::TOO_MANY_VECTOR_ELEMENTS)
-                                .with_message(format!("vector size limit is {}", lim)));
+                                .with_message(VMErrorMessage::VectorSizeLimit { limit: lim }));
                         }
                     }
                 } else {

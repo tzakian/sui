@@ -14,7 +14,7 @@
 //! rules for entrypoints
 
 use move_binary_format::{
-    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{
         CompiledModule, FunctionDefinitionIndex, SignatureIndex, SignatureToken, TableIndex,
     },
@@ -66,7 +66,7 @@ pub fn verify_module_function_signature_by_name(
     });
     let (idx, _fdef) = fdef_opt.ok_or_else(|| {
         PartialVMError::new(StatusCode::VERIFICATION_ERROR)
-            .with_message("function not found in verify_module_script_function".to_string())
+            .with_message(VMErrorMessage::FunctionNotFoundInVerifyModuleScriptFunction)
             .finish(Location::Module(module.self_id()))
     })?;
     verify_module_function_signature(

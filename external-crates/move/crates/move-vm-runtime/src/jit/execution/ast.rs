@@ -20,7 +20,7 @@ use crate::{
 
 use indexmap::IndexMap;
 use move_binary_format::{
-    errors::{PartialVMError, PartialVMResult},
+    errors::{PartialVMError, PartialVMResult, VMErrorMessage},
     file_format::{
         AbilitySet, CodeOffset, DatatypeTyParameter, FunctionDefinitionIndex, LocalIndex,
         SignatureToken, VariantTag, Visibility,
@@ -890,16 +890,17 @@ impl Function {
             // If lazy_natives is configured, this is a MISSING_DEPENDENCY error, as we skip
             // checking those at module loading time.
             self.native.as_deref().ok_or_else(|| {
-                PartialVMError::new(StatusCode::MISSING_DEPENDENCY).with_message(format!(
-                    "Missing Native Function `{}`",
-                    self.name.member_name().unwrap()
-                ))
+                PartialVMError::new(StatusCode::MISSING_DEPENDENCY).with_message(
+                    VMErrorMessage::MissingNativeFunction {
+                        name: self.name.member_name().unwrap().to_string(),
+                    },
+                )
             })
         } else {
             // Otherwise this error should not happen, hence UNREACHABLE
             self.native.as_deref().ok_or_else(|| {
                 PartialVMError::new(StatusCode::UNREACHABLE)
-                    .with_message("Missing Native Function".to_string())
+                    .with_message(VMErrorMessage::MissingNativeFunctionUnnamed)
             })
         }
     }
@@ -1081,14 +1082,14 @@ impl Type {
             S::Datatype(_) | S::DatatypeInstantiation(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Unable to load const type signature".to_string()),
+                        .with_message(VMErrorMessage::UnableToLoadConstTypeSignature),
                 );
             }
             // Not allowed/Not meaningful
             S::TypeParameter(_) | S::Reference(_) | S::MutableReference(_) | S::Signer => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Unable to load const type signature".to_string()),
+                        .with_message(VMErrorMessage::UnableToLoadConstTypeSignature),
                 );
             }
         })
@@ -1103,7 +1104,7 @@ impl Type {
                 }
                 _ => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("VecMutBorrow expects a vector reference".to_string()),
+                        .with_message(VMErrorMessage::VecMutBorrowExpectsVectorReference),
                 ),
             },
             Type::Reference(inner) if !is_mut => match &**inner {
@@ -1113,12 +1114,12 @@ impl Type {
                 }
                 _ => Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("VecMutBorrow expects a vector reference".to_string()),
+                        .with_message(VMErrorMessage::VecMutBorrowExpectsVectorReference),
                 ),
             },
             _ => Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("VecMutBorrow expects a vector reference".to_string()),
+                    .with_message(VMErrorMessage::VecMutBorrowExpectsVectorReference),
             ),
         }
     }

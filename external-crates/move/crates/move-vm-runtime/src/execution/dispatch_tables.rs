@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use move_binary_format::{
-    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{AbilitySet, TypeParameterIndex},
 };
 use move_core_types::{
@@ -151,9 +151,11 @@ impl VMDispatchTables {
                         return Err(PartialVMError::new(
                             StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
                         )
-                        .with_message(format!(
-                            "Defining ID {defining_id} found for {addr} and {prev}"
-                        ))
+                        .with_message(VMErrorMessage::DefiningIdConflict {
+                            defining_id: defining_id.to_string(),
+                            addr1: addr.to_string(),
+                            addr2: prev.to_string(),
+                        })
                         .finish(Location::Package(pkg.version_id)));
                     }
                 }
@@ -171,7 +173,9 @@ impl VMDispatchTables {
     pub fn get_package(&self, id: &OriginalId) -> PartialVMResult<Arc<Package>> {
         self.loaded_packages.get(id).cloned().ok_or_else(|| {
             PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                .with_message(format!("Package {} not found", id))
+                .with_message(VMErrorMessage::PackageNotFound {
+                    package: id.to_string(),
+                })
         })
     }
 
@@ -182,7 +186,9 @@ impl VMDispatchTables {
         let (package, module_id) = original_id.into();
         let package = self.loaded_packages.get(package).ok_or_else(|| {
             PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                .with_message(format!("Package {} not found", package))
+                .with_message(VMErrorMessage::PackageNotFound {
+                    package: package.to_string(),
+                })
         })?;
         let interned = identifier_interner::intern_identifier(module_id).unwrap();
         package
@@ -191,7 +197,9 @@ impl VMDispatchTables {
             .map(VMPointer::from_ref)
             .ok_or_else(|| {
                 PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                    .with_message(format!("Module {} not found", module_id))
+                    .with_message(VMErrorMessage::ModuleNotFound {
+                        module: module_id.to_string(),
+                    })
             })
     }
 
@@ -201,16 +209,19 @@ impl VMDispatchTables {
     ) -> PartialVMResult<VMPointer<Function>> {
         let Some(pkg) = self.loaded_packages.get(&vtable_key.package_key) else {
             return Err(PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                .with_message(format!("Could not find package {}", vtable_key.package_key)));
+                .with_message(VMErrorMessage::PackageNotFound {
+                    package: vtable_key.package_key.to_string(),
+                }));
         };
         if let Some(function_) = pkg.vtable.functions.get(&vtable_key.inner_pkg_key) {
             Ok(function_.ptr_clone())
         } else {
             Err(
-                PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR).with_message(format!(
-                    "Could not find function {}",
-                    vtable_key.to_string()?
-                )),
+                PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR).with_message(
+                    VMErrorMessage::FunctionNotFound {
+                        function: vtable_key.to_string()?,
+                    },
+                ),
             )
         }
     }
@@ -221,13 +232,17 @@ impl VMDispatchTables {
     ) -> PartialVMResult<VMPointer<DatatypeDescriptor>> {
         let Some(pkg) = self.loaded_packages.get(&vtable_key.package_key) else {
             return Err(PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                .with_message(format!("Could not find package {}", vtable_key.package_key)));
+                .with_message(VMErrorMessage::PackageNotFound {
+                    package: vtable_key.package_key.to_string(),
+                }));
         };
         if let Some(type_) = pkg.vtable.types.get(&vtable_key.inner_pkg_key) {
             Ok(type_.ptr_clone())
         } else {
             Err(PartialVMError::new(StatusCode::VTABLE_KEY_LOOKUP_ERROR)
-                .with_message(format!("Could not find type {}", vtable_key.to_string()?)))
+                .with_message(VMErrorMessage::TypeNotFound {
+                    type_name: vtable_key.to_string()?,
+                }))
         }
     }
 }
@@ -261,9 +276,10 @@ impl VMDispatchTables {
                 let defining_id = struct_tag.address;
                 let package_key = *self.defining_id_origins.get(&defining_id).ok_or_else(|| {
                     PartialVMError::new(StatusCode::TYPE_RESOLUTION_FAILURE)
-                        .with_message(format!(
-                            "Defining ID {defining_id} for type {type_tag} not found in loaded packages"
-                        ))
+                        .with_message(VMErrorMessage::DefiningIdNotFound {
+                            defining_id: defining_id.to_string(),
+                            type_tag: type_tag.to_string(),
+                        })
                         .finish(Location::Undefined)
                 })?;
                 let module_name = intern_identifier(&struct_tag.module)
@@ -287,11 +303,11 @@ impl VMDispatchTables {
                 if datatype.original_id.address() != &package_key {
                     return Err(
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                            .with_message(format!(
-                                "Runtime ID resolution of {defining_id} => {package_key} does not match runtime ID of loaded type: {}",
-                                datatype.original_id.address()
-
-                            ))
+                            .with_message(VMErrorMessage::RuntimeIdMismatch {
+                                defining_id: defining_id.to_string(),
+                                runtime_id_expected: package_key.to_string(),
+                                runtime_id_actual: datatype.original_id.address().to_string(),
+                            })
                             .finish(Location::Undefined),
                     );
                 }
@@ -300,9 +316,10 @@ impl VMDispatchTables {
                 if datatype.defining_id.address() != &defining_id {
                     return Err(
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                            .with_message(format!(
-                                "Defining ID {defining_id} does not match defining ID of loaded type: {}", datatype.defining_id.address()
-                            ))
+                            .with_message(VMErrorMessage::DefiningIdMismatch {
+                                defining_id_expected: defining_id.to_string(),
+                                defining_id_actual: datatype.defining_id.address().to_string(),
+                            })
                             .finish(Location::Package(defining_id)),
                     );
                 }
@@ -358,7 +375,7 @@ impl VMDispatchTables {
             Type::Signer => Ok(AbilitySet::SIGNER),
 
             Type::TyParam(_) => Err(PartialVMError::new(StatusCode::UNREACHABLE).with_message(
-                "Unexpected TyParam type after translating from TypeTag to Type".to_string(),
+                VMErrorMessage::TypeParameterNotFullyResolved,
             )),
 
             Type::Vector(ty) => AbilitySet::polymorphic_abilities(
@@ -473,7 +490,7 @@ impl VMDispatchTables {
         if prev.is_some() {
             return Err(
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message("Recursive type?".to_owned()),
+                    .with_message(VMErrorMessage::RecursiveType),
             );
         }
         Ok(formula)
@@ -591,7 +608,9 @@ impl VMDispatchTables {
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("no type tag for {:?}", ty)),
+                        .with_message(VMErrorMessage::NoTypeTag {
+                            type_info: format!("{:?}", ty),
+                        }),
                 );
             }
         })
@@ -676,7 +695,9 @@ impl VMDispatchTables {
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("no type layout for {:?}", ty)),
+                        .with_message(VMErrorMessage::NoTypeLayout {
+                            type_info: format!("{:?}", ty),
+                        }),
                 );
             }
         };
@@ -702,8 +723,9 @@ impl VMDispatchTables {
                     if variant.fields.len() != variant.field_names.len() {
                         return Err(
                             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
-                                "Field types did not match the length of field names in loaded enum variant"
-                                .to_owned(),
+                                VMErrorMessage::FieldTypeLengthMismatch {
+                                    context: "loaded enum variant".to_string(),
+                                },
                             ),
                         );
                     }
@@ -738,10 +760,9 @@ impl VMDispatchTables {
                 if struct_type.fields.len() != struct_type.field_names.len() {
                     return Err(
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                            .with_message(
-                            "Field types did not match the length of field names in loaded struct"
-                                .to_owned(),
-                        ),
+                            .with_message(VMErrorMessage::FieldTypeLengthMismatch {
+                                context: "loaded struct".to_string(),
+                            }),
                     );
                 }
                 let field_layouts = struct_type
@@ -795,7 +816,9 @@ impl VMDispatchTables {
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("no type layout for {:?}", ty)),
+                        .with_message(VMErrorMessage::NoTypeLayout {
+                            type_info: format!("{:?}", ty),
+                        }),
                 );
             }
         };
@@ -931,7 +954,9 @@ impl DepthFormula {
             let Some(mut u_form) = map.remove(t_i) else {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("{t_i:?} missing mapping")),
+                        .with_message(VMErrorMessage::MissingMapping {
+                            type_param: format!("{t_i:?}"),
+                        }),
                 );
             };
             u_form.add(*c_i);
@@ -949,7 +974,9 @@ impl DepthFormula {
                 None => {
                     return Err(
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                            .with_message(format!("{t_i:?} missing mapping")),
+                            .with_message(VMErrorMessage::MissingMapping {
+                                type_param: format!("{t_i:?}"),
+                            }),
                     );
                 }
                 Some(ty_depth) => depth = std::cmp::max(depth, ty_depth.saturating_add(*c_i)),
@@ -1023,7 +1050,9 @@ impl<T> DefinitionMap<T> {
             if map.insert(name, value).is_some() {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("Duplicate key {}", name.to_string()?)),
+                        .with_message(VMErrorMessage::DuplicateKey {
+                            key: name.to_string()?,
+                        }),
                 );
             }
         }
@@ -1039,7 +1068,9 @@ impl<T> DefinitionMap<T> {
             if map.insert(name, value).is_some() {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message(format!("Duplicate key {}", name.to_string()?)),
+                        .with_message(VMErrorMessage::DuplicateKey {
+                            key: name.to_string()?,
+                        }),
                 );
             }
         }

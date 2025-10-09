@@ -29,7 +29,7 @@
 
 use crate::{
     IndexKind,
-    errors::{PartialVMError, PartialVMResult},
+    errors::{PartialVMError, PartialVMResult, VMErrorMessage},
     file_format_common,
     internals::ModuleIndex,
 };
@@ -448,7 +448,7 @@ impl StructDefinition {
         match &self.field_information {
             // TODO we might want a more informative error here
             StructFieldInformation::Native => Err(PartialVMError::new(StatusCode::LINKER_ERROR)
-                .with_message("Looking for field in native structure".to_string())),
+                .with_message(VMErrorMessage::LookingForFieldInNativeStructure)),
             StructFieldInformation::Declared(fields) => Ok(fields.len() as u16),
         }
     }
@@ -893,9 +893,8 @@ impl AbilitySet {
 
         if declared_phantom_parameters.len() != type_arguments.len() {
             return Err(
-                PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION).with_message(
-                    "the length of `declared_phantom_parameters` doesn't match the length of `type_arguments`".to_string(),
-                ),
+                PartialVMError::new(StatusCode::VERIFIER_INVARIANT_VIOLATION)
+                    .with_message(VMErrorMessage::PhantomParameterLengthMismatch),
             );
         }
 

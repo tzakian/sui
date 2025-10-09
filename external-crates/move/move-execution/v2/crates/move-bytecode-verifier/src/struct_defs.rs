@@ -6,7 +6,7 @@
 //! recursive. Since the module dependency graph is acylic by construction, applying this checker to
 //! each module in isolation guarantees that there is no structural recursion globally.
 use move_binary_format::{
-    errors::{verification_error, Location, PartialVMError, PartialVMResult, VMResult},
+    errors::{verification_error, Location, PartialVMError, PartialVMResult, VMErrorMessage, VMResult},
     file_format::{
         CompiledModule, DatatypeHandleIndex, SignatureToken, StructDefinitionIndex, TableIndex,
     },
@@ -115,7 +115,7 @@ impl<'a> StructDefGraphBuilder<'a> {
             T::Reference(_) | T::MutableReference(_) => {
                 return Err(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                        .with_message("Reference field when checking recursive structs".to_owned()),
+                        .with_message(VMErrorMessage::ReferenceFieldInRecursiveStruct),
                 )
             }
             T::Vector(inner) => self.add_signature_token(neighbors, cur_idx, inner)?,
