@@ -32,7 +32,8 @@ enum Value {
     NonRef,
 }
 
-struct Context {
+struct Context<'pc, 'vm, 'state, 'linkage, 'gas, 'env> {
+    env: &'env Env<'pc, 'vm, 'state, 'linkage, 'gas>,
     graph: Graph,
     local_root: Ref,
     tx_context: Option<Value>,
@@ -41,6 +42,16 @@ struct Context {
     pure: Vec<Option<Value>>,
     receiving: Vec<Option<Value>>,
     results: Vec<Vec<Option<Value>>>,
+}
+
+macro_rules! charge_graph_op {
+    ($context:expr, $e:expr) => {{
+        let size_before = $context.graph.abstract_size();
+        let x = $e;
+        let size_after = $context.graph.abstract_size();
+        $context.env.meter.charge_graph_op(size_before, size_after)?;
+        x
+    }};
 }
 
 impl Value {
@@ -66,8 +77,11 @@ impl Value {
     }
 }
 
-impl Context {
-    fn new(ast: &T::Transaction) -> Result<Self, ExecutionError> {
+impl<'pc, 'vm, 'state, 'linkage, 'gas, 'env> Context<'pc, 'vm, 'state, 'linkage, 'gas, 'env> {
+    fn new(
+        env: &'env Env<'pc, 'vm, 'state, 'linkage, 'gas>,
+        ast: &T::Transaction,
+    ) -> Result<Self, ExecutionError> {
         let objects = ast.objects.iter().map(|_| Some(Value::NonRef)).collect();
         let pure = ast
             .pure
@@ -84,6 +98,7 @@ impl Context {
             .extend_by_epsilon((), std::iter::empty(), /* is_mut */ true)
             .map_err(graph_err)?;
         Ok(Self {
+            env,
             graph,
             local_root,
             tx_context: Some(Value::NonRef),
@@ -124,14 +139,16 @@ impl Context {
     }
 
     fn release(&mut self, r: Ref) -> Result<(), ExecutionError> {
-        self.graph.release(r).map_err(graph_err)
+        charge_graph_op!(self, self.graph.release(r).map_err(graph_err))
     }
 
     fn extend_by_epsilon(&mut self, r: Ref, is_mut: bool) -> Result<Ref, ExecutionError> {
-        let new_r = self
-            .graph
-            .extend_by_epsilon((), std::iter::once(r), is_mut)
-            .map_err(graph_err)?;
+        let new_r = charge_graph_op!(
+            self,
+            self.graph
+                .extend_by_epsilon((), std::iter::once(r), is_mut)
+                .map_err(graph_err)?
+        );
         Ok(new_r)
     }
 
@@ -141,10 +158,12 @@ impl Context {
         is_mut: bool,
         extension: T::Location,
     ) -> Result<Ref, ExecutionError> {
-        let new_r = self
-            .graph
-            .extend_by_label((), std::iter::once(r), is_mut, Location(extension))
-            .map_err(graph_err)?;
+        let new_r = charge_graph_op!(
+            self,
+            self.graph
+                .extend_by_label((), std::iter::once(r), is_mut, Location(extension))
+                .map_err(graph_err)?
+        );
         Ok(new_r)
     }
 
@@ -153,10 +172,12 @@ impl Context {
         sources: &BTreeSet<Ref>,
         mutabilities: Vec<bool>,
     ) -> Result<Vec<Ref>, ExecutionError> {
-        let new_refs = self
-            .graph
-            .extend_by_dot_star_for_call((), sources.iter().copied(), mutabilities)
-            .map_err(graph_err)?;
+        let new_refs = charge_graph_op!(
+            self,
+            self.graph
+                .extend_by_dot_star_for_call((), sources.iter().copied(), mutabilities)
+                .map_err(graph_err)?
+        );
         Ok(new_refs)
     }
 
@@ -215,8 +236,8 @@ impl Context {
 /// Checks the following
 /// - Values are not used after being moved
 /// - Reference safety is upheld (no dangling references)
-pub fn verify(_env: &Env, ast: &T::Transaction) -> Result<(), ExecutionError> {
-    let mut context = Context::new(ast)?;
+pub fn verify(env: &Env, ast: &T::Transaction) -> Result<(), ExecutionError> {
+    let mut context = Context::new(env, ast)?;
     let commands = &ast.commands;
     for c in commands {
         let result = command(&mut context, c).map_err(|e| e.with_command_index(c.idx as usize))?;

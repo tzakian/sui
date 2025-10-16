@@ -47,7 +47,8 @@ enum Value {
 /// A list of all cliques. The size is bound by the number of inputs + number of commands
 struct Cliques(Vec<Clique>);
 
-struct Context {
+struct Context<'pc, 'vm, 'state, 'linkage, 'gas, 'env> {
+    env: &'env Env<'pc, 'vm, 'state, 'linkage, 'gas>,
     cliques: Cliques,
     tx_context: Option<Value>,
     gas_coin: Option<Value>,
@@ -216,8 +217,8 @@ impl Cliques {
     }
 }
 
-impl Context {
-    fn new(txn: &T::Transaction) -> Self {
+impl<'pc, 'vm, 'state, 'linkage, 'gas, 'env> Context<'pc, 'vm, 'state, 'linkage, 'gas, 'env> {
+    fn new(env: &'env Env<'pc, 'vm, 'state, 'linkage, 'gas>, txn: &T::Transaction) -> Self {
         let mut cliques = Cliques::new();
         let tx_context = Some(Value::TxContext);
         let gas_coin = Some(cliques.input_value());
@@ -231,6 +232,7 @@ impl Context {
             .map(|_| Some(cliques.input_value()))
             .collect();
         Self {
+            env,
             tx_context,
             cliques,
             gas_coin,
@@ -244,6 +246,7 @@ impl Context {
     // Checks if all values are released and that all hot counts are zero
     fn finish(self) -> Result<(), ExecutionError> {
         let Context {
+            env: _,
             mut cliques,
             tx_context,
             gas_coin,
@@ -367,7 +370,7 @@ impl Context {
 /// - Note that command inputs are released before checking the rules, so an `entry` function can
 ///   consume a hot potato value if it is the last "heating" value in its clique.
 pub fn verify<Mode: ExecutionMode>(env: &Env, txn: &T::Transaction) -> Result<(), ExecutionError> {
-    let mut context = Context::new(txn);
+    let mut context = Context::new(env, txn);
     for c in &txn.commands {
         let result_values = command::<Mode>(env, &mut context, c)
             .map_err(|e| e.with_command_index(c.idx as usize))?;

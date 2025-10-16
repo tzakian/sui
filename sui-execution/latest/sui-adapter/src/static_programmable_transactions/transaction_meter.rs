@@ -1,9 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::cell::RefCell;
-
 use crate::gas_charger::GasCharger;
+use std::cell::RefCell;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     error::{ExecutionError, ExecutionErrorKind},
@@ -19,17 +18,25 @@ const TYPE_LOAD_PER_NODE_MULTIPLIER: u64 = 1;
 
 /// The cost to load a package per byte based on the `package.size()`. This is a fixed cost to
 /// account for the overhead of loading a package.
-const PACKAGE_LOAD_COST_PER_BYTE: u64 = 1;
+const PACKAGE_LOAD_COST_PER_CHUNK: u64 = 1;
+
+/// 1KB chunk size for package load charging.
+const PACKAGE_LOAD_CHARGE_CHUNK_SIZE: u64 = 1024;
 
 /// The base charge for each command in a programmable transaction. This is a fixed cost to
 /// account for the overhead of processing each command.
 const PER_COMMAND_BASE_CHARGE: u64 = 1;
 
+/// The cost per size unit for graph operations.
+const GRAPH_OP_COST_PER_SIZE: u64 = 1;
+
 /// Static assertions to ensure that the constants are valid.
 const _: () = {
     assert!(TYPE_LOAD_PER_NODE_MULTIPLIER > 0);
-    assert!(PACKAGE_LOAD_COST_PER_BYTE > 0);
+    assert!(PACKAGE_LOAD_COST_PER_CHUNK > 0);
+    assert!(PACKAGE_LOAD_CHARGE_CHUNK_SIZE > 0);
     assert!(PER_COMMAND_BASE_CHARGE > 0);
+    assert!(GRAPH_OP_COST_PER_SIZE > 0);
 };
 
 #[macro_export]
@@ -112,14 +119,34 @@ impl<'gas, 'pc> TransactionMeter<'gas, 'pc> {
 
     pub fn charge_package_load(&self, package: &MovePackage) -> Result<(), ExecutionError> {
         gated!(self);
-        let amount = (package.size() as u64).saturating_mul(PACKAGE_LOAD_COST_PER_BYTE);
+        let amount = (package.size() as u64 / PACKAGE_LOAD_CHARGE_CHUNK_SIZE)
+            .saturating_mul(PACKAGE_LOAD_COST_PER_CHUNK);
         // amount should always be non-zero since package.size() is non-zero and
-        // PACKAGE_LOAD_COST_PER_BYTE is non-zero.
+        // PACKAGE_LOAD_COST_PER_CHUNK is non-zero.
         debug_assert!(amount > 0);
         gas_charger_mut!(self)
             .move_gas_status_mut()
             .deduct_gas(amount.into())
             .map_err(Self::gas_error)
+    }
+
+    pub fn charge_graph_op(
+        &self,
+        size_before: usize,
+        size_after: usize,
+    ) -> Result<(), ExecutionError> {
+        gated!(self);
+        let size_diff = size_after.saturating_sub(size_before).max(1);
+        // Charge based on the size difference. This is a simple linear model.
+        let amount = (size_diff as u64).saturating_mul(GRAPH_OP_COST_PER_SIZE);
+        if amount > 0 {
+            gas_charger_mut!(self)
+                .move_gas_status_mut()
+                .deduct_gas(amount.into())
+                .map_err(Self::gas_error)
+        } else {
+            Ok(())
+        }
     }
 
     fn gas_error<E>(e: E) -> ExecutionError

@@ -91,6 +91,7 @@ fn input(env: &Env, arg: CallArg) -> Result<(L::InputArg, L::InputType), Executi
 }
 
 fn command(env: &Env, command: P::Command) -> Result<L::Command, ExecutionError> {
+    env.meter.charge_command_base()?;
     Ok(match command {
         P::Command::MoveCall(pmc) => {
             let resolved_linkage =

@@ -243,6 +243,9 @@ pub fn transaction<Mode: ExecutionMode>(
             context.current_command = idx;
             let (c_, tys) =
                 command::<Mode>(env, &mut context, c).map_err(|e| e.with_command_index(i))?;
+            for ty in &tys {
+                env.meter.charge_num_type_nodes(ty.node_count())?;
+            }
             context.results.push(tys.clone());
             let c = T::Command_ {
                 command: c_,
