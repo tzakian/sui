@@ -853,6 +853,10 @@ struct FeatureFlags {
     // Enable display registry protocol
     #[serde(skip_serializing_if = "is_false")]
     enable_display_registry: bool,
+
+    // Enable PTB metering
+    #[serde(skip_serializing_if = "is_false")]
+    enable_ptb_compilation_metering: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2301,6 +2305,10 @@ impl ProtocolConfig {
 
     pub fn allow_references_in_ptbs(&self) -> bool {
         self.feature_flags.allow_references_in_ptbs
+    }
+
+    pub fn enable_ptb_compilation_metering(&self) -> bool {
+        self.feature_flags.enable_ptb_compilation_metering
     }
 }
 

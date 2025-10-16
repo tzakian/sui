@@ -26,6 +26,7 @@ pub mod linkage;
 pub mod loading;
 pub mod spanned;
 pub mod typing;
+pub mod metering;
 
 pub fn execute<Mode: ExecutionMode>(
     protocol_config: &ProtocolConfig,
