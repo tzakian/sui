@@ -36,7 +36,7 @@ pub struct Local<'a>(&'a mut Locals, u16);
 pub struct Locals(VMLocals);
 
 #[derive(Debug)]
-pub struct Value(VMValue);
+pub struct Value(pub(super) VMValue);
 
 impl Locals {
     pub fn new<Items>(values: Items) -> Result<Self, ExecutionError>
