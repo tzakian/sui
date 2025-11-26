@@ -91,11 +91,11 @@ mod checked {
         sui_system_state::{ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME},
     };
 
-    static CSV_WRITER: Lazy<Mutex<csv::Writer<FrameEncoder<std::io::BufWriter<std::fs::File>>>>> =
+    static CSV_WRITER: Lazy<Mutex<csv::Writer<std::io::BufWriter<std::fs::File>>>> =
         once_cell::sync::Lazy::new(|| {
-            let file = File::create("/opt/sui/gas.csv.lz4").expect("failed to create file");
+            let file = File::create("gas.csv").expect("failed to create file");
             let enc = BufWriter::new(file);
-            let enc = FrameEncoder::new(enc);
+            // let enc = FrameEncoder::new(enc);
             let mut writer = Writer::from_writer(enc);
             writer
                 .write_record(&[
@@ -180,7 +180,7 @@ mod checked {
             metrics.clone(),
             enable_expensive_checks,
             execution_params.clone(),
-            trace_builder_opt,
+            &mut None,
         );
 
         let mut new_protocol_config = protocol_config.clone();
@@ -466,7 +466,7 @@ mod checked {
                 normal_effects.2.transaction_digest(),
                 s,
             );
-            let output_file = format!("/opt/sui/outputs/{}", normal_effects.2.transaction_digest());
+            let output_file = format!("outputs/{}", normal_effects.2.transaction_digest());
 
             std::fs::write(&output_file, &data).expect("Failed to write output file");
         } else {

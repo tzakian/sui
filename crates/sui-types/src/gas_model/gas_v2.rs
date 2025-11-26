@@ -374,6 +374,7 @@ mod checked {
 
         fn bucketize_computation(&mut self, aborted: Option<bool>) -> Result<(), ExecutionError> {
             let gas_used = self.gas_status.gas_used_pre_gas_price();
+            // println!("Gas used before gas price: {}", gas_used);
             let effective_gas_price = if self
                 .cost_table
                 .max_gas_price_rgp_factor_for_aborted_transactions
@@ -409,6 +410,10 @@ mod checked {
                 Err(ExecutionErrorKind::InsufficientGas.into())
             } else {
                 self.computation_cost = gas_used;
+                // println!(
+                //     "Computation cost after gas price and bucketing: {}",
+                //     self.computation_cost
+                // );
                 Ok(())
             }
         }
