@@ -146,7 +146,7 @@ impl GasProfiler {
         }
     }
 
-    pub fn open_frame(&mut self, frame_name: String, metadata: String, gas_remaining: u64) {
+    pub fn open_frame(&mut self, frame_name: String, metadata: String, gas_remaining: u64) -> u64 {
         let name = self.frame_name(&frame_name);
         let frame_idx = self.add_frame(frame_name, name, metadata);
         let at = self.get_gas_span(gas_remaining);
@@ -156,6 +156,7 @@ impl GasProfiler {
             frame: frame_idx,
             at,
         });
+        frame_idx
     }
 
     pub fn close_frame(&mut self, frame_name: String, metadata: String, gas_remaining: u64) {
@@ -172,6 +173,8 @@ impl GasProfiler {
     }
 
     pub fn generate_from_trace<R: std::io::Read>(&mut self, trace: MoveTraceReader<R>) {
+        let mut opens = vec![];
+
         for event in trace {
             let event = event.expect("Failed to read trace event");
             match event {
@@ -179,16 +182,9 @@ impl GasProfiler {
                 | TraceEvent::Effect(..)
                 | TraceEvent::External(..) => (),
                 TraceEvent::OpenFrame { frame, gas_left } => {
-                    self.open_frame(
-                        format!(
-                            "{}::{}::{}",
-                            frame.version_id.to_canonical_display(true),
-                            frame.module.name(),
-                            frame.function_name
-                        ),
-                        "".to_string(),
-                        gas_left,
-                    );
+                    let frame_idx =
+                        self.open_frame(Self::trace_name(&frame), "".to_string(), gas_left);
+                    opens.push(frame_idx);
                     self.frames.insert(frame.frame_id, *frame);
                 }
                 TraceEvent::CloseFrame {
@@ -197,19 +193,32 @@ impl GasProfiler {
                     gas_left,
                 } => {
                     let frame = self.frames.remove(&frame_id).expect("Frame not found");
-                    self.close_frame(
-                        format!(
-                            "{}::{}::{}",
-                            frame.version_id.to_canonical_display(true),
-                            frame.module.name(),
-                            frame.function_name
-                        ),
-                        "".to_string(),
-                        gas_left,
-                    );
+                    self.close_frame(Self::trace_name(&frame), "".to_string(), gas_left);
                 }
             }
         }
+
+        while let Some(remaining_open_frame) = opens.pop() {
+            self.close_dangling_frame(remaining_open_frame);
+        }
+    }
+
+    fn close_dangling_frame(&mut self, frame_idx: u64) {
+        let at = self.profiles[0].end_value;
+        self.profiles[0].events.push(Event {
+            ty: Self::CLOSE_FRAME_IDENT.to_string(),
+            frame: frame_idx,
+            at,
+        });
+    }
+
+    fn trace_name(frame: &Frame) -> String {
+        format!(
+            "{}::{}::{}",
+            frame.version_id.to_canonical_display(true),
+            frame.module.name(),
+            frame.function_name
+        )
     }
 
     fn filename_trim_all_extensions(path: &Path) -> Option<String> {
