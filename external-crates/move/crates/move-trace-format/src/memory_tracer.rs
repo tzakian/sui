@@ -19,6 +19,10 @@ use crate::{
 use core::fmt;
 use std::collections::BTreeMap;
 
+pub trait MemoryTracer {
+    fn notify(&mut self, _event: &TraceEvent, state: &TraceState, _writer: Writer<'_>) -> bool;
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceState {
     // Tracks "global memory" state (i.e., references out in to global memory/references returned
