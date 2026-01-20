@@ -344,10 +344,20 @@ impl CFG {
         let mut bytecode: Vec<Bytecode> = Vec::new();
         let block_order = self.serialize_block_order();
         for block_id in &block_order {
+            let block = self.basic_blocks.get(block_id);
+            let block = block.unwrap();
+
+            println!("BLOCK: {:?}", block_id);
+            println!("{:#?}", block.instructions);
+        }
+        for block_id in &block_order {
             let block = self.basic_blocks.get_mut(block_id);
             // The generated block order contains every block
             debug_assert!(block.is_some());
             let block = block.unwrap();
+
+            println!("BLOCK: {:?}", block_id);
+            println!("{:#?}", block.instructions);
             // All basic blocks should have instructions filled in at this point
             assert!(
                 !block.instructions.is_empty(),

@@ -155,7 +155,7 @@ pub fn instruction_summary(instruction: Bytecode, exact: bool) -> Summary {
         },
         // TODO actual constant generation
         Bytecode::LdConst(_) => Summary {
-            preconditions: vec![],
+            preconditions: vec![state_never!()],
             effects: Effects::NoTyParams(vec![state_stack_push!(AbstractValue::new_primitive(
                 SignatureToken::Address
             ))]),

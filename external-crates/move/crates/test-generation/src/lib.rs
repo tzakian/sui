@@ -24,6 +24,7 @@ use move_binary_format::{
     file_format::{
         AbilitySet, CompiledModule, DatatypeHandleIndex, FunctionDefinitionIndex, SignatureToken,
     },
+    file_format_common::VERSION_MAX,
 };
 use move_bytecode_verifier::verify_module_unmetered;
 use move_compiler::Compiler;
@@ -47,7 +48,10 @@ use std::{fs, io::Write, panic, sync::LazyLock, thread};
 fn run_verifier(module: CompiledModule) -> Result<CompiledModule, String> {
     match verify_module_unmetered(&module) {
         Ok(_) => Ok(module),
-        Err(err) => Err(format!("Module verification failed: {:#?}", err)),
+        Err(err) => {
+            println!("verifier failed...\n{:#?}", module);
+            Err(format!("Module verification failed:\n{:#?}", err))
+        }
     }
 }
 
@@ -66,7 +70,9 @@ static STORAGE_WITH_MOVE_STDLIB: LazyLock<InMemoryStorage> = LazyLock::new(|| {
         .map(|annot_module| annot_module.named_module.module);
     for module in compiled_modules {
         let mut blob = vec![];
-        module.serialize(&mut blob).unwrap();
+        module
+            .serialize_with_version(VERSION_MAX, &mut blob)
+            .unwrap();
         storage.publish_or_overwrite_module(module.self_id(), blob);
     }
     storage
@@ -142,7 +148,9 @@ fn execute_function_in_module(
 
         let mut changeset = ChangeSet::new();
         let mut blob = vec![];
-        module.serialize(&mut blob).unwrap();
+        module
+            .serialize_with_version(VERSION_MAX, &mut blob)
+            .unwrap();
         changeset
             .add_module_op(module_id.clone(), Op::New(blob))
             .unwrap();
@@ -174,7 +182,7 @@ fn output_error_case(module: CompiledModule, output_path: Option<String>, case_i
         Some(path) => {
             let mut out = vec![];
             module
-                .serialize(&mut out)
+                .serialize_with_version(VERSION_MAX, &mut out)
                 .expect("Unable to serialize module");
             let output_file = format!("{}/case{}_{}.module", path, tid, case_id);
             let mut f = fs::File::create(output_file)
