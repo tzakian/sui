@@ -3,6 +3,10 @@
 
 use std::{collections::HashMap, hash::Hash};
 
+use move_binary_format::errors::PartialVMResult;
+
+use crate::cache::arena::ArenaVec;
+
 pub mod binary_cache;
 pub mod constants;
 pub mod gas;
@@ -54,4 +58,47 @@ pub fn unique_map<Key: Hash + Eq, Value>(
         }
     }
     Ok(map)
+}
+
+pub trait SafeIndex<T> {
+    fn at(&self, index: usize) -> PartialVMResult<&T>;
+}
+
+impl<T> SafeIndex<T> for Vec<T> {
+    fn at(&self, index: usize) -> PartialVMResult<&T> {
+        self.get(index).ok_or_else(|| {
+            partial_vm_error!(
+                INDEX_OUT_OF_BOUNDS,
+                "Index {} out of bounds for vector of length {}",
+                index,
+                self.len()
+            )
+        })
+    }
+}
+
+impl<T> SafeIndex<T> for &[T] {
+    fn at(&self, index: usize) -> PartialVMResult<&T> {
+        self.get(index).ok_or_else(|| {
+            partial_vm_error!(
+                INDEX_OUT_OF_BOUNDS,
+                "Index {} out of bounds for slice of length {}",
+                index,
+                self.len()
+            )
+        })
+    }
+}
+
+impl<T> SafeIndex<T> for ArenaVec<T> {
+    fn at(&self, index: usize) -> PartialVMResult<&T> {
+        self.get(index).ok_or_else(|| {
+            partial_vm_error!(
+                INDEX_OUT_OF_BOUNDS,
+                "Index {} out of bounds for arena vector of length {}",
+                index,
+                self.len()
+            )
+        })
+    }
 }
