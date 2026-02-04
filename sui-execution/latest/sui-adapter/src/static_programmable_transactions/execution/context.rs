@@ -20,7 +20,6 @@ use crate::{
     },
 };
 use indexmap::{IndexMap, IndexSet};
-use lru::LruCache;
 use move_binary_format::{
     CompiledModule,
     compatibility::{Compatibility, InclusionCheck},
@@ -49,12 +48,12 @@ use move_vm_runtime::{
 };
 use mysten_common::debug_fatal;
 use nonempty::nonempty;
+use quick_cache::unsync::Cache as QCache;
 use serde::{Deserialize, de::DeserializeSeed};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fmt,
-    num::NonZero,
     rc::Rc,
     sync::Arc,
 };
@@ -140,11 +139,13 @@ macro_rules! charge_gas {
     ($context:ident, $case:ident, $value_view:expr) => {{ charge_gas_!($context.gas_charger, $context.env, $case, $value_view) }};
 }
 
+// Helper macro to manage Move VM cache for different linkage contexts. If the given linkage is
+// found the VM is reused, otherwise a new VM is created and inserted into the cache.
 macro_rules! with_vm {
     ($self:ident, $linkage:expr, $body:expr) => {{
         let link_context = $linkage.linkage_context();
         let linkage_hash = link_context.to_linkage_hash();
-        let mut vm = if let Some(vm) = $self.tearoffs.pop(&linkage_hash) {
+        let mut vm = if let Some((_, vm)) = $self.executable_vm_cache.remove(&linkage_hash) {
             vm
         } else {
             let data_store = &$self.env.linkable_store.package_store;
@@ -159,7 +160,7 @@ macro_rules! with_vm {
                 .map_err(|e| $self.env.convert_linked_vm_error(e, $linkage))?
         };
         let result = $body(&mut vm)?;
-        $self.tearoffs.put(linkage_hash, vm);
+        $self.executable_vm_cache.insert(linkage_hash, vm);
         Ok(result)
     }};
 }
@@ -234,8 +235,8 @@ pub struct Context<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension> {
     user_events: Vec<(ModuleId, StructTag, Vec<u8>)>,
     // runtime data
     locations: Locations,
-    // LRU cache of Move VMs created this transaction for different linkage contexts so that we can reuse them.
-    tearoffs: lru::LruCache<LinkageHash, MoveVM<'env>>,
+    // cache of Move VMs created this transaction for different linkage contexts so that we can reuse them.
+    executable_vm_cache: QCache<LinkageHash, MoveVM<'env>>,
 }
 
 impl Locations {
@@ -373,7 +374,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
                 receiving_inputs,
                 results: vec![],
             },
-            tearoffs: LruCache::new(NonZero::new(1024).unwrap()),
+            executable_vm_cache: QCache::new(1024),
         })
     }
 
@@ -443,6 +444,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
             tx_context,
             gas_charger,
             user_events,
+            executable_vm_cache,
             ..
         } = self;
         let ref_context: &RefCell<TxContext> = &tx_context;
@@ -477,8 +479,12 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
 
         let mut written_objects = BTreeMap::new();
 
-        let (writeout_vm, ty_linkage) =
-            Self::make_writeout_vm(env, writes.values().map(|(_, ty, _)| ty.clone()))?;
+        let (writeout_vm, ty_linkage) = Self::make_writeout_vm(
+            env,
+            executable_vm_cache,
+            writes.values().map(|(_, ty, _)| ty.clone()),
+        )?;
+
         for (id, (recipient, ty, value)) in writes {
             let (ty, layout) = Self::load_type_and_layout_from_struct_for_writeout(
                 env,
@@ -584,12 +590,15 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
     /// needs access to all types that were written during the transaction [`writes`]. Importantly,
     /// it needs to be able to create a VM over any newly published packages as the `init`
     /// functions in those packages may have created objects of types defined in those packages.
-    fn make_writeout_vm<I>(
+    fn make_writeout_vm<'a, I>(
         env: &Env,
+        mut executable_vm_cache: QCache<LinkageHash, MoveVM<'a>>,
         writes: I,
-    ) -> Result<(MoveVM<'extension>, ExecutableLinkage), ExecutionError>
+    ) -> Result<(MoveVM<'a>, ExecutableLinkage), ExecutionError>
     where
         I: IntoIterator<Item = MoveObjectType>,
+        'env: 'a,
+        'extension: 'a,
     {
         let tys_addrs = writes
             .into_iter()
@@ -598,13 +607,27 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
             .collect::<BTreeSet<_>>();
 
         let ty_linkage = ExecutableLinkage::type_linkage(&tys_addrs, env.linkable_store)?;
-        env.vm
-            .make_vm(
-                &env.linkable_store.package_store,
-                ty_linkage.linkage_context(),
-            )
-            .map_err(|e| env.convert_linked_vm_error(e, &ty_linkage))
-            .map(|vm| (vm, ty_linkage))
+        let linkage_context = ty_linkage.linkage_context();
+
+        // If the writeout linkage is the same as the input resolution linkage, we can reuse
+        // the resolution VM directly
+        if env.input_resolution_vm().linkage_context() == &linkage_context {
+            todo!()
+        }
+
+        let linkage_hash = linkage_context.to_linkage_hash();
+        // See if we already have a VM for this linkage context, if we do, reuse it
+        if let Some((_, vm)) = executable_vm_cache.remove(&linkage_hash) {
+            Ok((vm, ty_linkage))
+        } else {
+            env.vm
+                .make_vm(
+                    &env.linkable_store.package_store,
+                    ty_linkage.linkage_context(),
+                )
+                .map_err(|e| env.convert_linked_vm_error(e, &ty_linkage))
+                .map(|vm| (vm, ty_linkage))
+        }
     }
 
     /// Load the type and layout for a struct tag.
@@ -613,7 +636,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
     /// therefore will not be present in the `resolution_vm`.
     fn load_type_and_layout_from_struct_for_writeout(
         env: &Env,
-        vm: &MoveVM<'extension>,
+        vm: &MoveVM<'_>,
         linkage: &ExecutableLinkage,
         tag: StructTag,
     ) -> Result<(Type, move_core_types::runtime_value::MoveTypeLayout), ExecutionError> {
