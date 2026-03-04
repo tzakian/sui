@@ -302,13 +302,6 @@ impl ModuleResolver for LinkageView<'_> {
         get_module(self, id)
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        _ids: [AccountAddress; N],
-    ) -> Result<[Option<move_core_types::resolver::SerializedPackage>; N], Self::Error> {
-        unreachable!("v2 get_packages_static should not be called on LinkageView")
-    }
-
     fn get_packages<'a>(
         &self,
         _ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

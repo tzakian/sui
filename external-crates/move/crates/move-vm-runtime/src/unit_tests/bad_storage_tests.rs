@@ -376,13 +376,6 @@ impl ModuleResolver for BogusStorage {
         Err(PartialVMError::new(self.bad_status_code).finish(Location::Undefined))
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        _ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        Err(PartialVMError::new(self.bad_status_code).finish(Location::Undefined))
-    }
-
     fn get_packages<'a>(
         &self,
         _ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

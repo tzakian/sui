@@ -364,7 +364,10 @@ impl OnDiskStateView {
             seen.insert(package_id);
 
             // Attempt to retrieve the package's modules from the store
-            let Ok([Some(pkg)]) = self.get_packages_static([package_id]) else {
+            let Ok(Some([Some(pkg)])) = self
+                .get_packages([package_id].iter())
+                .map(|v| <[_; 1]>::try_from(v).ok())
+            else {
                 return Err(anyhow!(
                     "Cannot find {:?} in data cache when building linkage context",
                     package_id
@@ -432,17 +435,6 @@ impl OnDiskStateView {
 
 impl ModuleResolver for OnDiskStateView {
     type Error = anyhow::Error;
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        let mut packages = [(); N].map(|_| None);
-        for (i, id) in ids.iter().enumerate() {
-            packages[i] = self.get_package(id)?;
-        }
-        Ok(packages)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

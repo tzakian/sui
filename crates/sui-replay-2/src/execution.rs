@@ -419,13 +419,6 @@ impl ModuleResolver for ReplayStore<'_> {
         unreachable!("unexpected ModuleResolver::get_module({})", id)
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [move_core_types::account_address::AccountAddress; N],
-    ) -> Result<[Option<move_core_types::resolver::SerializedPackage>; N], Self::Error> {
-        unreachable!("unexpected ModuleResolver::get_packages_static({:?})", ids)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a move_core_types::account_address::AccountAddress>,

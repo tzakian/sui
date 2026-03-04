@@ -302,19 +302,6 @@ impl ModuleResolver for InMemoryStore {
         get_module(self, module_id)
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        let mut packages = [const { None }; N];
-        for (i, id) in ids.iter().enumerate() {
-            packages[i] = load_package_object_from_object_store(self, &ObjectID::from(*id))?
-                .map(|pkg| pkg.move_package().into_serialized_move_package())
-                .transpose()?;
-        }
-        Ok(packages)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

@@ -230,17 +230,6 @@ impl InMemoryStorage {
 impl ModuleResolver for InMemoryStorage {
     type Error = ();
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        self.get_packages(ids.iter()).map(|packages| {
-            packages
-                .try_into()
-                .expect("Impossible to get a length mismatch")
-        })
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

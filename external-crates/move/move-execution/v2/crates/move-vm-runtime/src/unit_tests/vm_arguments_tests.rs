@@ -158,13 +158,6 @@ impl ModuleResolver for RemoteStore {
         Ok(self.modules.get(module_id).cloned())
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        _ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        unreachable!("Should never be called in v2")
-    }
-
     fn get_packages<'a>(
         &self,
         _ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

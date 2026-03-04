@@ -482,20 +482,6 @@ impl ModuleResolver for PersistedStore {
             }))
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        let mut packages = [const { None }; N];
-        for (i, id) in ids.iter().enumerate() {
-            packages[i] = self
-                .get_package_object(&ObjectID::from(*id))?
-                .map(|pkg| pkg.move_package().into_serialized_move_package())
-                .transpose()?;
-        }
-        Ok(packages)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

@@ -1633,17 +1633,6 @@ impl ModuleResolver for ResolverWrapper {
         get_module(&*self.resolver, module_id)
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        let mut packages = [const { None }; N];
-        for (i, id) in ids.iter().enumerate() {
-            packages[i] = get_package(&*self.resolver, &ObjectID::from(*id))?;
-        }
-        Ok(packages)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

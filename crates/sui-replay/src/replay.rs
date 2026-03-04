@@ -2079,17 +2079,6 @@ impl ModuleResolver for LocalExec {
         res
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        let mut res = [const { None }; N];
-        for i in 0..N {
-            res[i] = get_package(self, &ids[i].into())?;
-        }
-        Ok(res)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,
@@ -2113,12 +2102,6 @@ impl ModuleResolver for &mut LocalExec {
         (**self).get_packages(ids)
     }
 
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        (**self).get_packages_static(ids)
-    }
 }
 
 impl ObjectStore for LocalExec {

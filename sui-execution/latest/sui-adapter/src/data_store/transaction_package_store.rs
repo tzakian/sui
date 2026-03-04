@@ -173,20 +173,6 @@ impl<'a> TransactionPackageStore<'a> {
 // Better days have arrived!
 impl ModuleResolver for TransactionPackageStore<'_> {
     type Error = SuiError;
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        // Once https://doc.rust-lang.org/stable/std/primitive.array.html#method.try_map is stable
-        // we can use that here.
-        let mut packages = [const { None }; N];
-        for (i, id) in ids.iter().enumerate() {
-            packages[i] = self.fetch_package(*id)?;
-        }
-
-        Ok(packages)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,

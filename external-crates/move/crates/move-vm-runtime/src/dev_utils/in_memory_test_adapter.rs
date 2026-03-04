@@ -56,7 +56,11 @@ impl InMemoryTestAdapter {
     }
 
     pub fn get_package(&self, original_id: &OriginalId) -> VMResult<SerializedPackage> {
-        let Ok([Some(pkg)]) = self.storage.get_packages_static([*original_id]) else {
+        let Ok(Some([Some(pkg)])) = self
+            .storage
+            .get_packages([*original_id].iter())
+            .map(|v| <[_; 1]>::try_from(v).ok())
+        else {
             return Err(partial_vm_error!(
                 LINKER_ERROR,
                 "Cannot find package {:?} in data cache",
@@ -89,7 +93,11 @@ impl InMemoryTestAdapter {
             seen.insert(package_id);
 
             // Attempt to retrieve the package's modules from the store
-            let Ok([Some(pkg)]) = self.storage.get_packages_static([package_id]) else {
+            let Ok(Some([Some(pkg)])) = self
+                .storage
+                .get_packages([package_id].iter())
+                .map(|v| <[_; 1]>::try_from(v).ok())
+            else {
                 return Err(partial_vm_error!(
                     LINKER_ERROR,
                     "Cannot find {:?} in data cache when building linkage context",

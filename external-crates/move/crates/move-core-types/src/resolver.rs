@@ -66,13 +66,6 @@ impl SerializedPackage {
 pub trait ModuleResolver {
     type Error: Debug;
 
-    /// Given a list of storage IDs where the number is statically known, return the `SerializedPackage` for
-    /// each ID. A result is returned for every ID requested. `None` if the package did not exist.
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error>;
-
     /// Given a list of storage IDs for a package, return the `SerializedPackage` for each ID.
     /// A result is returned for every ID requested. `None` if the package did not exist, and
     /// `Some(..)` if the package was found.
@@ -82,20 +75,20 @@ pub trait ModuleResolver {
     ) -> Result<Vec<Option<SerializedPackage>>, Self::Error>;
 
     fn get_module(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
-        let [package] = self.get_packages_static([*id.address()])?;
+        let Some([package]) = <[_; 1]>::try_from(self.get_packages([*id.address()].iter())?).ok()
+        else {
+            debug_assert!(
+                false,
+                "get_packages should return a result for every ID requested"
+            );
+            return Ok(None);
+        };
         Ok(package.and_then(|p| p.get_module_by_name(&id.name().to_owned()).cloned()))
     }
 }
 
 impl<T: ModuleResolver + ?Sized> ModuleResolver for &T {
     type Error = T::Error;
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        (**self).get_packages_static(ids)
-    }
-
     fn get_packages<'a>(
         &self,
         ids: impl ExactSizeIterator<Item = &'a AccountAddress>,
@@ -110,13 +103,6 @@ impl<T: ModuleResolver + ?Sized> ModuleResolver for &T {
 
 impl<T: ModuleResolver + ?Sized> ModuleResolver for Arc<T> {
     type Error = T::Error;
-
-    fn get_packages_static<const N: usize>(
-        &self,
-        ids: [AccountAddress; N],
-    ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
-        (**self).get_packages_static(ids)
-    }
 
     fn get_packages<'a>(
         &self,
