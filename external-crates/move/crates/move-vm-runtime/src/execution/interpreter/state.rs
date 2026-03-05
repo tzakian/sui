@@ -277,7 +277,7 @@ impl MachineState {
     ) -> PartialVMResult<()> {
         debug_writeln!(buf, "Call Stack:");
         self.debug_print_frame(buf, vtables, 0, &self.call_stack.current_frame)?;
-        for (i, frame) in self.call_stack.frames.iter().enumerate() {
+        for (i, frame) in self.call_stack.frames.iter().rev().enumerate() {
             self.debug_print_frame(buf, vtables, i.saturating_add(1), frame)?;
         }
         debug_writeln!(buf, "Operand Stack:");
