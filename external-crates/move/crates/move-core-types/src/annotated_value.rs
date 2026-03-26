@@ -186,6 +186,14 @@ impl MoveValue {
         Ok(bcs::from_bytes_seed(ty, blob)?)
     }
 
+    /// Deserialize a BCS-encoded blob using a compressed annotated type layout.
+    pub fn simple_deserialize_compressed(
+        blob: &[u8],
+        layout: &compressed_layouts::MoveTypeLayout,
+    ) -> AResult<Self> {
+        Ok(bcs::from_bytes_seed(layout.as_view(), blob)?)
+    }
+
     /// Deserialize `blob` as a Move value with the given `ty`-pe layout, and visit its
     /// sub-structure with the given `visitor`. The visitor dictates the return value that is built
     /// up during deserialization.
@@ -752,5 +760,718 @@ impl fmt::Display for MoveVariant {
             map.entry(&DD(field), &DD(value));
         }
         map.finish()
+    }
+}
+
+pub mod compressed_layouts {
+    use super::{
+        MoveEnumLayout, MoveFieldLayout, MoveStructLayout, MoveTypeLayout as TreeMoveTypeLayout,
+    };
+    use crate::identifier::Identifier;
+    use crate::language_storage::StructTag;
+    use crate::runtime_value::compressed_layouts::{LayoutRef, LeafType, ResolvedRef};
+    use indexmap::IndexSet;
+    use serde::{Deserialize, Serialize};
+
+    // =============================================================================
+    // Compressed (interned) annotated layout types
+    // =============================================================================
+
+    /// Index into an [`MoveTypeLayout`]'s strings table.
+    pub type StringIdx = u16;
+
+    /// Index into an [`MoveTypeLayout`]'s tags table.
+    pub type TagIdx = u16;
+
+    /// A list of (field_name_idx, layout_ref) pairs for struct/enum fields.
+    pub type AnnotatedFieldIndices = Box<[(StringIdx, LayoutRef)]>;
+
+    /// A single variant entry: (variant_name_idx, tag, field_indices).
+    pub type AnnotatedVariantEntry = (StringIdx, u16, AnnotatedFieldIndices);
+
+    /// Annotated struct layout node: type tag + named fields stored as interned indices.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct MoveStructNode {
+        pub type_: TagIdx,
+        pub fields: AnnotatedFieldIndices,
+    }
+
+    /// Annotated enum layout node: type tag + named variants with named fields.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct MoveEnumNode {
+        pub type_: TagIdx,
+        pub variants: Box<[AnnotatedVariantEntry]>,
+    }
+
+    /// A compound layout node in the annotated compressed node table.
+    /// Leaf types (primitives) are encoded inline in [`LayoutRef`] and never
+    /// appear in the table.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub enum MoveTypeNode {
+        Vector(LayoutRef),
+        Struct(MoveStructNode),
+        Enum(MoveEnumNode),
+    }
+
+    /// A deduplicated, flat representation of an annotated [`MoveTypeLayout`] tree.
+    /// Strings (field names, variant names) and [`StructTag`]s are interned into
+    /// separate side tables.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MoveTypeLayout {
+        nodes: Box<[MoveTypeNode]>,
+        strings: Box<[Identifier]>,
+        tags: Box<[StructTag]>,
+        root: LayoutRef,
+    }
+
+    impl MoveTypeLayout {
+        /// Number of compound nodes in the table (excludes inline leaf types).
+        pub fn node_count(&self) -> usize {
+            self.nodes.len()
+        }
+
+        /// Number of unique interned strings (field/variant names).
+        pub fn string_count(&self) -> usize {
+            self.strings.len()
+        }
+
+        /// Number of unique interned struct tags.
+        pub fn tag_count(&self) -> usize {
+            self.tags.len()
+        }
+
+        /// Create a resolved view for navigating this layout.
+        pub fn as_view(&self) -> MoveLayoutView<'_> {
+            resolve_ref(&self.nodes, &self.strings, &self.tags, self.root)
+        }
+
+        /// Inflate back into a tree-based [`MoveTypeLayout`].
+        pub fn inflate(&self) -> TreeMoveTypeLayout {
+            self.as_view().inflate()
+        }
+    }
+
+    // =============================================================================
+    // View — the primary public API for navigating compressed layouts
+    // =============================================================================
+
+    /// Resolve a [`LayoutRef`] against the node and side tables into a
+    /// [`MoveLayoutView`] with eagerly resolved type tags and field names.
+    ///
+    /// Panics if the reference points to an out-of-bounds table index.
+    fn resolve_ref<'a>(
+        nodes: &'a [MoveTypeNode],
+        strings: &'a [Identifier],
+        tags: &'a [StructTag],
+        r: LayoutRef,
+    ) -> MoveLayoutView<'a> {
+        match r.resolve() {
+            ResolvedRef::Leaf(leaf) => leaf_to_layout_view(leaf),
+            ResolvedRef::Index(idx) => match &nodes[idx] {
+                MoveTypeNode::Vector(inner) => {
+                    MoveLayoutView::Vector(MoveVectorView {
+                        nodes,
+                        strings,
+                        tags,
+                        element: *inner,
+                    })
+                }
+                MoveTypeNode::Struct(s) => {
+                    let type_ = &tags[s.type_ as usize];
+                    MoveLayoutView::Struct {
+                        type_,
+                        fields: MoveFieldView {
+                            nodes,
+                            strings,
+                            tags,
+                            fields: &s.fields,
+                        },
+                    }
+                }
+                MoveTypeNode::Enum(e) => {
+                    let type_ = &tags[e.type_ as usize];
+                    MoveLayoutView::Enum(MoveEnumView {
+                        nodes,
+                        strings,
+                        tags,
+                        type_,
+                        variants: &e.variants,
+                    })
+                }
+            },
+        }
+    }
+
+    fn leaf_to_layout_view(leaf: LeafType) -> MoveLayoutView<'static> {
+        match leaf {
+            LeafType::Bool => MoveLayoutView::Bool,
+            LeafType::U8 => MoveLayoutView::U8,
+            LeafType::U16 => MoveLayoutView::U16,
+            LeafType::U32 => MoveLayoutView::U32,
+            LeafType::U64 => MoveLayoutView::U64,
+            LeafType::U128 => MoveLayoutView::U128,
+            LeafType::U256 => MoveLayoutView::U256,
+            LeafType::Address => MoveLayoutView::Address,
+            LeafType::Signer => MoveLayoutView::Signer,
+        }
+    }
+
+    /// A resolved view of an annotated layout node. Compound types contain
+    /// further views with eagerly resolved type tags and field names.
+    /// Resolution is lazy — only one layer is resolved at a time.
+    #[derive(Debug, Clone, Copy)]
+    pub enum MoveLayoutView<'a> {
+        Bool,
+        U8,
+        U16,
+        U32,
+        U64,
+        U128,
+        U256,
+        Address,
+        Signer,
+        Vector(MoveVectorView<'a>),
+        Struct {
+            type_: &'a StructTag,
+            fields: MoveFieldView<'a>,
+        },
+        Enum(MoveEnumView<'a>),
+    }
+
+    impl<'a> MoveLayoutView<'a> {
+        /// Reconstruct the equivalent tree-based layout.
+        pub fn inflate(&self) -> TreeMoveTypeLayout {
+            match self {
+                MoveLayoutView::Bool => TreeMoveTypeLayout::Bool,
+                MoveLayoutView::U8 => TreeMoveTypeLayout::U8,
+                MoveLayoutView::U16 => TreeMoveTypeLayout::U16,
+                MoveLayoutView::U32 => TreeMoveTypeLayout::U32,
+                MoveLayoutView::U64 => TreeMoveTypeLayout::U64,
+                MoveLayoutView::U128 => TreeMoveTypeLayout::U128,
+                MoveLayoutView::U256 => TreeMoveTypeLayout::U256,
+                MoveLayoutView::Address => TreeMoveTypeLayout::Address,
+                MoveLayoutView::Signer => TreeMoveTypeLayout::Signer,
+                MoveLayoutView::Vector(vv) => {
+                    TreeMoveTypeLayout::Vector(Box::new(vv.element().inflate()))
+                }
+                MoveLayoutView::Struct { type_, fields: fv } => {
+                    let fields = fv
+                        .fields()
+                        .map(|(name, fv)| MoveFieldLayout::new(name.clone(), fv.inflate()))
+                        .collect();
+                    TreeMoveTypeLayout::Struct(Box::new(MoveStructLayout {
+                        type_: (*type_).clone(),
+                        fields,
+                    }))
+                }
+                MoveLayoutView::Enum(ev) => {
+                    let variants = ev
+                        .variants()
+                        .map(|(variant_name, tag, fv)| {
+                            let field_layouts = fv
+                                .fields()
+                                .map(|(name, fv)| {
+                                    MoveFieldLayout::new(name.clone(), fv.inflate())
+                                })
+                                .collect();
+                            ((variant_name.clone(), tag), field_layouts)
+                        })
+                        .collect();
+                    TreeMoveTypeLayout::Enum(Box::new(MoveEnumLayout {
+                        type_: ev.type_().clone(),
+                        variants,
+                    }))
+                }
+            }
+        }
+    }
+
+    /// A lazy view over an annotated vector layout's element type.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MoveVectorView<'a> {
+        nodes: &'a [MoveTypeNode],
+        strings: &'a [Identifier],
+        tags: &'a [StructTag],
+        element: LayoutRef,
+    }
+
+    impl<'a> MoveVectorView<'a> {
+        /// Resolve the element type.
+        pub fn element(&self) -> MoveLayoutView<'a> {
+            resolve_ref(self.nodes, self.strings, self.tags, self.element)
+        }
+    }
+
+    /// A view over a list of named, typed fields (struct fields or enum variant fields).
+    #[derive(Debug, Clone, Copy)]
+    pub struct MoveFieldView<'a> {
+        nodes: &'a [MoveTypeNode],
+        strings: &'a [Identifier],
+        tags: &'a [StructTag],
+        fields: &'a [(StringIdx, LayoutRef)],
+    }
+
+    impl<'a> MoveFieldView<'a> {
+        /// Number of fields.
+        pub fn field_count(&self) -> usize {
+            self.fields.len()
+        }
+
+        /// Access a field by index, returning `(name, layout_view)`.
+        pub fn field(
+            &self,
+            i: usize,
+        ) -> Option<(&'a Identifier, MoveLayoutView<'a>)> {
+            self.fields.get(i).map(|(name_idx, layout_ref)| {
+                (
+                    &self.strings[*name_idx as usize],
+                    resolve_ref(self.nodes, self.strings, self.tags, *layout_ref),
+                )
+            })
+        }
+
+        /// Look up a field by name, returning its layout view.
+        pub fn field_by_name(&self, name: &str) -> Option<MoveLayoutView<'a>> {
+            self.fields
+                .iter()
+                .find(|(name_idx, _)| self.strings[*name_idx as usize].as_str() == name)
+                .map(|(_, layout_ref)| {
+                    resolve_ref(self.nodes, self.strings, self.tags, *layout_ref)
+                })
+        }
+
+        /// Iterate over all fields as `(name, layout_view)` pairs.
+        pub fn fields(
+            &self,
+        ) -> impl ExactSizeIterator<Item = (&'a Identifier, MoveLayoutView<'a>)> + '_ {
+            let nodes = self.nodes;
+            let strings = self.strings;
+            let tags = self.tags;
+            self.fields.iter().map(move |(name_idx, layout_ref)| {
+                (
+                    &strings[*name_idx as usize],
+                    resolve_ref(nodes, strings, tags, *layout_ref),
+                )
+            })
+        }
+    }
+
+    /// A view over an annotated enum layout's variants.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MoveEnumView<'a> {
+        nodes: &'a [MoveTypeNode],
+        strings: &'a [Identifier],
+        tags: &'a [StructTag],
+        type_: &'a StructTag,
+        variants: &'a [AnnotatedVariantEntry],
+    }
+
+    impl<'a> MoveEnumView<'a> {
+        /// The enum's type tag.
+        pub fn type_(&self) -> &'a StructTag {
+            self.type_
+        }
+
+        /// Number of variants.
+        pub fn variant_count(&self) -> usize {
+            self.variants.len()
+        }
+
+        /// Access a variant by position index.
+        pub fn variant(
+            &self,
+            i: usize,
+        ) -> Option<(&'a Identifier, u16, MoveFieldView<'a>)> {
+            self.variants.get(i).map(|(name_idx, tag, fields)| {
+                (
+                    &self.strings[*name_idx as usize],
+                    *tag,
+                    MoveFieldView {
+                        nodes: self.nodes,
+                        strings: self.strings,
+                        tags: self.tags,
+                        fields,
+                    },
+                )
+            })
+        }
+
+        /// Find a variant by its tag value.
+        pub fn variant_by_tag(
+            &self,
+            tag: u16,
+        ) -> Option<(&'a Identifier, MoveFieldView<'a>)> {
+            self.variants
+                .iter()
+                .find(|(_, t, _)| *t == tag)
+                .map(|(name_idx, _, fields)| {
+                    (
+                        &self.strings[*name_idx as usize],
+                        MoveFieldView {
+                            nodes: self.nodes,
+                            strings: self.strings,
+                            tags: self.tags,
+                            fields,
+                        },
+                    )
+                })
+        }
+
+        /// Iterate over all variants as `(name, tag, field_view)` tuples.
+        pub fn variants(
+            &self,
+        ) -> impl ExactSizeIterator<Item = (&'a Identifier, u16, MoveFieldView<'a>)> + 'a {
+            let nodes = self.nodes;
+            let strings = self.strings;
+            let tags = self.tags;
+            self.variants.iter().map(move |(name_idx, tag, fields)| {
+                (
+                    &strings[*name_idx as usize],
+                    *tag,
+                    MoveFieldView {
+                        nodes,
+                        strings,
+                        tags,
+                        fields,
+                    },
+                )
+            })
+        }
+    }
+
+    // =============================================================================
+    // Builder
+    // =============================================================================
+
+    /// Incrementally builds an annotated [`MoveTypeLayout`] with automatic
+    /// deduplication of nodes, field/variant names, and struct tags.
+    pub struct MoveTypeLayoutBuilder {
+        nodes: IndexSet<MoveTypeNode>,
+        strings: IndexSet<Identifier>,
+        tags: IndexSet<StructTag>,
+    }
+
+    impl MoveTypeLayoutBuilder {
+        pub fn new() -> Self {
+            Self {
+                nodes: IndexSet::new(),
+                strings: IndexSet::new(),
+                tags: IndexSet::new(),
+            }
+        }
+
+        fn intern_string(&mut self, s: &Identifier) -> StringIdx {
+            let (idx, _) = self.strings.insert_full(s.clone());
+            assert!(
+                idx <= u16::MAX as usize,
+                "string table exceeds u16 capacity"
+            );
+            idx as u16
+        }
+
+        fn intern_tag(&mut self, tag: &StructTag) -> TagIdx {
+            let (idx, _) = self.tags.insert_full(tag.clone());
+            assert!(idx <= u16::MAX as usize, "tag table exceeds u16 capacity");
+            idx as u16
+        }
+
+        fn intern(&mut self, node: MoveTypeNode) -> LayoutRef {
+            let (idx, _) = self.nodes.insert_full(node);
+            LayoutRef::index(idx)
+        }
+
+        pub fn bool(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::Bool)
+        }
+        pub fn u8(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U8)
+        }
+        pub fn u16(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U16)
+        }
+        pub fn u32(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U32)
+        }
+        pub fn u64(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U64)
+        }
+        pub fn u128(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U128)
+        }
+        pub fn u256(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::U256)
+        }
+        pub fn address(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::Address)
+        }
+        pub fn signer(&mut self) -> LayoutRef {
+            LayoutRef::leaf(LeafType::Signer)
+        }
+
+        pub fn vector(&mut self, element: LayoutRef) -> LayoutRef {
+            self.intern(MoveTypeNode::Vector(element))
+        }
+
+        /// Build a struct layout node.
+        /// `fields` is a list of (field_name, field_layout) pairs.
+        pub fn struct_layout(
+            &mut self,
+            type_tag: &StructTag,
+            fields: &[(&Identifier, LayoutRef)],
+        ) -> LayoutRef {
+            let tag_idx = self.intern_tag(type_tag);
+            let field_indices: AnnotatedFieldIndices = fields
+                .iter()
+                .map(|(name, r)| (self.intern_string(name), *r))
+                .collect();
+            self.intern(MoveTypeNode::Struct(MoveStructNode {
+                type_: tag_idx,
+                fields: field_indices,
+            }))
+        }
+
+        /// Build an enum layout node.
+        /// Each variant is `(variant_name, tag, fields)` where fields is `[(field_name, layout)]`.
+        pub fn enum_layout(
+            &mut self,
+            type_tag: &StructTag,
+            variants: &[(&Identifier, u16, &[(&Identifier, LayoutRef)])],
+        ) -> LayoutRef {
+            let tag_idx = self.intern_tag(type_tag);
+            let variant_entries: Box<[AnnotatedVariantEntry]> = variants
+                .iter()
+                .map(|(vn, tag, fields)| {
+                    let vn_idx = self.intern_string(vn);
+                    let field_indices: AnnotatedFieldIndices = fields
+                        .iter()
+                        .map(|(fn_name, r)| (self.intern_string(fn_name), *r))
+                        .collect();
+                    (vn_idx, *tag, field_indices)
+                })
+                .collect();
+            self.intern(MoveTypeNode::Enum(MoveEnumNode {
+                type_: tag_idx,
+                variants: variant_entries,
+            }))
+        }
+
+        /// Recursively intern a tree-based annotated layout.
+        pub fn intern_tree(&mut self, layout: &TreeMoveTypeLayout) -> LayoutRef {
+            match layout {
+                TreeMoveTypeLayout::Bool => self.bool(),
+                TreeMoveTypeLayout::U8 => self.u8(),
+                TreeMoveTypeLayout::U16 => self.u16(),
+                TreeMoveTypeLayout::U32 => self.u32(),
+                TreeMoveTypeLayout::U64 => self.u64(),
+                TreeMoveTypeLayout::U128 => self.u128(),
+                TreeMoveTypeLayout::U256 => self.u256(),
+                TreeMoveTypeLayout::Address => self.address(),
+                TreeMoveTypeLayout::Signer => self.signer(),
+                TreeMoveTypeLayout::Vector(inner) => {
+                    let inner_ref = self.intern_tree(inner);
+                    self.vector(inner_ref)
+                }
+                TreeMoveTypeLayout::Struct(s) => {
+                    let fields: Vec<(&Identifier, LayoutRef)> = s
+                        .fields
+                        .iter()
+                        .map(|f| (&f.name, self.intern_tree(&f.layout)))
+                        .collect();
+                    self.struct_layout(&s.type_, &fields)
+                }
+                TreeMoveTypeLayout::Enum(e) => {
+                    let variants: Vec<(&Identifier, u16, Vec<(&Identifier, LayoutRef)>)> = e
+                        .variants
+                        .iter()
+                        .map(|((variant_name, tag), field_layouts)| {
+                            let fields: Vec<(&Identifier, LayoutRef)> = field_layouts
+                                .iter()
+                                .map(|f| (&f.name, self.intern_tree(&f.layout)))
+                                .collect();
+                            (variant_name, *tag, fields)
+                        })
+                        .collect();
+                    let variant_refs: Vec<(&Identifier, u16, &[(&Identifier, LayoutRef)])> =
+                        variants
+                            .iter()
+                            .map(|(vn, tag, fields)| (*vn, *tag, fields.as_slice()))
+                            .collect();
+                    self.enum_layout(&e.type_, &variant_refs)
+                }
+            }
+        }
+
+        pub fn build(self, root: LayoutRef) -> MoveTypeLayout {
+            MoveTypeLayout {
+                nodes: self.nodes.into_iter().collect(),
+                strings: self.strings.into_iter().collect(),
+                tags: self.tags.into_iter().collect(),
+                root,
+            }
+        }
+    }
+
+    impl Default for MoveTypeLayoutBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl From<&TreeMoveTypeLayout> for MoveTypeLayout {
+        fn from(layout: &TreeMoveTypeLayout) -> Self {
+            let mut b = MoveTypeLayoutBuilder::new();
+            let root = b.intern_tree(layout);
+            b.build(root)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Deserialization — DeserializeSeed for &MoveLayoutView
+    // -------------------------------------------------------------------------
+
+    use super::{MoveStruct as AnnStruct, MoveValue as AnnValue, MoveVariant as AnnVariant};
+    use crate::{VARIANT_TAG_MAX_VALUE, account_address::AccountAddress, u256};
+    use serde::de::Error as _;
+
+    impl<'d> serde::de::DeserializeSeed<'d> for MoveLayoutView<'_> {
+        type Value = AnnValue;
+
+        fn deserialize<D: serde::de::Deserializer<'d>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
+            match self {
+                MoveLayoutView::Bool => bool::deserialize(deserializer).map(AnnValue::Bool),
+                MoveLayoutView::U8 => u8::deserialize(deserializer).map(AnnValue::U8),
+                MoveLayoutView::U16 => u16::deserialize(deserializer).map(AnnValue::U16),
+                MoveLayoutView::U32 => u32::deserialize(deserializer).map(AnnValue::U32),
+                MoveLayoutView::U64 => u64::deserialize(deserializer).map(AnnValue::U64),
+                MoveLayoutView::U128 => u128::deserialize(deserializer).map(AnnValue::U128),
+                MoveLayoutView::U256 => u256::U256::deserialize(deserializer).map(AnnValue::U256),
+                MoveLayoutView::Address => {
+                    AccountAddress::deserialize(deserializer).map(AnnValue::Address)
+                }
+                MoveLayoutView::Signer => {
+                    AccountAddress::deserialize(deserializer).map(AnnValue::Signer)
+                }
+                MoveLayoutView::Struct { type_, fields: fv } => {
+                    let fields = deserializer.deserialize_tuple(
+                        fv.field_count(),
+                        CompressedStructFieldVisitor(fv),
+                    )?;
+                    Ok(AnnValue::Struct(AnnStruct {
+                        type_: type_.clone(),
+                        fields,
+                    }))
+                }
+                MoveLayoutView::Enum(ev) => {
+                    let (variant_name, tag, fields) =
+                        deserializer.deserialize_tuple(2, CompressedEnumFieldVisitor(ev))?;
+                    Ok(AnnValue::Variant(AnnVariant {
+                        type_: ev.type_().clone(),
+                        variant_name,
+                        tag,
+                        fields,
+                    }))
+                }
+                MoveLayoutView::Vector(vv) => {
+                    let elem = vv.element();
+                    Ok(AnnValue::Vector(
+                        deserializer.deserialize_seq(CompressedVectorVisitor(elem))?,
+                    ))
+                }
+            }
+        }
+    }
+
+    struct CompressedVectorVisitor<'a>(MoveLayoutView<'a>);
+
+    impl<'d> serde::de::Visitor<'d> for CompressedVectorVisitor<'_> {
+        type Value = Vec<AnnValue>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("Vector")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'d>,
+        {
+            let mut vals = Vec::new();
+            while let Some(elem) = seq.next_element_seed(self.0)? {
+                vals.push(elem)
+            }
+            Ok(vals)
+        }
+    }
+
+    struct CompressedStructFieldVisitor<'a>(MoveFieldView<'a>);
+
+    impl<'d> serde::de::Visitor<'d> for CompressedStructFieldVisitor<'_> {
+        type Value = Vec<(Identifier, AnnValue)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("Struct")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'d>,
+        {
+            let mut vals = Vec::new();
+            for (i, (name, field_view)) in self.0.fields().enumerate() {
+                match seq.next_element_seed(field_view)? {
+                    Some(val) => vals.push((name.clone(), val)),
+                    None => return Err(A::Error::invalid_length(i, &self)),
+                }
+            }
+            Ok(vals)
+        }
+    }
+
+    struct CompressedEnumFieldVisitor<'a>(MoveEnumView<'a>);
+
+    impl<'d> serde::de::Visitor<'d> for CompressedEnumFieldVisitor<'_> {
+        type Value = (Identifier, u16, Vec<(Identifier, AnnValue)>);
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("Enum")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'d>,
+        {
+            let tag = match seq.next_element::<u8>()? {
+                Some(tag) if tag as u64 <= VARIANT_TAG_MAX_VALUE => tag as u16,
+                Some(tag) => return Err(A::Error::invalid_length(tag as usize, &self)),
+                None => return Err(A::Error::invalid_length(0, &self)),
+            };
+
+            let Some((variant_name, field_view)) = self.0.variant_by_tag(tag) else {
+                return Err(A::Error::invalid_length(tag as usize, &self));
+            };
+
+            let Some(fields) = seq.next_element_seed(CompressedVariantFieldSeed(field_view))?
+            else {
+                return Err(A::Error::invalid_length(1, &self));
+            };
+
+            Ok((variant_name.clone(), tag, fields))
+        }
+    }
+
+    struct CompressedVariantFieldSeed<'a>(MoveFieldView<'a>);
+
+    impl<'d> serde::de::DeserializeSeed<'d> for CompressedVariantFieldSeed<'_> {
+        type Value = Vec<(Identifier, AnnValue)>;
+
+        fn deserialize<D: serde::de::Deserializer<'d>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
+            deserializer
+                .deserialize_tuple(self.0.field_count(), CompressedStructFieldVisitor(self.0))
+        }
     }
 }
