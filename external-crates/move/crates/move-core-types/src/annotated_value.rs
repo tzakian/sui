@@ -786,8 +786,9 @@ pub mod compressed_layouts {
     /// A list of (field_name_idx, layout_ref) pairs for struct/enum fields.
     pub type AnnotatedFieldIndices = Box<[(StringIdx, LayoutRef)]>;
 
-    /// A single variant entry: (variant_name_idx, tag, field_indices).
-    pub type AnnotatedVariantEntry = (StringIdx, u16, AnnotatedFieldIndices);
+    /// A single variant entry: (variant_name_idx, tag, optional field_indices).
+    /// `None` field indices means the variant exists but its layout is unknown.
+    pub type AnnotatedVariantEntry = (StringIdx, u16, Option<AnnotatedFieldIndices>);
 
     /// Annotated struct layout node: type tag + named fields stored as interned indices.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -846,7 +847,7 @@ pub mod compressed_layouts {
         }
 
         /// Inflate back into a tree-based [`MoveTypeLayout`].
-        pub fn inflate(&self) -> TreeMoveTypeLayout {
+        pub fn inflate(&self) -> AResult<TreeMoveTypeLayout> {
             self.as_view().inflate()
         }
     }
@@ -938,10 +939,13 @@ pub mod compressed_layouts {
         Enum(MoveEnumView<'a>),
     }
 
+    use anyhow::Result as AResult;
+
     impl<'a> MoveLayoutView<'a> {
-        /// Reconstruct the equivalent tree-based layout.
-        pub fn inflate(&self) -> TreeMoveTypeLayout {
-            match self {
+        /// Reconstruct the equivalent tree-based layout. Returns an error
+        /// if any enum variant has an unknown layout.
+        pub fn inflate(&self) -> AResult<TreeMoveTypeLayout> {
+            Ok(match self {
                 MoveLayoutView::Bool => TreeMoveTypeLayout::Bool,
                 MoveLayoutView::U8 => TreeMoveTypeLayout::U8,
                 MoveLayoutView::U16 => TreeMoveTypeLayout::U16,
@@ -952,13 +956,13 @@ pub mod compressed_layouts {
                 MoveLayoutView::Address => TreeMoveTypeLayout::Address,
                 MoveLayoutView::Signer => TreeMoveTypeLayout::Signer,
                 MoveLayoutView::Vector(vv) => {
-                    TreeMoveTypeLayout::Vector(Box::new(vv.element().inflate()))
+                    TreeMoveTypeLayout::Vector(Box::new(vv.element().inflate()?))
                 }
                 MoveLayoutView::Struct { type_, fields: fv } => {
                     let fields = fv
                         .fields()
-                        .map(|(name, fv)| MoveFieldLayout::new(name.clone(), fv.inflate()))
-                        .collect();
+                        .map(|(name, fv)| Ok(MoveFieldLayout::new(name.clone(), fv.inflate()?)))
+                        .collect::<AResult<_>>()?;
                     TreeMoveTypeLayout::Struct(Box::new(MoveStructLayout {
                         type_: (*type_).clone(),
                         fields,
@@ -967,22 +971,27 @@ pub mod compressed_layouts {
                 MoveLayoutView::Enum(ev) => {
                     let variants = ev
                         .variants()
-                        .map(|(variant_name, tag, fv)| {
-                            let field_layouts = fv
-                                .fields()
-                                .map(|(name, fv)| {
-                                    MoveFieldLayout::new(name.clone(), fv.inflate())
-                                })
-                                .collect();
-                            ((variant_name.clone(), tag), field_layouts)
+                        .map(|(variant_name, tag, vfv)| match vfv {
+                            VariantFieldView::Known(fv) => {
+                                let field_layouts = fv
+                                    .fields()
+                                    .map(|(name, fv)| {
+                                        Ok(MoveFieldLayout::new(name.clone(), fv.inflate()?))
+                                    })
+                                    .collect::<AResult<_>>()?;
+                                Ok(((variant_name.clone(), tag), field_layouts))
+                            }
+                            VariantFieldView::Unknown => {
+                                anyhow::bail!("cannot inflate enum with unknown variant layout")
+                            }
                         })
-                        .collect();
+                        .collect::<AResult<_>>()?;
                     TreeMoveTypeLayout::Enum(Box::new(MoveEnumLayout {
                         type_: ev.type_().clone(),
                         variants,
                     }))
                 }
-            }
+            })
         }
     }
 
@@ -1056,6 +1065,15 @@ pub mod compressed_layouts {
         }
     }
 
+    /// The result of looking up a variant in an annotated enum view.
+    #[derive(Debug, Clone, Copy)]
+    pub enum VariantFieldView<'a> {
+        /// The variant's field layout is known.
+        Known(MoveFieldView<'a>),
+        /// The variant exists but its field layout is not available.
+        Unknown,
+    }
+
     /// A view over an annotated enum layout's variants.
     #[derive(Debug, Clone, Copy)]
     pub struct MoveEnumView<'a> {
@@ -1077,22 +1095,23 @@ pub mod compressed_layouts {
             self.variants.len()
         }
 
-        /// Access a variant by position index.
+        /// Access a variant by position index. Returns `None` if out of bounds.
         pub fn variant(
             &self,
             i: usize,
-        ) -> Option<(&'a Identifier, u16, MoveFieldView<'a>)> {
+        ) -> Option<(&'a Identifier, u16, VariantFieldView<'a>)> {
             self.variants.get(i).map(|(name_idx, tag, fields)| {
-                (
-                    &self.strings[*name_idx as usize],
-                    *tag,
-                    MoveFieldView {
+                let name = &self.strings[*name_idx as usize];
+                let vfv = match fields {
+                    Some(fields) => VariantFieldView::Known(MoveFieldView {
                         nodes: self.nodes,
                         strings: self.strings,
                         tags: self.tags,
                         fields,
-                    },
-                )
+                    }),
+                    None => VariantFieldView::Unknown,
+                };
+                (name, *tag, vfv)
             })
         }
 
@@ -1100,41 +1119,45 @@ pub mod compressed_layouts {
         pub fn variant_by_tag(
             &self,
             tag: u16,
-        ) -> Option<(&'a Identifier, MoveFieldView<'a>)> {
+        ) -> Option<(&'a Identifier, VariantFieldView<'a>)> {
             self.variants
                 .iter()
                 .find(|(_, t, _)| *t == tag)
                 .map(|(name_idx, _, fields)| {
-                    (
-                        &self.strings[*name_idx as usize],
-                        MoveFieldView {
+                    let name = &self.strings[*name_idx as usize];
+                    let vfv = match fields {
+                        Some(fields) => VariantFieldView::Known(MoveFieldView {
                             nodes: self.nodes,
                             strings: self.strings,
                             tags: self.tags,
                             fields,
-                        },
-                    )
+                        }),
+                        None => VariantFieldView::Unknown,
+                    };
+                    (name, vfv)
                 })
         }
 
         /// Iterate over all variants as `(name, tag, field_view)` tuples.
         pub fn variants(
             &self,
-        ) -> impl ExactSizeIterator<Item = (&'a Identifier, u16, MoveFieldView<'a>)> + 'a {
+        ) -> impl ExactSizeIterator<Item = (&'a Identifier, u16, VariantFieldView<'a>)> + 'a
+        {
             let nodes = self.nodes;
             let strings = self.strings;
             let tags = self.tags;
             self.variants.iter().map(move |(name_idx, tag, fields)| {
-                (
-                    &strings[*name_idx as usize],
-                    *tag,
-                    MoveFieldView {
+                let name = &strings[*name_idx as usize];
+                let vfv = match fields {
+                    Some(fields) => VariantFieldView::Known(MoveFieldView {
                         nodes,
                         strings,
                         tags,
                         fields,
-                    },
-                )
+                    }),
+                    None => VariantFieldView::Unknown,
+                };
+                (name, *tag, vfv)
             })
         }
     }
@@ -1231,21 +1254,24 @@ pub mod compressed_layouts {
         }
 
         /// Build an enum layout node.
-        /// Each variant is `(variant_name, tag, fields)` where fields is `[(field_name, layout)]`.
+        /// Each variant is `(variant_name, tag, fields)` where fields is
+        /// `None` for unknown layout or `Some(&[(field_name, layout)])` for known.
         pub fn enum_layout(
             &mut self,
             type_tag: &StructTag,
-            variants: &[(&Identifier, u16, &[(&Identifier, LayoutRef)])],
+            variants: &[(&Identifier, u16, Option<&[(&Identifier, LayoutRef)]>)],
         ) -> LayoutRef {
             let tag_idx = self.intern_tag(type_tag);
             let variant_entries: Box<[AnnotatedVariantEntry]> = variants
                 .iter()
                 .map(|(vn, tag, fields)| {
                     let vn_idx = self.intern_string(vn);
-                    let field_indices: AnnotatedFieldIndices = fields
-                        .iter()
-                        .map(|(fn_name, r)| (self.intern_string(fn_name), *r))
-                        .collect();
+                    let field_indices = fields.map(|fields| {
+                        fields
+                            .iter()
+                            .map(|(fn_name, r)| (self.intern_string(fn_name), *r))
+                            .collect()
+                    });
                     (vn_idx, *tag, field_indices)
                 })
                 .collect();
@@ -1256,6 +1282,8 @@ pub mod compressed_layouts {
         }
 
         /// Recursively intern a tree-based annotated layout.
+        /// Tree-based enum layouts always have known variants, so all variants
+        /// are wrapped in `Some`.
         pub fn intern_tree(&mut self, layout: &TreeMoveTypeLayout) -> LayoutRef {
             match layout {
                 TreeMoveTypeLayout::Bool => self.bool(),
@@ -1291,11 +1319,14 @@ pub mod compressed_layouts {
                             (variant_name, *tag, fields)
                         })
                         .collect();
-                    let variant_refs: Vec<(&Identifier, u16, &[(&Identifier, LayoutRef)])> =
-                        variants
-                            .iter()
-                            .map(|(vn, tag, fields)| (*vn, *tag, fields.as_slice()))
-                            .collect();
+                    let variant_refs: Vec<(
+                        &Identifier,
+                        u16,
+                        Option<&[(&Identifier, LayoutRef)]>,
+                    )> = variants
+                        .iter()
+                        .map(|(vn, tag, fields)| (*vn, *tag, Some(fields.as_slice())))
+                        .collect();
                     self.enum_layout(&e.type_, &variant_refs)
                 }
             }
@@ -1448,8 +1479,14 @@ pub mod compressed_layouts {
                 None => return Err(A::Error::invalid_length(0, &self)),
             };
 
-            let Some((variant_name, field_view)) = self.0.variant_by_tag(tag) else {
-                return Err(A::Error::invalid_length(tag as usize, &self));
+            let (variant_name, field_view) = match self.0.variant_by_tag(tag) {
+                Some((name, VariantFieldView::Known(fv))) => (name, fv),
+                Some((_, VariantFieldView::Unknown)) => {
+                    return Err(A::Error::custom(format!(
+                        "cannot deserialize variant {tag}: layout unknown"
+                    )));
+                }
+                None => return Err(A::Error::invalid_length(tag as usize, &self)),
             };
 
             let Some(fields) = seq.next_element_seed(CompressedVariantFieldSeed(field_view))?

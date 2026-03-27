@@ -38,7 +38,7 @@ fn runtime_primitive_roundtrip() {
     ] {
         let compressed = RC::MoveTypeLayout::from(&layout);
         assert_eq!(compressed.node_count(), 0);
-        let inflated = compressed.inflate();
+        let inflated = compressed.inflate().unwrap();
         assert_eq!(format!("{inflated}"), format!("{layout}"));
     }
 }
@@ -48,7 +48,7 @@ fn runtime_vector_roundtrip() {
     let layout = R::MoveTypeLayout::Vector(Box::new(R::MoveTypeLayout::U8));
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 1);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -59,7 +59,7 @@ fn runtime_nested_vector_roundtrip() {
     ))));
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 2);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -72,7 +72,7 @@ fn runtime_struct_roundtrip() {
     ])));
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 1);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -84,7 +84,7 @@ fn runtime_enum_roundtrip() {
     ]))));
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 1);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -118,7 +118,7 @@ fn runtime_shared_subtree_dedup() {
     ])));
     let compressed = RC::MoveTypeLayout::from(&wrapper);
     assert_eq!(compressed.node_count(), 2);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{wrapper}"));
 }
 
@@ -127,7 +127,7 @@ fn runtime_empty_struct() {
     let layout = R::MoveTypeLayout::Struct(Box::new(R::MoveStructLayout::new(vec![])));
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 1);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -139,7 +139,7 @@ fn runtime_deeply_nested_vector() {
     }
     let compressed = RC::MoveTypeLayout::from(&layout);
     assert_eq!(compressed.node_count(), 3);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(format!("{inflated}"), format!("{layout}"));
 }
 
@@ -164,7 +164,7 @@ fn annotated_primitive_roundtrip() {
         assert_eq!(compressed.node_count(), 0);
         assert!(compressed.string_count() == 0);
         assert!(compressed.tag_count() == 0);
-        let inflated = compressed.inflate();
+        let inflated = compressed.inflate().unwrap();
         assert_eq!(inflated, layout);
     }
 }
@@ -182,7 +182,7 @@ fn annotated_struct_roundtrip() {
     assert_eq!(compressed.node_count(), 1);
     assert_eq!(compressed.string_count(), 2);
     assert_eq!(compressed.tag_count(), 1);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(inflated, layout);
 }
 
@@ -218,7 +218,7 @@ fn annotated_string_dedup() {
     // "a", "b", "id" — "id" appears twice in the tree but only once interned
     assert_eq!(compressed.string_count(), 3);
 
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(inflated, layout);
 }
 
@@ -240,7 +240,7 @@ fn annotated_enum_roundtrip() {
         .collect(),
     }));
     let compressed = AC::MoveTypeLayout::from(&layout);
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(inflated, layout);
 }
 
@@ -272,7 +272,7 @@ fn annotated_shared_subtree_dedup() {
     assert_eq!(compressed.node_count(), 2);
     assert_eq!(compressed.tag_count(), 2);
 
-    let inflated = compressed.inflate();
+    let inflated = compressed.inflate().unwrap();
     assert_eq!(inflated, layout);
 }
 
@@ -290,8 +290,8 @@ fn runtime_view_inflate_matches_owned() {
     let compressed = RC::MoveTypeLayout::from(&layout);
     let view = compressed.as_view();
     assert_eq!(
-        format!("{}", view.inflate()),
-        format!("{}", compressed.inflate())
+        format!("{}", view.inflate().unwrap()),
+        format!("{}", compressed.inflate().unwrap())
     );
 }
 
@@ -310,9 +310,9 @@ fn runtime_struct_view_navigate() {
     assert_eq!(fv.field_count(), 2);
 
     let field0 = fv.field(0).unwrap();
-    assert_eq!(format!("{}", field0.inflate()), "u64");
+    assert_eq!(format!("{}", field0.inflate().unwrap()), "u64");
     let field1 = fv.field(1).unwrap();
-    assert_eq!(format!("{}", field1.inflate()), "bool");
+    assert_eq!(format!("{}", field1.inflate().unwrap()), "bool");
 }
 
 #[test]
@@ -329,11 +329,17 @@ fn runtime_enum_view_navigate() {
     };
     assert_eq!(ev.variant_count(), 2);
 
-    let v0 = ev.variant(0).unwrap();
+    let v0 = match ev.variant(0).unwrap() {
+        RC::VariantFieldView::Known(fv) => fv,
+        RC::VariantFieldView::Unknown => panic!("expected known variant"),
+    };
     assert_eq!(v0.field_count(), 1);
-    assert_eq!(format!("{}", v0.field(0).unwrap().inflate()), "u8");
+    assert_eq!(format!("{}", v0.field(0).unwrap().inflate().unwrap()), "u8");
 
-    let v1 = ev.variant(1).unwrap();
+    let v1 = match ev.variant(1).unwrap() {
+        RC::VariantFieldView::Known(fv) => fv,
+        RC::VariantFieldView::Unknown => panic!("expected known variant"),
+    };
     assert_eq!(v1.field_count(), 2);
 }
 
@@ -366,7 +372,7 @@ fn annotated_view_struct_navigate() {
     }));
     let compressed = AC::MoveTypeLayout::from(&layout);
     let view = compressed.as_view();
-    assert_eq!(view.inflate(), layout);
+    assert_eq!(view.inflate().unwrap(), layout);
 
     let (type_, fv) = match &view {
         AC::MoveLayoutView::Struct { type_, fields } => (type_, fields),
@@ -377,7 +383,7 @@ fn annotated_view_struct_navigate() {
 
     let (name, field_view) = fv.field(0).unwrap();
     assert_eq!(name.as_str(), "x");
-    assert_eq!(field_view.inflate(), A::MoveTypeLayout::U64);
+    assert_eq!(field_view.inflate().unwrap(), A::MoveTypeLayout::U64);
 }
 
 #[test]
@@ -405,15 +411,23 @@ fn annotated_view_enum_navigate() {
     };
     assert_eq!(ev.type_().name.as_str(), "MyEnum");
 
-    let (name, fv) = ev.variant_by_tag(1).unwrap();
+    let (name, vfv) = ev.variant_by_tag(1).unwrap();
     assert_eq!(name.as_str(), "Some");
+    let fv = match vfv {
+        AC::VariantFieldView::Known(fv) => fv,
+        AC::VariantFieldView::Unknown => panic!("expected known variant"),
+    };
     assert_eq!(fv.field_count(), 1);
     let (field_name, field_view) = fv.field(0).unwrap();
     assert_eq!(field_name.as_str(), "value");
-    assert_eq!(field_view.inflate(), A::MoveTypeLayout::U64);
+    assert_eq!(field_view.inflate().unwrap(), A::MoveTypeLayout::U64);
 
-    let (name, fv) = ev.variant_by_tag(0).unwrap();
+    let (name, vfv) = ev.variant_by_tag(0).unwrap();
     assert_eq!(name.as_str(), "None");
+    let fv = match vfv {
+        AC::VariantFieldView::Known(fv) => fv,
+        AC::VariantFieldView::Unknown => panic!("expected known variant"),
+    };
     assert_eq!(fv.field_count(), 0);
 }
 
