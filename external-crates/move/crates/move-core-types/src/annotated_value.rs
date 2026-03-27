@@ -769,46 +769,48 @@ pub mod compressed_layouts {
     };
     use crate::identifier::Identifier;
     use crate::language_storage::StructTag;
+    pub use crate::runtime_value::compressed_layouts::LayoutHandle;
     use crate::runtime_value::compressed_layouts::{LayoutRef, LeafType, ResolvedRef};
     use indexmap::IndexSet;
     use serde::{Deserialize, Serialize};
+    use std::rc::Rc;
 
     // =============================================================================
     // Compressed (interned) annotated layout types
     // =============================================================================
 
     /// Index into an [`MoveTypeLayout`]'s strings table.
-    pub type StringIdx = u16;
+    pub(crate) type StringIdx = u16;
 
     /// Index into an [`MoveTypeLayout`]'s tags table.
-    pub type TagIdx = u16;
+    pub(crate) type TagIdx = u16;
 
     /// A list of (field_name_idx, layout_ref) pairs for struct/enum fields.
-    pub type AnnotatedFieldIndices = Box<[(StringIdx, LayoutRef)]>;
+    pub(crate) type AnnotatedFieldIndices = Box<[(StringIdx, LayoutRef)]>;
 
     /// A single variant entry: (variant_name_idx, tag, optional field_indices).
     /// `None` field indices means the variant exists but its layout is unknown.
-    pub type AnnotatedVariantEntry = (StringIdx, u16, Option<AnnotatedFieldIndices>);
+    pub(crate) type AnnotatedVariantEntry = (StringIdx, u16, Option<AnnotatedFieldIndices>);
 
     /// Annotated struct layout node: type tag + named fields stored as interned indices.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub struct MoveStructNode {
-        pub type_: TagIdx,
-        pub fields: AnnotatedFieldIndices,
+    pub(crate) struct MoveStructNode {
+        pub(crate) type_: TagIdx,
+        pub(crate) fields: AnnotatedFieldIndices,
     }
 
     /// Annotated enum layout node: type tag + named variants with named fields.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub struct MoveEnumNode {
-        pub type_: TagIdx,
-        pub variants: Box<[AnnotatedVariantEntry]>,
+    pub(crate) struct MoveEnumNode {
+        pub(crate) type_: TagIdx,
+        pub(crate) variants: Box<[AnnotatedVariantEntry]>,
     }
 
     /// A compound layout node in the annotated compressed node table.
     /// Leaf types (primitives) are encoded inline in [`LayoutRef`] and never
     /// appear in the table.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub enum MoveTypeNode {
+    pub(crate) enum MoveTypeNode {
         Vector(LayoutRef),
         Struct(MoveStructNode),
         Enum(MoveEnumNode),
@@ -816,12 +818,12 @@ pub mod compressed_layouts {
 
     /// A deduplicated, flat representation of an annotated [`MoveTypeLayout`] tree.
     /// Strings (field names, variant names) and [`StructTag`]s are interned into
-    /// separate side tables.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// separate side tables. Cloning is cheap — the tables are shared via `Rc`.
+    #[derive(Debug, Clone)]
     pub struct MoveTypeLayout {
-        nodes: Box<[MoveTypeNode]>,
-        strings: Box<[Identifier]>,
-        tags: Box<[StructTag]>,
+        nodes: Rc<[MoveTypeNode]>,
+        strings: Rc<[Identifier]>,
+        tags: Rc<[StructTag]>,
         root: LayoutRef,
     }
 
@@ -841,9 +843,97 @@ pub mod compressed_layouts {
             self.tags.len()
         }
 
+        fn leaf(ty: LeafType) -> Self {
+            MoveTypeLayout {
+                nodes: Rc::from(Vec::new()),
+                strings: Rc::from(Vec::<Identifier>::new()),
+                tags: Rc::from(Vec::<StructTag>::new()),
+                root: LayoutRef::leaf(ty),
+            }
+        }
+
+        pub fn bool() -> Self {
+            Self::leaf(LeafType::Bool)
+        }
+        pub fn u8() -> Self {
+            Self::leaf(LeafType::U8)
+        }
+        pub fn u16() -> Self {
+            Self::leaf(LeafType::U16)
+        }
+        pub fn u32() -> Self {
+            Self::leaf(LeafType::U32)
+        }
+        pub fn u64() -> Self {
+            Self::leaf(LeafType::U64)
+        }
+        pub fn u128() -> Self {
+            Self::leaf(LeafType::U128)
+        }
+        pub fn u256() -> Self {
+            Self::leaf(LeafType::U256)
+        }
+        pub fn address() -> Self {
+            Self::leaf(LeafType::Address)
+        }
+        pub fn signer() -> Self {
+            Self::leaf(LeafType::Signer)
+        }
+
+        /// Create a sub-layout rooted at a different position within
+        /// the same shared tables. This is an `Rc` bump — no data is copied.
+        pub(crate) fn reroot(&self, root: LayoutRef) -> Self {
+            MoveTypeLayout {
+                nodes: self.nodes.clone(),
+                strings: self.strings.clone(),
+                tags: self.tags.clone(),
+                root,
+            }
+        }
+
         /// Create a resolved view for navigating this layout.
         pub fn as_view(&self) -> MoveLayoutView<'_> {
             resolve_ref(&self.nodes, &self.strings, &self.tags, self.root)
+        }
+
+        /// If this is a struct, extract a sub-layout for the field at `index`.
+        /// The sub-layout shares the same backing tables (cheap `Rc` bump).
+        pub fn struct_field(&self, index: usize) -> Option<MoveTypeLayout> {
+            match self.as_view() {
+                MoveLayoutView::Struct { fields, .. } => {
+                    let (_, field_ref) = fields.raw_field(index)?;
+                    Some(self.reroot(field_ref))
+                }
+                _ => None,
+            }
+        }
+
+        /// If this is a vector, extract a sub-layout for the element type.
+        pub fn vector_element(&self) -> Option<MoveTypeLayout> {
+            match self.as_view() {
+                MoveLayoutView::Vector(vv) => Some(self.reroot(vv.raw_element())),
+                _ => None,
+            }
+        }
+
+        /// If this is an enum, extract a sub-layout for a variant's field.
+        pub fn enum_variant_field(
+            &self,
+            variant_tag: u16,
+            field_index: usize,
+        ) -> Option<MoveTypeLayout> {
+            match self.as_view() {
+                MoveLayoutView::Enum(ev) => {
+                    let (_, vfv) = ev.variant_by_tag(variant_tag)?;
+                    let fv = match vfv {
+                        VariantFieldView::Known(fv) => fv,
+                        VariantFieldView::Unknown => return None,
+                    };
+                    let (_, field_ref) = fv.raw_field(field_index)?;
+                    Some(self.reroot(field_ref))
+                }
+                _ => None,
+            }
         }
 
         /// Inflate back into a tree-based [`MoveTypeLayout`].
@@ -869,14 +959,12 @@ pub mod compressed_layouts {
         match r.resolve() {
             ResolvedRef::Leaf(leaf) => leaf_to_layout_view(leaf),
             ResolvedRef::Index(idx) => match &nodes[idx] {
-                MoveTypeNode::Vector(inner) => {
-                    MoveLayoutView::Vector(MoveVectorView {
-                        nodes,
-                        strings,
-                        tags,
-                        element: *inner,
-                    })
-                }
+                MoveTypeNode::Vector(inner) => MoveLayoutView::Vector(MoveVectorView {
+                    nodes,
+                    strings,
+                    tags,
+                    element: *inner,
+                }),
                 MoveTypeNode::Struct(s) => {
                     let type_ = &tags[s.type_ as usize];
                     MoveLayoutView::Struct {
@@ -1009,6 +1097,11 @@ pub mod compressed_layouts {
         pub fn element(&self) -> MoveLayoutView<'a> {
             resolve_ref(self.nodes, self.strings, self.tags, self.element)
         }
+
+        /// The raw element ref (for `reroot`).
+        pub(crate) fn raw_element(&self) -> LayoutRef {
+            self.element
+        }
     }
 
     /// A view over a list of named, typed fields (struct fields or enum variant fields).
@@ -1027,16 +1120,20 @@ pub mod compressed_layouts {
         }
 
         /// Access a field by index, returning `(name, layout_view)`.
-        pub fn field(
-            &self,
-            i: usize,
-        ) -> Option<(&'a Identifier, MoveLayoutView<'a>)> {
+        pub fn field(&self, i: usize) -> Option<(&'a Identifier, MoveLayoutView<'a>)> {
             self.fields.get(i).map(|(name_idx, layout_ref)| {
                 (
                     &self.strings[*name_idx as usize],
                     resolve_ref(self.nodes, self.strings, self.tags, *layout_ref),
                 )
             })
+        }
+
+        /// Access a field's raw ref by index (for `reroot`).
+        pub(crate) fn raw_field(&self, i: usize) -> Option<(&'a Identifier, LayoutRef)> {
+            self.fields
+                .get(i)
+                .map(|(name_idx, layout_ref)| (&self.strings[*name_idx as usize], *layout_ref))
         }
 
         /// Look up a field by name, returning its layout view.
@@ -1096,10 +1193,7 @@ pub mod compressed_layouts {
         }
 
         /// Access a variant by position index. Returns `None` if out of bounds.
-        pub fn variant(
-            &self,
-            i: usize,
-        ) -> Option<(&'a Identifier, u16, VariantFieldView<'a>)> {
+        pub fn variant(&self, i: usize) -> Option<(&'a Identifier, u16, VariantFieldView<'a>)> {
             self.variants.get(i).map(|(name_idx, tag, fields)| {
                 let name = &self.strings[*name_idx as usize];
                 let vfv = match fields {
@@ -1116,10 +1210,7 @@ pub mod compressed_layouts {
         }
 
         /// Find a variant by its tag value.
-        pub fn variant_by_tag(
-            &self,
-            tag: u16,
-        ) -> Option<(&'a Identifier, VariantFieldView<'a>)> {
+        pub fn variant_by_tag(&self, tag: u16) -> Option<(&'a Identifier, VariantFieldView<'a>)> {
             self.variants
                 .iter()
                 .find(|(_, t, _)| *t == tag)
@@ -1198,41 +1289,41 @@ pub mod compressed_layouts {
             idx as u16
         }
 
-        fn intern(&mut self, node: MoveTypeNode) -> LayoutRef {
+        fn intern(&mut self, node: MoveTypeNode) -> LayoutHandle {
             let (idx, _) = self.nodes.insert_full(node);
-            LayoutRef::index(idx)
+            LayoutHandle(LayoutRef::index(idx))
         }
 
-        pub fn bool(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::Bool)
+        pub fn bool(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::Bool))
         }
-        pub fn u8(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U8)
+        pub fn u8(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U8))
         }
-        pub fn u16(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U16)
+        pub fn u16(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U16))
         }
-        pub fn u32(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U32)
+        pub fn u32(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U32))
         }
-        pub fn u64(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U64)
+        pub fn u64(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U64))
         }
-        pub fn u128(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U128)
+        pub fn u128(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U128))
         }
-        pub fn u256(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::U256)
+        pub fn u256(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::U256))
         }
-        pub fn address(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::Address)
+        pub fn address(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::Address))
         }
-        pub fn signer(&mut self) -> LayoutRef {
-            LayoutRef::leaf(LeafType::Signer)
+        pub fn signer(&mut self) -> LayoutHandle {
+            LayoutHandle(LayoutRef::leaf(LeafType::Signer))
         }
 
-        pub fn vector(&mut self, element: LayoutRef) -> LayoutRef {
-            self.intern(MoveTypeNode::Vector(element))
+        pub fn vector(&mut self, element: LayoutHandle) -> LayoutHandle {
+            self.intern(MoveTypeNode::Vector(element.0))
         }
 
         /// Build a struct layout node.
@@ -1240,12 +1331,12 @@ pub mod compressed_layouts {
         pub fn struct_layout(
             &mut self,
             type_tag: &StructTag,
-            fields: &[(&Identifier, LayoutRef)],
-        ) -> LayoutRef {
+            fields: &[(&Identifier, LayoutHandle)],
+        ) -> LayoutHandle {
             let tag_idx = self.intern_tag(type_tag);
             let field_indices: AnnotatedFieldIndices = fields
                 .iter()
-                .map(|(name, r)| (self.intern_string(name), *r))
+                .map(|(name, h)| (self.intern_string(name), h.0))
                 .collect();
             self.intern(MoveTypeNode::Struct(MoveStructNode {
                 type_: tag_idx,
@@ -1259,8 +1350,8 @@ pub mod compressed_layouts {
         pub fn enum_layout(
             &mut self,
             type_tag: &StructTag,
-            variants: &[(&Identifier, u16, Option<&[(&Identifier, LayoutRef)]>)],
-        ) -> LayoutRef {
+            variants: &[(&Identifier, u16, Option<&[(&Identifier, LayoutHandle)]>)],
+        ) -> LayoutHandle {
             let tag_idx = self.intern_tag(type_tag);
             let variant_entries: Box<[AnnotatedVariantEntry]> = variants
                 .iter()
@@ -1269,7 +1360,7 @@ pub mod compressed_layouts {
                     let field_indices = fields.map(|fields| {
                         fields
                             .iter()
-                            .map(|(fn_name, r)| (self.intern_string(fn_name), *r))
+                            .map(|(fn_name, h)| (self.intern_string(fn_name), h.0))
                             .collect()
                     });
                     (vn_idx, *tag, field_indices)
@@ -1284,7 +1375,7 @@ pub mod compressed_layouts {
         /// Recursively intern a tree-based annotated layout.
         /// Tree-based enum layouts always have known variants, so all variants
         /// are wrapped in `Some`.
-        pub fn intern_tree(&mut self, layout: &TreeMoveTypeLayout) -> LayoutRef {
+        pub fn intern_tree(&mut self, layout: &TreeMoveTypeLayout) -> LayoutHandle {
             match layout {
                 TreeMoveTypeLayout::Bool => self.bool(),
                 TreeMoveTypeLayout::U8 => self.u8(),
@@ -1296,11 +1387,11 @@ pub mod compressed_layouts {
                 TreeMoveTypeLayout::Address => self.address(),
                 TreeMoveTypeLayout::Signer => self.signer(),
                 TreeMoveTypeLayout::Vector(inner) => {
-                    let inner_ref = self.intern_tree(inner);
-                    self.vector(inner_ref)
+                    let inner_h = self.intern_tree(inner);
+                    self.vector(inner_h)
                 }
                 TreeMoveTypeLayout::Struct(s) => {
-                    let fields: Vec<(&Identifier, LayoutRef)> = s
+                    let fields: Vec<(&Identifier, LayoutHandle)> = s
                         .fields
                         .iter()
                         .map(|f| (&f.name, self.intern_tree(&f.layout)))
@@ -1308,11 +1399,11 @@ pub mod compressed_layouts {
                     self.struct_layout(&s.type_, &fields)
                 }
                 TreeMoveTypeLayout::Enum(e) => {
-                    let variants: Vec<(&Identifier, u16, Vec<(&Identifier, LayoutRef)>)> = e
+                    let variants: Vec<(&Identifier, u16, Vec<(&Identifier, LayoutHandle)>)> = e
                         .variants
                         .iter()
                         .map(|((variant_name, tag), field_layouts)| {
-                            let fields: Vec<(&Identifier, LayoutRef)> = field_layouts
+                            let fields: Vec<(&Identifier, LayoutHandle)> = field_layouts
                                 .iter()
                                 .map(|f| (&f.name, self.intern_tree(&f.layout)))
                                 .collect();
@@ -1322,7 +1413,7 @@ pub mod compressed_layouts {
                     let variant_refs: Vec<(
                         &Identifier,
                         u16,
-                        Option<&[(&Identifier, LayoutRef)]>,
+                        Option<&[(&Identifier, LayoutHandle)]>,
                     )> = variants
                         .iter()
                         .map(|(vn, tag, fields)| (*vn, *tag, Some(fields.as_slice())))
@@ -1332,12 +1423,16 @@ pub mod compressed_layouts {
             }
         }
 
-        pub fn build(self, root: LayoutRef) -> MoveTypeLayout {
+        /// Finalize the builder into an immutable [`MoveTypeLayout`].
+        pub fn build(self, root: LayoutHandle) -> MoveTypeLayout {
+            let nodes: Vec<MoveTypeNode> = self.nodes.into_iter().collect();
+            let strings: Vec<Identifier> = self.strings.into_iter().collect();
+            let tags: Vec<StructTag> = self.tags.into_iter().collect();
             MoveTypeLayout {
-                nodes: self.nodes.into_iter().collect(),
-                strings: self.strings.into_iter().collect(),
-                tags: self.tags.into_iter().collect(),
-                root,
+                nodes: Rc::from(nodes),
+                strings: Rc::from(strings),
+                tags: Rc::from(tags),
+                root: root.0,
             }
         }
     }
@@ -1386,10 +1481,8 @@ pub mod compressed_layouts {
                     AccountAddress::deserialize(deserializer).map(AnnValue::Signer)
                 }
                 MoveLayoutView::Struct { type_, fields: fv } => {
-                    let fields = deserializer.deserialize_tuple(
-                        fv.field_count(),
-                        CompressedStructFieldVisitor(fv),
-                    )?;
+                    let fields = deserializer
+                        .deserialize_tuple(fv.field_count(), CompressedStructFieldVisitor(fv))?;
                     Ok(AnnValue::Struct(AnnStruct {
                         type_: type_.clone(),
                         fields,
