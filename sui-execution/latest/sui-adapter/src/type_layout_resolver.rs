@@ -4,7 +4,7 @@
 use crate::data_store::cached_package_store::CachedPackageStore;
 use crate::data_store::transaction_package_store::TransactionPackageStore;
 use crate::static_programmable_transactions::linkage::resolved_linkage::ExecutableLinkage;
-use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::language_storage::StructTag;
 use move_vm_runtime::runtime::MoveRuntime;
 use sui_types::TypeTag;
@@ -34,7 +34,7 @@ impl LayoutResolver for TypeLayoutResolver<'_, '_> {
     fn get_annotated_layout(
         &mut self,
         struct_tag: &StructTag,
-    ) -> Result<A::MoveDatatypeLayout, SuiError> {
+    ) -> Result<AC::MoveDatatypeLayout, SuiError> {
         let ids = struct_tag.all_addresses().into_iter().map(ObjectID::from);
         let null_resolver = NullSuiResolver(&self.state_view);
         let resolver =
@@ -50,24 +50,16 @@ impl LayoutResolver for TypeLayoutResolver<'_, '_> {
         };
 
         let type_tag = TypeTag::Struct(Box::new(struct_tag.clone()));
-        let compressed = vm.annotated_type_layout(&type_tag).map_err(|_| {
+        let layout = vm.annotated_type_layout(&type_tag).map_err(|_| {
             SuiError::from(SuiErrorKind::FailObjectLayout {
                 st: format!("{}", struct_tag),
             })
         })?;
-        let inflated = compressed.inflate().map_err(|_| {
+        AC::MoveDatatypeLayout::new(layout).ok_or_else(|| {
             SuiError::from(SuiErrorKind::FailObjectLayout {
                 st: format!("{}", struct_tag),
             })
-        })?;
-        match inflated {
-            A::MoveTypeLayout::Struct(s) => Ok(A::MoveDatatypeLayout::Struct(s)),
-            A::MoveTypeLayout::Enum(e) => Ok(A::MoveDatatypeLayout::Enum(e)),
-            _ => Err(SuiErrorKind::FailObjectLayout {
-                st: format!("{}", struct_tag),
-            }
-            .into()),
-        }
+        })
     }
 }
 

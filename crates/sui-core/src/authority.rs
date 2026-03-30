@@ -3235,6 +3235,10 @@ impl AuthorityState {
 
         let layout = resolver
             .get_annotated_layout(&move_object.type_().clone().into())?
+            .inflate()
+            .map_err(|e| SuiErrorKind::ObjectSerializationError {
+                error: e.to_string(),
+            })?
             .into_layout();
 
         let field =
@@ -3603,7 +3607,11 @@ impl AuthorityState {
                 self.load_epoch_store_one_call_per_task()
                     .executor()
                     .type_layout_resolver(Box::new(self.get_backing_package_store().as_ref()))
-                    .get_annotated_layout(&move_obj.type_().clone().into())?,
+                    .get_annotated_layout(&move_obj.type_().clone().into())?
+                    .inflate()
+                    .map_err(|e| SuiError::from(SuiErrorKind::ObjectSerializationError {
+                        error: e.to_string(),
+                    }))?,
             )?)
         } else {
             None
@@ -4758,7 +4766,11 @@ impl AuthorityState {
                         .executor()
                         // TODO(cache) - must read through cache
                         .type_layout_resolver(Box::new(self.get_backing_package_store().as_ref()))
-                        .get_annotated_layout(&object.type_().clone().into())?,
+                        .get_annotated_layout(&object.type_().clone().into())?
+                        .inflate()
+                        .map_err(|e| SuiError::from(SuiErrorKind::ObjectSerializationError {
+                            error: e.to_string(),
+                        }))?,
                 )
             })
             .transpose()?;
@@ -5299,12 +5311,18 @@ impl AuthorityState {
             .type_layout_resolver(Box::new(backing_store));
         let mut events = vec![];
         for (e, tx_digest, event_seq, timestamp) in stored_events.into_iter() {
+            let layout = layout_resolver
+                .get_annotated_layout(&e.type_)?
+                .inflate()
+                .map_err(|err| SuiError::from(SuiErrorKind::ObjectSerializationError {
+                    error: err.to_string(),
+                }))?;
             events.push(SuiEvent::try_from(
                 e.clone(),
                 tx_digest,
                 event_seq as u64,
                 Some(timestamp),
-                layout_resolver.get_annotated_layout(&e.type_)?,
+                layout,
             )?)
         }
         Ok(events)

@@ -37,7 +37,7 @@ use sui_types::effects::{
     AccumulatorOperation, AccumulatorValue, TransactionEffects, TransactionEffectsAPI,
     TransactionEvents,
 };
-use sui_types::error::{ExecutionError, SuiError, SuiResult};
+use sui_types::error::{ExecutionError, SuiError, SuiErrorKind, SuiResult};
 use sui_types::execution_status::{ExecutionFailure, ExecutionStatus};
 use sui_types::gas::GasCostSummary;
 use sui_types::layout_resolver::{LayoutResolver, get_layout_from_struct_tag};
@@ -1235,7 +1235,9 @@ impl SuiTransactionBlockEvents {
                 .into_iter()
                 .enumerate()
                 .map(|(seq, event)| {
-                    let layout = resolver.get_annotated_layout(&event.type_)?;
+                    let layout = resolver.get_annotated_layout(&event.type_)?.inflate().map_err(|e| {
+                        SuiError::from(SuiErrorKind::ObjectSerializationError { error: e.to_string() })
+                    })?;
                     SuiEvent::try_from(event, tx_digest, seq as u64, timestamp_ms, layout)
                 })
                 .collect::<Result<_, _>>()?,
@@ -1255,7 +1257,9 @@ impl SuiTransactionBlockEvents {
                 .into_iter()
                 .enumerate()
                 .map(|(seq, event)| {
-                    let layout = get_layout_from_struct_tag(event.type_.clone(), resolver)?;
+                    let layout = get_layout_from_struct_tag(event.type_.clone(), resolver)?.inflate().map_err(|e| {
+                        SuiError::from(SuiErrorKind::ObjectSerializationError { error: e.to_string() })
+                    })?;
                     SuiEvent::try_from(event, tx_digest, seq as u64, timestamp_ms, layout)
                 })
                 .collect::<Result<_, _>>()?,

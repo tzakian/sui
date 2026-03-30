@@ -983,6 +983,53 @@ pub mod compressed_layouts {
         }
     }
 
+    /// A compressed layout that is known to be a struct or enum (not a primitive
+    /// or vector). This mirrors the tree-based [`super::MoveDatatypeLayout`].
+    #[derive(Debug, Clone)]
+    pub struct MoveDatatypeLayout(MoveTypeLayout);
+
+    impl MoveDatatypeLayout {
+        /// Wrap a `MoveTypeLayout` that is known to be a struct or enum.
+        /// Returns `None` if the layout is a primitive or vector.
+        pub fn new(layout: MoveTypeLayout) -> Option<Self> {
+            match layout.as_view() {
+                MoveLayoutView::Struct { .. } | MoveLayoutView::Enum(_) => {
+                    Some(MoveDatatypeLayout(layout))
+                }
+                _ => None,
+            }
+        }
+
+        /// Convert into the underlying `MoveTypeLayout`.
+        pub fn into_layout(self) -> MoveTypeLayout {
+            self.0
+        }
+
+        /// Borrow the underlying `MoveTypeLayout`.
+        pub fn as_layout(&self) -> &MoveTypeLayout {
+            &self.0
+        }
+
+        /// Create a view for navigating this layout.
+        pub fn as_view(&self) -> MoveLayoutView<'_> {
+            self.0.as_view()
+        }
+
+        /// Inflate back into a tree-based [`super::MoveDatatypeLayout`].
+        pub fn inflate(&self) -> AResult<super::MoveDatatypeLayout> {
+            let tree = self.0.inflate()?;
+            match tree {
+                TreeMoveTypeLayout::Struct(s) => {
+                    Ok(super::MoveDatatypeLayout::Struct(s))
+                }
+                TreeMoveTypeLayout::Enum(e) => {
+                    Ok(super::MoveDatatypeLayout::Enum(e))
+                }
+                _ => anyhow::bail!("MoveDatatypeLayout contained non-datatype layout"),
+            }
+        }
+    }
+
     // =============================================================================
     // View — the primary public API for navigating compressed layouts
     // =============================================================================
