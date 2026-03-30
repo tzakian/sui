@@ -148,6 +148,25 @@ impl MoveStructLayout {
     pub fn is_type(&self, type_: &StructTag) -> bool {
         self.type_ == *type_
     }
+
+    pub fn type_tag(&self) -> &StructTag {
+        &self.type_
+    }
+
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
+    pub fn field(&self, i: usize) -> Option<(&Identifier, &MoveTypeLayout)> {
+        self.fields.get(i).map(|f| (&f.name, &f.layout))
+    }
+
+    pub fn field_by_name(&self, name: &str) -> Option<&MoveTypeLayout> {
+        self.fields
+            .iter()
+            .find(|f| f.name.as_str() == name)
+            .map(|f| &f.layout)
+    }
 }
 
 impl MoveEnumLayout {
@@ -155,9 +174,31 @@ impl MoveEnumLayout {
     pub fn is_type(&self, type_: &StructTag) -> bool {
         self.type_ == *type_
     }
+
+    pub fn type_tag(&self) -> &StructTag {
+        &self.type_
+    }
+
+    pub fn variant_count(&self) -> usize {
+        self.variants.len()
+    }
+
+    pub fn variant_by_tag(&self, tag: u16) -> Option<(&Identifier, &[MoveFieldLayout])> {
+        self.variants
+            .iter()
+            .find(|((_, t), _)| *t == tag)
+            .map(|((name, _), fields)| (name, fields.as_slice()))
+    }
 }
 
 impl MoveTypeLayout {
+    /// Returns a reference to self. Establishes the `as_view()` call pattern
+    /// that will later return a compressed `MoveLayoutView` when the type
+    /// is swapped to compressed layouts.
+    pub fn as_view(&self) -> &Self {
+        self
+    }
+
     /// Returns `true` if and only if the layout is for `type_`.
     pub fn is_type(&self, type_: &TypeTag) -> bool {
         use MoveTypeLayout as L;

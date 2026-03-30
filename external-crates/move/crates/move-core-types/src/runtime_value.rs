@@ -327,6 +327,10 @@ impl MoveStructLayout {
         &self.0
     }
 
+    pub fn field_count(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn into_fields(self) -> Vec<MoveTypeLayout> {
         *self.0
     }
@@ -548,6 +552,21 @@ impl serde::Serialize for MoveFields<'_> {
             t.serialize_element(v)?;
         }
         t.end()
+    }
+}
+
+impl MoveTypeLayout {
+    /// Returns a reference to self. Establishes the `as_view()` call pattern
+    /// that will later return a compressed `MoveLayoutView` when the type
+    /// is swapped to compressed layouts.
+    pub fn as_view(&self) -> &Self {
+        self
+    }
+}
+
+impl MoveEnumLayout {
+    pub fn variant_count(&self) -> usize {
+        self.0.len()
     }
 }
 
