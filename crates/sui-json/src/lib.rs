@@ -220,7 +220,7 @@ impl SuiJsonValue {
                              with one field of address or u8 vector type"
                 ),
             },
-            MoveTypeLayout::Struct(struct_layout) if struct_layout.type_ == ID::type_() => {
+            MoveTypeLayout::Struct(struct_layout) if *struct_layout.type_tag() == ID::type_() => {
                 Ok(R::MoveValue::Struct(R::MoveStruct(vec![
                     Self::to_move_value(val, &inner_vec[0].layout.clone())?,
                 ])))
@@ -275,18 +275,18 @@ impl SuiJsonValue {
             }
             // For ascii and utf8 strings
             (JsonValue::String(s), MoveTypeLayout::Struct(struct_layout))
-                if is_move_string_type(&struct_layout.type_) =>
+                if is_move_string_type(struct_layout.type_tag()) =>
             {
                 R::MoveValue::Vector(s.as_bytes().iter().copied().map(R::MoveValue::U8).collect())
             }
             // For ID
             (JsonValue::String(s), MoveTypeLayout::Struct(struct_layout))
-                if struct_layout.type_ == ID::type_() =>
+                if *struct_layout.type_tag() == ID::type_() =>
             {
-                if struct_layout.fields.len() != 1 {
+                if struct_layout.field_count() != 1 {
                     bail!(
                         "Cannot convert string arg {s} to {} which is expected to be a struct with one field",
-                        struct_layout.type_
+                        struct_layout.type_tag()
                     );
                 };
                 let addr = SuiAddress::from_str(s)?;
@@ -303,7 +303,7 @@ impl SuiJsonValue {
                 R::MoveValue::Struct(R::MoveStruct(field_values))
             }
             // Unnest fields
-            (value, MoveTypeLayout::Struct(struct_layout)) if struct_layout.fields.len() == 1 => {
+            (value, MoveTypeLayout::Struct(struct_layout)) if struct_layout.field_count() == 1 => {
                 Self::to_move_value(value, &struct_layout.fields[0].layout)?
             }
             (JsonValue::String(s), MoveTypeLayout::Vector(t)) => {

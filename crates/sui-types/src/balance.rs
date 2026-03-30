@@ -122,7 +122,7 @@ impl Balance {
 
     /// Check if a struct layout represents a `Balance<T>` type with the expected field structure.
     pub fn is_balance_layout(struct_layout: &MoveStructLayout) -> bool {
-        let ty = &struct_layout.type_;
+        let ty = struct_layout.type_tag();
 
         if !Self::is_balance(ty) {
             return false;
@@ -132,7 +132,7 @@ impl Balance {
             return false;
         }
 
-        if struct_layout.fields.len() != 1 {
+        if struct_layout.field_count() != 1 {
             return false;
         }
 

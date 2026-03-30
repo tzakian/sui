@@ -58,7 +58,7 @@ where
 
 /// Check if a struct layout represents a Move Option type.
 fn is_option(struct_layout: &move_core_types::annotated_value::MoveStructLayout) -> bool {
-    let ty = &struct_layout.type_;
+    let ty = struct_layout.type_tag();
 
     if (&ty.address, ty.module.as_ref(), ty.name.as_ref()) != RESOLVED_STD_OPTION {
         return false;
@@ -72,7 +72,7 @@ fn is_option(struct_layout: &move_core_types::annotated_value::MoveStructLayout)
         return false;
     };
 
-    if struct_layout.fields.len() != 1 {
+    if struct_layout.field_count() != 1 {
         return false;
     }
 
