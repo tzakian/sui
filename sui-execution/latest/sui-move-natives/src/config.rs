@@ -8,7 +8,7 @@ use crate::{
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{
     account_address::AccountAddress, gas_algebra::InternalGas, language_storage::StructTag,
-    runtime_value as R, vm_status::StatusCode,
+    runtime_value::compressed_layouts as RC, vm_status::StatusCode,
 };
 use move_vm_runtime::execution::values::{Struct, Vector};
 use move_vm_runtime::native_charge_gas_early_exit;
@@ -114,7 +114,7 @@ pub fn read_setting_impl(
 fn consistent_value_before_current_epoch(
     object_runtime: &mut ObjectRuntime,
     field_setting_tag: StructTag,
-    field_setting_layout: &R::MoveTypeLayout,
+    field_setting_layout: &RC::MoveTypeLayout,
     _setting_value_ty: &Type,
     setting_data_value_ty: &Type,
     value_ty: &Type,

@@ -50,11 +50,11 @@ use crypto::nitro_attestation::{self, NitroAttestationCostParams};
 use crypto::vdf::{self, VDFCostParams};
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{
-    annotated_value as A,
+    annotated_value::compressed_layouts as AC,
     gas_algebra::{AbstractMemorySize, InternalGas},
     identifier::Identifier,
     language_storage::{StructTag, TypeTag},
-    runtime_value as R,
+    runtime_value::compressed_layouts as RC,
     vm_status::StatusCode,
 };
 use move_vm_runtime::natives::{
@@ -1350,7 +1350,7 @@ pub fn get_nth_struct_field(v: Value, n: usize) -> Result<Value, PartialVMError>
 pub(crate) fn get_tag_and_layouts(
     context: &NativeContext,
     ty: &Type,
-) -> PartialVMResult<Option<(StructTag, R::MoveTypeLayout, A::MoveTypeLayout)>> {
+) -> PartialVMResult<Option<(StructTag, RC::MoveTypeLayout, AC::MoveTypeLayout)>> {
     let tag = match context.type_to_type_tag(ty)? {
         TypeTag::Struct(s) => s,
         _ => {

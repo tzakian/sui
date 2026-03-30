@@ -28,8 +28,9 @@ pub use move_binary_format::errors::PartialVMError;
 use move_binary_format::{errors::PartialVMResult, file_format::AbilitySet, partial_vm_error};
 pub use move_core_types::vm_status::StatusCode;
 use move_core_types::{
-    account_address::AccountAddress, annotated_value as A, gas_algebra::InternalGas,
-    identifier::Identifier, language_storage::TypeTag, runtime_value as R, vm_status::StatusType,
+    account_address::AccountAddress, annotated_value::compressed_layouts as AC,
+    gas_algebra::InternalGas, identifier::Identifier, language_storage::TypeTag,
+    runtime_value::compressed_layouts as RC, vm_status::StatusType,
 };
 use move_vm_config::runtime::VMRuntimeLimitsConfig;
 use smallvec::{SmallVec, smallvec};
@@ -252,15 +253,15 @@ impl<'b> NativeContext<'_, 'b, '_> {
         self.vtables.type_to_runtime_type_tag(ty)
     }
 
-    pub fn type_tag_to_type_layout(&self, ty: &TypeTag) -> Option<R::MoveTypeLayout> {
+    pub fn type_tag_to_type_layout(&self, ty: &TypeTag) -> Option<RC::MoveTypeLayout> {
         self.vtables.get_type_layout(ty).ok()
     }
 
-    pub fn type_tag_to_annotated_type_layout(&self, ty: &TypeTag) -> Option<A::MoveTypeLayout> {
+    pub fn type_tag_to_annotated_type_layout(&self, ty: &TypeTag) -> Option<AC::MoveTypeLayout> {
         self.vtables.get_fully_annotated_type_layout(ty).ok()
     }
 
-    pub fn type_to_type_layout(&self, ty: &Type) -> PartialVMResult<Option<R::MoveTypeLayout>> {
+    pub fn type_to_type_layout(&self, ty: &Type) -> PartialVMResult<Option<RC::MoveTypeLayout>> {
         match self.vtables.type_to_type_layout(ty) {
             Ok(ty_layout) => Ok(Some(ty_layout)),
             Err(e) if e.major_status().status_type() == StatusType::InvariantViolation => Err(e),
@@ -275,7 +276,7 @@ impl<'b> NativeContext<'_, 'b, '_> {
     pub fn type_to_fully_annotated_layout(
         &self,
         ty: &Type,
-    ) -> PartialVMResult<Option<A::MoveTypeLayout>> {
+    ) -> PartialVMResult<Option<AC::MoveTypeLayout>> {
         match self.vtables.type_to_fully_annotated_layout(ty) {
             Ok(ty_layout) => Ok(Some(ty_layout)),
             Err(e) if e.major_status().status_type() == StatusType::InvariantViolation => Err(e),

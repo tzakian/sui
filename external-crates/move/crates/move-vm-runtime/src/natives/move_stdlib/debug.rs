@@ -234,7 +234,16 @@ mod testing {
         context: &NativeContext,
         ty: &Type,
     ) -> PartialVMResult<A::MoveDatatypeLayout> {
-        let annotated_type_layout = context.type_to_fully_annotated_layout(ty)?.unwrap();
+        let annotated_type_layout = context
+            .type_to_fully_annotated_layout(ty)?
+            .unwrap()
+            .inflate()
+            .map_err(|_| {
+                partial_vm_error!(
+                    INTERNAL_TYPE_ERROR,
+                    "Failed to inflate compressed annotated layout"
+                )
+            })?;
         match annotated_type_layout {
             A::MoveTypeLayout::Struct(annotated_struct_layout) => {
                 Ok(A::MoveDatatypeLayout::Struct(annotated_struct_layout))
@@ -325,14 +334,22 @@ mod testing {
         single_line: bool,
         include_int_types: bool,
     ) -> PartialVMResult<()> {
-        // get type layout in VM format
-        let ty_layout = context.type_to_type_layout(&ty)?.unwrap();
+        let inflate_err =
+            |_| partial_vm_error!(INTERNAL_TYPE_ERROR, "Failed to inflate compressed layout");
+
+        // Get compressed layout and inflate for pattern matching
+        let ty_layout_compressed = context.type_to_type_layout(&ty)?.unwrap();
+        let ty_layout = ty_layout_compressed.inflate().map_err(inflate_err)?;
 
         match &ty_layout {
             R::MoveTypeLayout::Vector(_) => {
                 // get the inner type T of a vector<T>
                 let inner_ty = get_vector_inner_type(&ty)?;
-                let inner_tyl = context.type_to_type_layout(inner_ty)?.unwrap();
+                let inner_tyl = context
+                    .type_to_type_layout(inner_ty)?
+                    .unwrap()
+                    .inflate()
+                    .map_err(inflate_err)?;
 
                 match inner_tyl {
                     // We cannot simply convert a `Value` (of type vector) to a `MoveValue` because
@@ -381,8 +398,19 @@ mod testing {
                     // If the inner type T of this vector<T> is a primitive bool/unsigned integer/address type, we convert the
                     // vector<T> to a MoveValue and print it.
                     _ => {
-                        let ann_ty_layout = context.type_to_fully_annotated_layout(&ty)?.unwrap();
-                        let mv = val.as_move_value(&ty_layout)?.decorate(&ann_ty_layout);
+                        let ann_ty_layout = context
+                            .type_to_fully_annotated_layout(&ty)?
+                            .unwrap()
+                            .inflate()
+                            .map_err(|_| {
+                                partial_vm_error!(
+                                    INTERNAL_TYPE_ERROR,
+                                    "Failed to inflate compressed annotated layout"
+                                )
+                            })?;
+                        let mv = val
+                            .as_move_value(ty_layout_compressed.as_view())?
+                            .decorate(&ann_ty_layout);
                         print_move_value(
                             out,
                             mv,
@@ -397,7 +425,7 @@ mod testing {
             }
             // For a struct, we convert it to a MoveValue annotated with its field names and types and print it
             R::MoveTypeLayout::Struct(_) => {
-                let move_struct = match val.as_move_value(&ty_layout)? {
+                let move_struct = match val.as_move_value(ty_layout_compressed.as_view())? {
                     R::MoveValue::Struct(s) => s,
                     _ => {
                         return Err(partial_vm_error!(
@@ -428,7 +456,7 @@ mod testing {
                 )?;
             }
             R::MoveTypeLayout::Enum(_) => {
-                let move_struct = match val.as_move_value(&ty_layout)? {
+                let move_struct = match val.as_move_value(ty_layout_compressed.as_view())? {
                     R::MoveValue::Variant(v) => v,
                     _ => {
                         return Err(partial_vm_error!(
@@ -460,10 +488,20 @@ mod testing {
             }
             // For non-structs, non-enums, and non-vectors, convert them to a MoveValue and print them
             _ => {
-                let ann_ty_layout = context.type_to_fully_annotated_layout(&ty)?.unwrap();
+                let ann_ty_layout = context
+                    .type_to_fully_annotated_layout(&ty)?
+                    .unwrap()
+                    .inflate()
+                    .map_err(|_| {
+                        partial_vm_error!(
+                            INTERNAL_TYPE_ERROR,
+                            "Failed to inflate compressed annotated layout"
+                        )
+                    })?;
                 print_move_value(
                     out,
-                    val.as_move_value(&ty_layout)?.decorate(&ann_ty_layout),
+                    val.as_move_value(ty_layout_compressed.as_view())?
+                        .decorate(&ann_ty_layout),
                     move_std_addr,
                     depth,
                     canonicalize,

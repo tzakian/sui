@@ -84,7 +84,9 @@ pub fn is_one_time_witness(
             * u64::from(type_tag.abstract_size_for_gas_metering()).into()
     );
 
-    let type_layout = context.type_to_type_layout(&ty)?;
+    let type_layout = context
+        .type_to_type_layout(&ty)?
+        .and_then(|l| l.inflate().ok());
 
     let cost = context.gas_used();
     let Some(MoveTypeLayout::Struct(struct_layout)) = type_layout else {

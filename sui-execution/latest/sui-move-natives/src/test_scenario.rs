@@ -1014,9 +1014,10 @@ fn find_all_wrapped_objects<'a, 'i>(
         };
 
         let blob = value.borrow().typed_serialize(&layout).unwrap();
+        let inflated_annotated_layout = annotated_layout.inflate().unwrap();
         MoveValue::visit_deserialize(
             &blob,
-            &annotated_layout,
+            &inflated_annotated_layout,
             &mut Traversal {
                 state: LookingFor::Wrapped,
                 ids,
