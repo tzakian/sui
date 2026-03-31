@@ -3778,13 +3778,13 @@ impl Value {
                 }))
             }
 
-            (V::Struct { type_, fields: fv }, Value::Struct(values)) => {
+            (V::Struct(sv), Value::Struct(values)) => {
                 let mut fields = vec![];
-                for (v, (field_name, field_view)) in values.iter().zip(fv.fields()) {
+                for (v, (field_name, field_view)) in values.iter().zip(sv.fields()) {
                     let field_val = v.borrow().as_annotated_move_value(field_view)?;
                     fields.push((field_name.clone(), field_val));
                 }
-                Some(AnnValue::Struct(AnnStruct::new(type_.clone(), fields)))
+                Some(AnnValue::Struct(AnnStruct::new(sv.type_().clone(), fields)))
             }
 
             (V::Vector(vv), Value::Vec(vec)) => {

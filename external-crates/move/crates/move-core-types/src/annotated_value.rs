@@ -941,8 +941,8 @@ pub mod compressed_layouts {
         /// The sub-layout shares the same backing tables (cheap `Rc` bump).
         pub fn struct_field(&self, index: usize) -> Option<MoveTypeLayout> {
             match self.as_view() {
-                MoveLayoutView::Struct { fields, .. } => {
-                    let (_, field_ref) = fields.raw_field(index)?;
+                MoveLayoutView::Struct(sv) => {
+                    let (_, field_ref) = sv.field_view().raw_field(index)?;
                     Some(self.reroot(field_ref))
                 }
                 _ => None,
@@ -993,7 +993,7 @@ pub mod compressed_layouts {
         /// Returns `None` if the layout is a primitive or vector.
         pub fn new(layout: MoveTypeLayout) -> Option<Self> {
             match layout.as_view() {
-                MoveLayoutView::Struct { .. } | MoveLayoutView::Enum(_) => {
+                MoveLayoutView::Struct(_) | MoveLayoutView::Enum(_) => {
                     Some(MoveDatatypeLayout(layout))
                 }
                 _ => None,
@@ -1054,16 +1054,13 @@ pub mod compressed_layouts {
                     element: *inner,
                 }),
                 MoveTypeNode::Struct(s) => {
-                    let type_ = &tags[s.type_ as usize];
-                    MoveLayoutView::Struct {
-                        type_,
-                        fields: MoveFieldView {
-                            nodes,
-                            strings,
-                            tags,
-                            fields: &s.fields,
-                        },
-                    }
+                    MoveLayoutView::Struct(MoveStructView {
+                        nodes,
+                        strings,
+                        tags,
+                        type_: &tags[s.type_ as usize],
+                        fields: &s.fields,
+                    })
                 }
                 MoveTypeNode::Enum(e) => {
                     let type_ = &tags[e.type_ as usize];
@@ -1108,10 +1105,7 @@ pub mod compressed_layouts {
         Address,
         Signer,
         Vector(MoveVectorView<'a>),
-        Struct {
-            type_: &'a StructTag,
-            fields: MoveFieldView<'a>,
-        },
+        Struct(MoveStructView<'a>),
         Enum(MoveEnumView<'a>),
     }
 
@@ -1134,13 +1128,13 @@ pub mod compressed_layouts {
                 MoveLayoutView::Vector(vv) => {
                     TreeMoveTypeLayout::Vector(Box::new(vv.element().inflate()?))
                 }
-                MoveLayoutView::Struct { type_, fields: fv } => {
-                    let fields = fv
+                MoveLayoutView::Struct(sv) => {
+                    let fields = sv
                         .fields()
                         .map(|(name, fv)| Ok(MoveFieldLayout::new(name.clone(), fv.inflate()?)))
                         .collect::<AResult<_>>()?;
                     TreeMoveTypeLayout::Struct(Box::new(MoveStructLayout {
-                        type_: (*type_).clone(),
+                        type_: sv.type_().clone(),
                         fields,
                     }))
                 }
@@ -1189,6 +1183,63 @@ pub mod compressed_layouts {
         /// The raw element ref (for `reroot`).
         pub(crate) fn raw_element(&self) -> LayoutRef {
             self.element
+        }
+    }
+
+    /// A view over an annotated struct layout with type tag and field access.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MoveStructView<'a> {
+        nodes: &'a [MoveTypeNode],
+        strings: &'a [Identifier],
+        tags: &'a [StructTag],
+        type_: &'a StructTag,
+        fields: &'a [(StringIdx, LayoutRef)],
+    }
+
+    impl<'a> MoveStructView<'a> {
+        /// The struct's type tag.
+        pub fn type_(&self) -> &'a StructTag {
+            self.type_
+        }
+
+        /// A field view for iterating/accessing the struct's fields.
+        pub fn field_view(&self) -> MoveFieldView<'a> {
+            MoveFieldView {
+                nodes: self.nodes,
+                strings: self.strings,
+                tags: self.tags,
+                fields: self.fields,
+            }
+        }
+
+        /// Number of fields.
+        pub fn field_count(&self) -> usize {
+            self.fields.len()
+        }
+
+        /// Access a field by index, returning `(name, layout_view)`.
+        pub fn field(&self, i: usize) -> Option<(&'a Identifier, MoveLayoutView<'a>)> {
+            self.fields.get(i).map(|(name_idx, layout_ref)| {
+                (
+                    &self.strings[*name_idx as usize],
+                    resolve_ref(self.nodes, self.strings, self.tags, *layout_ref),
+                )
+            })
+        }
+
+        /// Iterate over all fields as `(name, layout_view)` pairs.
+        pub fn fields(
+            &self,
+        ) -> impl ExactSizeIterator<Item = (&'a Identifier, MoveLayoutView<'a>)> + 'a {
+            let nodes = self.nodes;
+            let strings = self.strings;
+            let tags = self.tags;
+            self.fields.iter().map(move |(name_idx, layout_ref)| {
+                (
+                    &strings[*name_idx as usize],
+                    resolve_ref(nodes, strings, tags, *layout_ref),
+                )
+            })
         }
     }
 
@@ -1568,11 +1619,12 @@ pub mod compressed_layouts {
                 MoveLayoutView::Signer => {
                     AccountAddress::deserialize(deserializer).map(AnnValue::Signer)
                 }
-                MoveLayoutView::Struct { type_, fields: fv } => {
+                MoveLayoutView::Struct(sv) => {
+                    let fv = sv.field_view();
                     let fields = deserializer
                         .deserialize_tuple(fv.field_count(), CompressedStructFieldVisitor(fv))?;
                     Ok(AnnValue::Struct(AnnStruct {
-                        type_: type_.clone(),
+                        type_: sv.type_().clone(),
                         fields,
                     }))
                 }
