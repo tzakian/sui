@@ -184,6 +184,7 @@ fn load_dynamic_field(
     read_mask: &FieldMaskTree,
     message: &mut DynamicField,
 ) -> Result<(), anyhow::Error> {
+    use move_core_types::annotated_value::compressed_layouts as AC;
     use sui_types::dynamic_field::DynamicFieldType;
     use sui_types::dynamic_field::visitor as DFV;
 
@@ -227,7 +228,8 @@ fn load_dynamic_field(
         }
     };
 
-    let field = DFV::FieldVisitor::deserialize(move_object.contents(), &layout)?;
+    let compressed_layout = AC::MoveTypeLayout::from(&layout);
+    let field = DFV::FieldVisitor::deserialize(move_object.contents(), &compressed_layout)?;
 
     if read_mask.contains(DynamicField::KIND_FIELD) {
         let kind = match field.kind {

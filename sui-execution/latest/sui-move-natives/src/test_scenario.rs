@@ -11,6 +11,7 @@ use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{
     account_address::AccountAddress,
     annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout, MoveValue},
+    annotated_value::compressed_layouts as AC,
     annotated_visitor as AV,
     language_storage::StructTag,
     vm_status::StatusCode,
@@ -934,7 +935,7 @@ fn find_all_wrapped_objects<'a, 'i>(
     struct Traversal<'i, 'u> {
         state: LookingFor,
         ids: &'i mut BTreeSet<ObjectID>,
-        uid: &'u MoveStructLayout,
+        uid_type: &'u StructTag,
     }
 
     impl<'b, 'l> AV::Traversal<'b, 'l> for Traversal<'_, '_> {
@@ -953,7 +954,7 @@ fn find_all_wrapped_objects<'a, 'i>(
                         .next_field(&mut Traversal {
                             state: LookingFor::Uid,
                             ids: self.ids,
-                            uid: self.uid,
+                            uid_type: self.uid_type,
                         })?
                         .is_some()
                     {}
@@ -962,12 +963,12 @@ fn find_all_wrapped_objects<'a, 'i>(
                 // We are looking for UID fields. If we find one (which we confirm by checking its
                 // layout), switch to looking for addresses in its sub-structure.
                 LookingFor::Uid => {
-                    while let Some(MoveFieldLayout { name: _, layout }) = driver.peek_field() {
-                        if matches!(layout, MoveTypeLayout::Struct(s) if s.as_ref() == self.uid) {
+                    while let Some(field) = driver.peek_field() {
+                        if matches!(field.layout(), AC::MoveLayoutView::Struct(s) if s.type_() == self.uid_type) {
                             driver.next_field(&mut Traversal {
                                 state: LookingFor::Address,
                                 ids: self.ids,
-                                uid: self.uid,
+                                uid_type: self.uid_type,
                             })?;
                         } else {
                             driver.next_field(self)?;
@@ -996,7 +997,7 @@ fn find_all_wrapped_objects<'a, 'i>(
         }
     }
 
-    let uid = UID::layout();
+    let uid_type = UID::type_();
     for (_id, ty, value) in new_object_values {
         let type_tag = TypeTag::from(ty.clone());
         // NB: We can get the layout from the VM's cache since the types and modules
@@ -1014,14 +1015,13 @@ fn find_all_wrapped_objects<'a, 'i>(
         };
 
         let blob = value.borrow().typed_serialize(&layout).unwrap();
-        let inflated_annotated_layout = annotated_layout.inflate().unwrap();
         MoveValue::visit_deserialize(
             &blob,
-            &inflated_annotated_layout,
+            annotated_layout.as_view(),
             &mut Traversal {
                 state: LookingFor::Wrapped,
                 ids,
-                uid: &uid,
+                uid_type: &uid_type,
             },
         )
         .unwrap();

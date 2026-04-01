@@ -5,7 +5,7 @@ use better_any::{Tid, TidAble};
 use linked_hash_map::LinkedHashMap;
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{
-    account_address::AccountAddress, annotated_value as A, annotated_visitor as AV,
+    account_address::AccountAddress, annotated_value::{self as A, compressed_layouts as AC}, annotated_visitor as AV,
     language_storage::StructTag, runtime_value as R, vm_status::StatusCode,
 };
 use move_vm_types::{
@@ -640,7 +640,7 @@ pub fn get_all_uids(
             &mut self,
             driver: &mut AV::StructDriver<'_, 'b, 'l>,
         ) -> Result<(), Self::Error> {
-            if driver.struct_layout().type_ == UID::type_() {
+            if *driver.struct_layout().type_() == UID::type_() {
                 while driver.next_field(&mut UIDCollector(self.0))?.is_some() {}
             } else {
                 while driver.next_field(self)?.is_some() {}
@@ -661,9 +661,10 @@ pub fn get_all_uids(
         }
     }
 
+    let compressed = AC::MoveTypeLayout::from(fully_annotated_layout);
     A::MoveValue::visit_deserialize(
         bcs_bytes,
-        fully_annotated_layout,
+        compressed.as_view(),
         &mut UIDTraversal(&mut ids),
     )
     .map_err(|e| format!("Failed to deserialize. {e}"))?;

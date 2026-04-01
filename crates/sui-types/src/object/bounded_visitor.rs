@@ -4,7 +4,7 @@
 use anyhow::bail;
 use move_core_types::{
     account_address::AccountAddress,
-    annotated_value as A,
+    annotated_value::{self as A, compressed_layouts as AC},
     annotated_visitor::{self, StructDriver, ValueDriver, VecDriver, Visitor},
     language_storage::TypeTag,
     u256::U256,
@@ -83,9 +83,10 @@ impl BoundedVisitor {
         layout: &A::MoveTypeLayout,
     ) -> anyhow::Result<A::MoveValue> {
         let mut visitor = Self::default();
+        let compressed = AC::MoveTypeLayout::from(layout);
         Ok(A::MoveValue::visit_deserialize(
             bytes,
-            layout,
+            compressed.as_view(),
             &mut visitor,
         )?)
     }
@@ -98,8 +99,13 @@ impl BoundedVisitor {
         layout: &A::MoveStructLayout,
     ) -> anyhow::Result<A::MoveStruct> {
         let mut visitor = Self::default();
+        let tree = A::MoveTypeLayout::Struct(Box::new(layout.clone()));
+        let compressed = AC::MoveTypeLayout::from(&tree);
         let A::MoveValue::Struct(struct_) =
-            A::MoveStruct::visit_deserialize(bytes, layout, &mut visitor)?
+            A::MoveStruct::visit_deserialize(bytes, match compressed.as_view() {
+                AC::MoveLayoutView::Struct(sv) => sv,
+                _ => bail!("Expected struct layout"),
+            }, &mut visitor)?
         else {
             bail!("Expected to deserialize a struct");
         };
@@ -242,16 +248,16 @@ impl<'b, 'l> Visitor<'b, 'l> for BoundedVisitor {
         &mut self,
         driver: &mut StructDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
-        let tag = driver.struct_layout().type_.clone().into();
+        let tag: TypeTag = driver.struct_layout().type_().clone().into();
 
         self.debit_type_size(&tag)?;
-        for field in driver.struct_layout().fields.iter() {
-            self.debit(field.name.len())?;
+        for (name, _) in driver.struct_layout().field_view().fields() {
+            self.debit(name.len())?;
         }
 
         let mut fields = vec![];
         while let Some((field, elem)) = driver.next_field(self)? {
-            fields.push((field.name.clone(), elem));
+            fields.push((field.name().to_owned(), elem));
         }
 
         let TypeTag::Struct(type_) = tag else {
@@ -268,18 +274,18 @@ impl<'b, 'l> Visitor<'b, 'l> for BoundedVisitor {
         &mut self,
         driver: &mut annotated_visitor::VariantDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
-        let type_ = driver.enum_layout().type_.clone().into();
+        let type_: TypeTag = driver.enum_layout().type_().clone().into();
 
         self.debit_type_size(&type_)?;
         self.debit(driver.variant_name().len())?;
 
-        for field in driver.variant_layout() {
-            self.debit(field.name.len())?;
+        for (name, _) in driver.variant_layout().fields() {
+            self.debit(name.len())?;
         }
 
         let mut fields = vec![];
         while let Some((field, elem)) = driver.next_field(self)? {
-            fields.push((field.name.clone(), elem));
+            fields.push((field.name().to_owned(), elem));
         }
 
         let TypeTag::Struct(type_) = type_ else {
@@ -323,6 +329,7 @@ pub(crate) mod tests {
                 ("c", layout_("0x0::foo::Baz", vec![("d", T::U64)])),
             ],
         );
+        let type_layout = AC::MoveTypeLayout::from(&type_layout);
 
         let value = value_(
             "0x0::foo::Bar",
@@ -353,6 +360,7 @@ pub(crate) mod tests {
                 ("c", layout_("0x0::foo::Baz", vec![("d", T::U64)])),
             ],
         );
+        let type_layout = AC::MoveTypeLayout::from(&type_layout);
 
         let value = value_(
             "0x0::foo::Bar",
@@ -415,6 +423,7 @@ pub(crate) mod tests {
         }
 
         let bound = DEPTH * (8 + 32 + "foo".len() + "Bar".len() + "f".len());
+        let layout = AC::MoveTypeLayout::from(&layout);
         let bytes = serialize(value.clone());
 
         let mut visitor = BoundedVisitor::new(bound);
@@ -457,6 +466,7 @@ pub(crate) mod tests {
         let inner = WIDTH * ("fx".len() + 8 + 32 + "foo".len() + "Baz".len() + "f".len());
         let bound = outer + inner;
 
+        let layout = AC::MoveTypeLayout::from(&layout);
         let bytes = serialize(value.clone());
 
         let mut visitor = BoundedVisitor::new(bound);
@@ -483,6 +493,7 @@ pub(crate) mod tests {
         let value = value_(big_type.as_str(), vec![("f", V::U64(42))]);
 
         let bound = 8 + 32 + big_mod_.len() + big_name.len() + "f".len();
+        let layout = AC::MoveTypeLayout::from(&layout);
         let bytes = serialize(value.clone());
 
         let mut visitor = BoundedVisitor::new(bound);

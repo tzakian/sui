@@ -63,13 +63,16 @@ impl DynamicFieldProcessor {
             .await?;
         let object_id = object.id();
 
-        let field = DFV::FieldVisitor::deserialize(move_object.contents(), &layout)?;
+        let compressed_layout =
+            move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(&layout);
+        let field = DFV::FieldVisitor::deserialize(move_object.contents(), &compressed_layout)?;
 
         let type_ = field.kind;
         let name_type: TypeTag = field.name_layout.into();
         let bcs_name = field.name_bytes.to_owned();
 
-        let name_value = BoundedVisitor::deserialize_value(field.name_bytes, field.name_layout)
+        let name_layout = field.name_layout.inflate()?;
+        let name_value = BoundedVisitor::deserialize_value(field.name_bytes, &name_layout)
             .tap_err(|e| {
                 warn!("{e}");
             })?;

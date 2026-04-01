@@ -144,7 +144,7 @@ impl<'v> AV::Visitor<'v, 'v> for Extractor<'v, '_> {
         &mut self,
         driver: &mut AV::StructDriver<'_, 'v, 'v>,
     ) -> Result<Self::Value, Self::Error> {
-        let ty = &driver.struct_layout().type_;
+        let ty = driver.struct_layout().type_();
         if (&ty.address, ty.module.as_ref(), ty.name.as_ref()) == RESOLVED_STD_OPTION {
             return Ok(OptionVisitor(self).visit_struct(driver)?.flatten());
         }
@@ -172,13 +172,13 @@ impl<'v> AV::Visitor<'v, 'v> for Extractor<'v, '_> {
         // If the next accessor is an index, then try and treat this struct as a VecMap, and
         // perform a VecMap look-up.
         if let Accessor::Index(i) = accessor {
-            if !is_vec_map(&driver.struct_layout().type_) {
+            if !is_vec_map(driver.struct_layout().type_()) {
                 return Ok(None);
             }
 
             let key = bcs::to_bytes(i)?;
             let contents = driver.peek_field();
-            if contents.is_none_or(|l| l.name.as_str() != "contents") {
+            if contents.is_none_or(|l| l.name().as_str() != "contents") {
                 return Ok(None);
             }
 
@@ -199,7 +199,7 @@ impl<'v> AV::Visitor<'v, 'v> for Extractor<'v, '_> {
 
         self.path.pop();
         while let Some(field) = driver.peek_field() {
-            if field.name.as_str() == name.as_ref() {
+            if field.name().as_str() == name.as_ref() {
                 return Ok(driver.next_field(self)?.and_then(|(_, v)| v));
             } else {
                 driver.skip_field()?;
@@ -226,7 +226,7 @@ impl<'v> AV::Visitor<'v, 'v> for Extractor<'v, '_> {
         };
 
         while let Some(field) = driver.peek_field() {
-            if field.name.as_str() == name.as_ref() {
+            if field.name().as_str() == name.as_ref() {
                 return Ok(driver.next_field(self)?.and_then(|(_, v)| v));
             } else {
                 driver.skip_field()?;

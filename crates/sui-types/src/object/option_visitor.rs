@@ -4,8 +4,11 @@
 //! Shared OptionVisitor implementation for deserializing Move Option types.
 
 use move_core_types::{
-    account_address::AccountAddress, annotated_value::MoveTypeLayout, annotated_visitor as AV,
-    u256::U256, visitor_default,
+    account_address::AccountAddress,
+    annotated_value::compressed_layouts as AC,
+    annotated_visitor as AV,
+    u256::U256,
+    visitor_default,
 };
 
 use crate::base_types::RESOLVED_STD_OPTION;
@@ -56,9 +59,9 @@ where
     }
 }
 
-/// Check if a struct layout represents a Move Option type.
-fn is_option(struct_layout: &move_core_types::annotated_value::MoveStructLayout) -> bool {
-    let ty = struct_layout.type_tag();
+/// Check if a struct layout view represents a Move Option type.
+fn is_option(sv: AC::MoveStructView<'_>) -> bool {
+    let ty = sv.type_();
 
     if (&ty.address, ty.module.as_ref(), ty.name.as_ref()) != RESOLVED_STD_OPTION {
         return false;
@@ -72,21 +75,21 @@ fn is_option(struct_layout: &move_core_types::annotated_value::MoveStructLayout)
         return false;
     };
 
-    if struct_layout.field_count() != 1 {
+    if sv.field_count() != 1 {
         return false;
     }
 
-    let Some(field) = struct_layout.fields.first() else {
+    let Some((name, field_layout)) = sv.field(0) else {
         return false;
     };
 
-    if field.name.as_str() != "vec" {
+    if name.as_str() != "vec" {
         return false;
     }
 
-    match &field.layout {
-        MoveTypeLayout::Vector(elem) => {
-            if !elem.is_type(type_param) {
+    match field_layout {
+        AC::MoveLayoutView::Vector(vv) => {
+            if !vv.element().is_type(type_param) {
                 return false;
             }
         }

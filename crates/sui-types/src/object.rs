@@ -402,14 +402,12 @@ impl MoveObject {
             Ok(v.value as u64)
         } else {
             let layout = layout_resolver.get_annotated_layout(&self.type_().clone().into())?;
-            let tree_layout = layout.inflate().map_err(|e| SuiErrorKind::ObjectSerializationError {
-                error: e.to_string(),
-            })?;
 
             let mut traversal = BalanceTraversal::default();
+            let compressed = layout.into_layout();
             MoveValue::visit_deserialize(
                 &self.contents,
-                &tree_layout.into_layout(),
+                compressed.as_view(),
                 &mut traversal,
             )
                 .map_err(|e| SuiErrorKind::ObjectSerializationError {

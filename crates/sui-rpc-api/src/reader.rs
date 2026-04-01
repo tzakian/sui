@@ -243,7 +243,9 @@ impl sui_display::v2::Store for DisplayStore<'_> {
 
         Ok(Some(sui_display::v2::OwnedSlice {
             bytes: move_object.contents().to_vec(),
-            layout,
+            layout: move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(
+                &layout,
+            ),
         }))
     }
 }

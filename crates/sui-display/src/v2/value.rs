@@ -11,6 +11,7 @@ use chrono::DateTime;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value as A;
 use move_core_types::annotated_value::MoveTypeLayout;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::language_storage::StructTag;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::u256::U256;
@@ -105,14 +106,14 @@ pub enum Accessor<'s> {
 /// Bytes extracted from the serialized representation of a Move value, along with its layout.
 #[derive(Copy, Clone)]
 pub struct Slice<'s> {
-    pub(crate) layout: &'s MoveTypeLayout,
+    pub(crate) layout: AC::MoveLayoutView<'s>,
     pub(crate) bytes: &'s [u8],
 }
 
 /// An owned version of `Slice`.
 #[derive(Clone)]
 pub struct OwnedSlice {
-    pub layout: MoveTypeLayout,
+    pub layout: AC::MoveTypeLayout,
     pub bytes: Vec<u8>,
 }
 
@@ -276,7 +277,6 @@ impl Value<'_> {
     /// Attempt to coerce this value into a `u64` if that's possible. This works for any numeric
     /// value that can be represented within 64 bits.
     pub(crate) fn as_u64(&self) -> Option<u64> {
-        use MoveTypeLayout as L;
         use Value as V;
 
         match self {
@@ -292,15 +292,19 @@ impl Value<'_> {
             V::Slice(Slice {
                 layout,
                 bytes: data,
-            }) => match layout {
-                L::U8 => Some(bcs::from_bytes::<u8>(data).ok()?.into()),
-                L::U16 => Some(bcs::from_bytes::<u16>(data).ok()?.into()),
-                L::U32 => Some(bcs::from_bytes::<u32>(data).ok()?.into()),
-                L::U64 => bcs::from_bytes::<u64>(data).ok(),
-                L::U128 => bcs::from_bytes::<u128>(data).ok()?.try_into().ok(),
-                L::U256 => bcs::from_bytes::<U256>(data).ok()?.try_into().ok(),
-                L::Address | L::Bool | L::Enum(_) | L::Signer | L::Struct(_) | L::Vector(_) => None,
-            },
+            }) => {
+                use AC::MoveLayoutView as LV;
+                match layout {
+                    LV::U8 => Some(bcs::from_bytes::<u8>(data).ok()?.into()),
+                    LV::U16 => Some(bcs::from_bytes::<u16>(data).ok()?.into()),
+                    LV::U32 => Some(bcs::from_bytes::<u32>(data).ok()?.into()),
+                    LV::U64 => bcs::from_bytes::<u64>(data).ok(),
+                    LV::U128 => bcs::from_bytes::<u128>(data).ok()?.try_into().ok(),
+                    LV::U256 => bcs::from_bytes::<U256>(data).ok()?.try_into().ok(),
+                    LV::Address | LV::Bool | LV::Enum(_) | LV::Signer | LV::Struct(_)
+                    | LV::Vector(_) => None,
+                }
+            }
 
             // Everything else cannot be coerced to u64
             V::Address(_)
@@ -468,7 +472,7 @@ impl<'s> Accessor<'s> {
 impl OwnedSlice {
     pub(crate) fn as_slice(&self) -> Slice<'_> {
         Slice {
-            layout: &self.layout,
+            layout: self.layout.as_view(),
             bytes: &self.bytes,
         }
     }
@@ -499,23 +503,34 @@ impl Value<'_> {
     ///
     /// Returns `None` for compound literals (Struct, Enum, Vector) since we cannot reliably
     /// compute their layouts without access to the full type information.
-    fn layout(&self) -> Option<MoveTypeLayout> {
-        use MoveTypeLayout as L;
-
+    fn layout(&self) -> Option<AC::MoveTypeLayout> {
         match self {
-            Value::Slice(s) => Some(s.layout.clone()),
+            Value::Slice(_) => {
+                // Slice layouts are views that borrow from a compressed layout.
+                // We cannot reconstruct an owned layout from a view alone.
+                // Callers that need an OwnedSlice from a Slice should use the
+                // inflate-then-compress path or handle this case separately.
+                None
+            }
 
-            Value::Address(_) => Some(L::Address),
-            Value::Bool(_) => Some(L::Bool),
-            Value::U8(_) => Some(L::U8),
-            Value::U16(_) => Some(L::U16),
-            Value::U32(_) => Some(L::U32),
-            Value::U64(_) => Some(L::U64),
-            Value::U128(_) => Some(L::U128),
-            Value::U256(_) => Some(L::U256),
+            Value::Address(_) => Some(AC::MoveTypeLayout::address()),
+            Value::Bool(_) => Some(AC::MoveTypeLayout::bool()),
+            Value::U8(_) => Some(AC::MoveTypeLayout::u8()),
+            Value::U16(_) => Some(AC::MoveTypeLayout::u16()),
+            Value::U32(_) => Some(AC::MoveTypeLayout::u32()),
+            Value::U64(_) => Some(AC::MoveTypeLayout::u64()),
+            Value::U128(_) => Some(AC::MoveTypeLayout::u128()),
+            Value::U256(_) => Some(AC::MoveTypeLayout::u256()),
 
-            Value::Bytes(_) => Some(L::Vector(Box::new(L::U8))),
-            Value::String(_) => Some(L::Struct(Box::new(move_utf8_str_layout()))),
+            Value::Bytes(_) => {
+                let mut b = AC::MoveTypeLayoutBuilder::new();
+                let u8h = b.u8();
+                let vh = b.vector(u8h);
+                Some(b.build(vh))
+            }
+            Value::String(_) => Some(AC::MoveTypeLayout::from(&MoveTypeLayout::Struct(
+                Box::new(move_utf8_str_layout()),
+            ))),
 
             // Compound literals: cannot compute layout
             Value::Enum(_) | Value::Struct(_) | Value::Vector(_) => None,
@@ -779,7 +794,7 @@ impl<'s> TryFrom<Value<'s>> for Atom<'s> {
                     .into_iter()
                     .map(|e| match e {
                         V::U8(b) => Ok(b),
-                        V::Slice(Slice { layout, bytes }) if layout == &L::U8 => {
+                        V::Slice(Slice { layout, bytes }) if matches!(layout, AC::MoveLayoutView::U8) => {
                             Ok(bcs::from_bytes(bytes)?)
                         }
                         _ => Err(FormatError::TransformInvalid("unexpected vector")),
@@ -789,40 +804,49 @@ impl<'s> TryFrom<Value<'s>> for Atom<'s> {
                 A::Bytes(Cow::Owned(bytes?))
             }
 
-            V::Slice(Slice { layout, bytes }) => match layout {
-                L::Address => A::Address(bcs::from_bytes(bytes)?),
-                L::Bool => A::Bool(bcs::from_bytes(bytes)?),
-                L::U8 => A::U8(bcs::from_bytes(bytes)?),
-                L::U16 => A::U16(bcs::from_bytes(bytes)?),
-                L::U32 => A::U32(bcs::from_bytes(bytes)?),
-                L::U64 => A::U64(bcs::from_bytes(bytes)?),
-                L::U128 => A::U128(bcs::from_bytes(bytes)?),
-                L::U256 => A::U256(bcs::from_bytes(bytes)?),
+            V::Slice(Slice { layout, bytes }) => {
+                use AC::MoveLayoutView as LV;
+                match layout {
+                    LV::Address => A::Address(bcs::from_bytes(bytes)?),
+                    LV::Bool => A::Bool(bcs::from_bytes(bytes)?),
+                    LV::U8 => A::U8(bcs::from_bytes(bytes)?),
+                    LV::U16 => A::U16(bcs::from_bytes(bytes)?),
+                    LV::U32 => A::U32(bcs::from_bytes(bytes)?),
+                    LV::U64 => A::U64(bcs::from_bytes(bytes)?),
+                    LV::U128 => A::U128(bcs::from_bytes(bytes)?),
+                    LV::U256 => A::U256(bcs::from_bytes(bytes)?),
 
-                L::Vector(layout) if layout.as_ref() == &L::U8 => {
-                    A::Bytes(Cow::Borrowed(bcs::from_bytes(bytes)?))
+                    LV::Vector(vv) if matches!(vv.element(), LV::U8) => {
+                        A::Bytes(Cow::Borrowed(bcs::from_bytes(bytes)?))
+                    }
+
+                    LV::Struct(sv)
+                        if [
+                            move_ascii_str_layout().type_,
+                            move_utf8_str_layout().type_,
+                            url_layout().type_,
+                        ]
+                        .contains(sv.type_()) =>
+                    {
+                        A::Bytes(Cow::Borrowed(bcs::from_bytes(bytes)?))
+                    }
+
+                    LV::Struct(sv)
+                        if [UID::layout().type_, ID::layout().type_].contains(sv.type_()) =>
+                    {
+                        A::Address(bcs::from_bytes(bytes)?)
+                    }
+
+                    LV::Signer => return Err(FormatError::TransformInvalid("unexpected signer")),
+                    LV::Enum(_) => return Err(FormatError::TransformInvalid("unexpected enum")),
+                    LV::Struct(_) => {
+                        return Err(FormatError::TransformInvalid("unexpected struct"))
+                    }
+                    LV::Vector(_) => {
+                        return Err(FormatError::TransformInvalid("unexpected vector"))
+                    }
                 }
-
-                L::Struct(layout)
-                    if [
-                        move_ascii_str_layout(),
-                        move_utf8_str_layout(),
-                        url_layout(),
-                    ]
-                    .contains(layout.as_ref()) =>
-                {
-                    A::Bytes(Cow::Borrowed(bcs::from_bytes(bytes)?))
-                }
-
-                L::Struct(layout) if [UID::layout(), ID::layout()].contains(layout.as_ref()) => {
-                    A::Address(bcs::from_bytes(bytes)?)
-                }
-
-                L::Signer => return Err(FormatError::TransformInvalid("unexpected signer")),
-                L::Enum(_) => return Err(FormatError::TransformInvalid("unexpected enum")),
-                L::Struct(_) => return Err(FormatError::TransformInvalid("unexpected struct")),
-                L::Vector(_) => return Err(FormatError::TransformInvalid("unexpected vector")),
-            },
+            }
         })
     }
 }

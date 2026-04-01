@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use move_core_types::account_address::AccountAddress;
-use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::annotated_visitor as AV;
 use move_core_types::u256::U256;
 use move_core_types::visitor_default;
@@ -33,12 +33,12 @@ impl AV::Visitor<'_, '_> for AddressExtractor {
         &mut self,
         driver: &mut AV::StructDriver<'_, '_, '_>,
     ) -> Result<Self::Value, Self::Error> {
-        let id = ID::layout();
-        let uid = UID::layout();
-        let layout = driver.struct_layout();
+        let id_type = ID::type_();
+        let uid_type = UID::type_();
+        let ty = driver.struct_layout().type_();
 
         // Detect an inline `ID` or `UID`.
-        if layout == &id || layout == &uid {
+        if *ty == id_type || *ty == uid_type {
             return extract_address(driver).map(Some);
         }
 
@@ -47,15 +47,15 @@ impl AV::Visitor<'_, '_> for AddressExtractor {
             return Ok(None);
         };
 
-        if field.name.as_str() != "id" {
+        if field.name().as_str() != "id" {
             return Ok(None);
         }
 
-        let A::MoveTypeLayout::Struct(field) = &field.layout else {
+        let AC::MoveLayoutView::Struct(sv) = field.layout() else {
             return Ok(None);
         };
 
-        if field.as_ref() != &uid {
+        if *sv.type_() != uid_type {
             return Ok(None);
         }
 

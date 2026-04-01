@@ -10,6 +10,7 @@ use anyhow::bail;
 use move_core_types::annotated_extractor::Extractor;
 use move_core_types::annotated_value::MoveTypeLayout;
 use move_core_types::annotated_value::MoveValue;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use sui_json_rpc_types::SuiMoveValue;
 use sui_types::collection_types::Entry;
 use sui_types::collection_types::VecMap;
@@ -122,8 +123,9 @@ fn interpolate(
             Strand::Expr(path) => {
                 let mut visitor = BoundedVisitor::default();
                 let mut extractor = Extractor::new(&mut visitor, path);
+                let compressed = AC::MoveTypeLayout::from(layout);
                 let extracted: SuiMoveValue =
-                    MoveValue::visit_deserialize(bytes, layout, &mut extractor)
+                    MoveValue::visit_deserialize(bytes, compressed.as_view(), &mut extractor)
                         .with_context(|| format!("Failed to extract '{strand}'"))?
                         .with_context(|| format!("'{strand}' not found in object"))?
                         .into();

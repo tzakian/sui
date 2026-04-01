@@ -256,15 +256,14 @@ impl MoveValue {
     /// layout, unexpected bytes or trailing bytes), or a custom error expressed by the visitor.
     pub fn visit_deserialize<'b, 'l, V: Visitor<'b, 'l>>(
         blob: &'b [u8],
-        ty: &'l MoveTypeLayout,
+        view: compressed_layouts::MoveLayoutView<'l>,
         visitor: &mut V,
     ) -> Result<V::Value, V::Error>
     where
         V::Error: std::error::Error + Send + Sync + 'static,
     {
-        // TODO: Don't simplify error to anyhow::Error
         let mut bytes = Cursor::new(blob);
-        let res = visit_value(&mut bytes, ty, visitor)?;
+        let res = visit_value(&mut bytes, view, visitor)?;
         if bytes.position() as usize == blob.len() {
             Ok(res)
         } else {
@@ -324,7 +323,7 @@ impl MoveStruct {
     /// `MoveStructLayout`).
     pub fn visit_deserialize<'b, 'l, V: Visitor<'b, 'l>>(
         blob: &'b [u8],
-        ty: &'l MoveStructLayout,
+        view: compressed_layouts::MoveStructView<'l>,
         visitor: &mut V,
     ) -> Result<V::Value, V::Error>
     where
@@ -332,7 +331,7 @@ impl MoveStruct {
     {
         let mut bytes = Cursor::new(blob);
         let driver = ValueDriver::new(&mut bytes, None);
-        let res = visit_struct(driver, ty, visitor)?;
+        let res = visit_struct(driver, view, visitor)?;
         if bytes.position() as usize == blob.len() {
             Ok(res)
         } else {
@@ -808,8 +807,8 @@ pub mod compressed_layouts {
     use super::{
         MoveEnumLayout, MoveFieldLayout, MoveStructLayout, MoveTypeLayout as TreeMoveTypeLayout,
     };
-    use crate::identifier::Identifier;
-    use crate::language_storage::StructTag;
+    use crate::identifier::{IdentStr, Identifier};
+    use crate::language_storage::{StructTag, TypeTag};
     pub use crate::runtime_value::compressed_layouts::LayoutHandle;
     use crate::runtime_value::compressed_layouts::{LayoutRef, LeafType, ResolvedRef};
     use indexmap::IndexSet;
@@ -1165,6 +1164,56 @@ pub mod compressed_layouts {
         }
     }
 
+    impl MoveLayoutView<'_> {
+        pub fn is_type(&self, t: &TypeTag) -> bool {
+            match self {
+                MoveLayoutView::Bool => *t == TypeTag::Bool,
+                MoveLayoutView::U8 => *t == TypeTag::U8,
+                MoveLayoutView::U16 => *t == TypeTag::U16,
+                MoveLayoutView::U32 => *t == TypeTag::U32,
+                MoveLayoutView::U64 => *t == TypeTag::U64,
+                MoveLayoutView::U128 => *t == TypeTag::U128,
+                MoveLayoutView::U256 => *t == TypeTag::U256,
+                MoveLayoutView::Address => *t == TypeTag::Address,
+                MoveLayoutView::Signer => *t == TypeTag::Signer,
+                MoveLayoutView::Struct(sv) => sv.is_type(t),
+                MoveLayoutView::Vector(vv) => {
+                    if let TypeTag::Vector(inner) = t {
+                        vv.element().is_type(inner)
+                    } else {
+                        false
+                    }
+                }
+                MoveLayoutView::Enum(ev) => ev.is_type(t),
+            }
+        }
+    }
+
+    impl<'a> From<MoveLayoutView<'a>> for TypeTag {
+        fn from(view: MoveLayoutView<'a>) -> TypeTag {
+            match view {
+                MoveLayoutView::Bool => TypeTag::Bool,
+                MoveLayoutView::U8 => TypeTag::U8,
+                MoveLayoutView::U16 => TypeTag::U16,
+                MoveLayoutView::U32 => TypeTag::U32,
+                MoveLayoutView::U64 => TypeTag::U64,
+                MoveLayoutView::U128 => TypeTag::U128,
+                MoveLayoutView::U256 => TypeTag::U256,
+                MoveLayoutView::Address => TypeTag::Address,
+                MoveLayoutView::Signer => TypeTag::Signer,
+                MoveLayoutView::Vector(vv) => {
+                    TypeTag::Vector(Box::new(TypeTag::from(vv.element())))
+                }
+                MoveLayoutView::Struct(sv) => {
+                    TypeTag::Struct(Box::new(sv.type_().clone()))
+                }
+                MoveLayoutView::Enum(ev) => {
+                    TypeTag::Struct(Box::new(ev.type_().clone()))
+                }
+            }
+        }
+    }
+
     /// A lazy view over an annotated vector layout's element type.
     #[derive(Debug, Clone, Copy)]
     pub struct MoveVectorView<'a> {
@@ -1200,6 +1249,10 @@ pub mod compressed_layouts {
         /// The struct's type tag.
         pub fn type_(&self) -> &'a StructTag {
             self.type_
+        }
+
+        pub fn is_type(&self, t: &TypeTag) -> bool {
+            matches!(t, TypeTag::Struct(s) if **s == self.type_().clone())
         }
 
         /// A field view for iterating/accessing the struct's fields.
@@ -1301,6 +1354,28 @@ pub mod compressed_layouts {
         }
     }
 
+    /// A view over a single named field, mirroring the tree-based [`MoveFieldLayout`].
+    /// Used by driver accessor methods (`peek_field`, `next_field`, `skip_field`).
+    #[derive(Debug, Clone, Copy)]
+    pub struct MoveFieldLayoutView<'a> {
+        name: &'a IdentStr,
+        layout: MoveLayoutView<'a>,
+    }
+
+    impl<'a> MoveFieldLayoutView<'a> {
+        pub fn new(name: &'a IdentStr, layout: MoveLayoutView<'a>) -> Self {
+            Self { name, layout }
+        }
+
+        pub fn name(&self) -> &'a IdentStr {
+            self.name
+        }
+
+        pub fn layout(&self) -> MoveLayoutView<'a> {
+            self.layout
+        }
+    }
+
     /// The result of looking up a variant in an annotated enum view.
     #[derive(Debug, Clone, Copy)]
     pub enum VariantFieldView<'a> {
@@ -1324,6 +1399,10 @@ pub mod compressed_layouts {
         /// The enum's type tag.
         pub fn type_(&self) -> &'a StructTag {
             self.type_
+        }
+
+        pub fn is_type(&self, t: &TypeTag) -> bool {
+            matches!(t, TypeTag::Struct(s) if **s == self.type_().clone())
         }
 
         /// Number of variants.

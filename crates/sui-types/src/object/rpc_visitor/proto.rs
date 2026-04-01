@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use prost_types::Struct;
 use prost_types::Value;
 use prost_types::value::Kind;
@@ -27,11 +28,11 @@ impl ProtoVisitor {
     pub fn deserialize_value(
         mut self,
         bytes: &[u8],
-        layout: &A::MoveTypeLayout,
+        layout: &AC::MoveTypeLayout,
     ) -> Result<Value, RV::Error> {
         A::MoveValue::visit_deserialize(
             bytes,
-            layout,
+            layout.as_view(),
             &mut RV::RpcVisitor::<Value, _>::new(RV::LocalMeter::new(&mut self.bound, MAX_DEPTH)),
         )
     }
@@ -191,15 +192,16 @@ pub(crate) mod tests {
         let bound = required_budget(&expected);
 
         let bytes = serialize(value.clone());
+        let compressed = AC::MoveTypeLayout::from(&type_layout);
 
         let deser = ProtoVisitor::new(bound)
-            .deserialize_value(&bytes, &type_layout)
+            .deserialize_value(&bytes, &compressed)
             .unwrap();
 
         assert_eq!(expected, proto_value_to_json_value(deser));
 
         ProtoVisitor::new(bound - 1)
-            .deserialize_value(&bytes, &type_layout)
+            .deserialize_value(&bytes, &compressed)
             .unwrap_err();
     }
 
@@ -220,9 +222,10 @@ pub(crate) mod tests {
 
         let bound = required_budget(&expected);
         let bytes = serialize(value.clone());
+        let compressed = AC::MoveTypeLayout::from(&layout);
 
         let deser = ProtoVisitor::new(bound)
-            .deserialize_value(&bytes, &layout)
+            .deserialize_value(&bytes, &compressed)
             .unwrap();
 
         assert_eq!(expected, proto_value_to_json_value(deser));
@@ -231,9 +234,10 @@ pub(crate) mod tests {
         value = value_("0x0::foo::Bar", vec![("f", value)]);
 
         let bytes = serialize(value.clone());
+        let compressed = AC::MoveTypeLayout::from(&layout);
 
         let err = ProtoVisitor::new(bound)
-            .deserialize_value(&bytes, &layout)
+            .deserialize_value(&bytes, &compressed)
             .unwrap_err();
 
         let expect = expect!["Exceeded maximum depth"];

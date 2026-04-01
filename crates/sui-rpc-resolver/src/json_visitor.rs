@@ -58,8 +58,10 @@ pub struct JsonVisitor;
 impl JsonVisitor {
     /// Deserialize BCS bytes as JSON using the provided type layout.
     pub fn deserialize_value(bytes: &[u8], layout: &MoveTypeLayout) -> anyhow::Result<Value> {
+        use move_core_types::annotated_value::compressed_layouts as AC;
+        let compressed = AC::MoveTypeLayout::from(layout);
         let mut visitor = RV::RpcVisitor::new(RV::Unmetered);
-        Ok(MoveValue::visit_deserialize(bytes, layout, &mut visitor)?)
+        Ok(MoveValue::visit_deserialize(bytes, compressed.as_view(), &mut visitor)?)
     }
 
     /// Deserialize BCS bytes as a JSON object representing a struct.
@@ -67,8 +69,15 @@ impl JsonVisitor {
         bytes: &[u8],
         layout: &move_core_types::annotated_value::MoveStructLayout,
     ) -> anyhow::Result<Value> {
+        use move_core_types::annotated_value::compressed_layouts as AC;
+        let tree = MoveTypeLayout::Struct(Box::new(layout.clone()));
+        let compressed = AC::MoveTypeLayout::from(&tree);
+        let sv = match compressed.as_view() {
+            AC::MoveLayoutView::Struct(sv) => sv,
+            _ => anyhow::bail!("Expected struct layout"),
+        };
         let mut visitor = RV::RpcVisitor::new(RV::Unmetered);
-        Ok(MoveStruct::visit_deserialize(bytes, layout, &mut visitor)?)
+        Ok(MoveStruct::visit_deserialize(bytes, sv, &mut visitor)?)
     }
 
     /// Deserialize a single event to JSON using type resolution.

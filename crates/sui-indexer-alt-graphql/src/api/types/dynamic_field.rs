@@ -12,6 +12,7 @@ use async_graphql::connection::Edge;
 use async_trait::async_trait;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value::MoveTypeLayout;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::language_storage::StructTag;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
 use sui_types::TypeTag;
@@ -577,7 +578,7 @@ impl DynamicField {
         let limits = limits.display();
 
         let root = sui_display::v2::OwnedSlice {
-            layout: MoveTypeLayout::Bool,
+            layout: AC::MoveTypeLayout::bool(),
             bytes: bcs::to_bytes(&false).unwrap(),
         };
 
@@ -665,6 +666,8 @@ impl DynamicField {
                     return Ok(None);
                 };
 
+                let compressed_layout =
+                    AC::MoveTypeLayout::from(&layout);
                 let DFV::Field {
                     kind,
                     name_layout,
@@ -672,7 +675,7 @@ impl DynamicField {
                     value_layout,
                     value_bytes,
                     ..
-                } = DFV::FieldVisitor::deserialize(&value.native, &layout)
+                } = DFV::FieldVisitor::deserialize(&value.native, &compressed_layout)
                     .context("Failed to deserialize dynamic field")?;
 
                 Ok(Some(NativeField {

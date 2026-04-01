@@ -84,7 +84,9 @@ pub(super) async fn dynamic_field_info(
     let type_ = move_object.type_().clone().into();
     let layout = resolve_type(ctx, &type_).await?;
 
-    let field = DFV::FieldVisitor::deserialize(move_object.contents(), &layout)
+    let compressed_layout =
+        move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(&layout);
+    let field = DFV::FieldVisitor::deserialize(move_object.contents(), &compressed_layout)
         .context("Failed to deserialize dynamic field info")?;
 
     let type_ = field.kind;
@@ -93,7 +95,11 @@ pub(super) async fn dynamic_field_info(
         bcs_name: field.name_bytes.to_owned(),
     };
 
-    let name_value = BoundedVisitor::deserialize_value(field.name_bytes, field.name_layout)
+    let name_layout = field
+        .name_layout
+        .inflate()
+        .context("Failed to inflate dynamic field name layout")?;
+    let name_value = BoundedVisitor::deserialize_value(field.name_bytes, &name_layout)
         .context("Failed to deserialize dynamic field name")?;
 
     let name = DynamicFieldName {

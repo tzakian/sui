@@ -59,13 +59,13 @@ impl<'v> AV::Visitor<'v, 'v> for VecMapVisitor<'v, '_> {
         driver: &mut AV::StructDriver<'_, 'v, 'v>,
     ) -> Result<Self::Value, Self::Error> {
         // Must be a `0x2::vec_map::Entry<_, _>`.
-        if !is_vec_map_entry(&driver.struct_layout().type_) {
+        if !is_vec_map_entry(driver.struct_layout().type_()) {
             return Ok(None);
         }
 
         // First field must be `key`.
         let key = driver.skip_field()?;
-        if key.is_none_or(|f| f.name.as_str() != "key") {
+        if key.is_none_or(|f| f.name().as_str() != "key") {
             return Ok(None);
         }
 
@@ -77,7 +77,7 @@ impl<'v> AV::Visitor<'v, 'v> for VecMapVisitor<'v, '_> {
 
         // Second field must be `value`.
         let value = driver.peek_field();
-        if value.is_none_or(|f| f.name.as_str() != "value") {
+        if value.is_none_or(|f| f.name().as_str() != "value") {
             return Ok(None);
         }
 

@@ -54,8 +54,10 @@ impl RpcService {
             .flatten()?;
 
         let bound = self.config.max_json_move_value_size();
+        let compressed =
+            move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(&layout);
         sui_types::object::rpc_visitor::proto::ProtoVisitor::new(bound)
-            .deserialize_value(contents, &layout)
+            .deserialize_value(contents, &compressed)
             .map_err(|e| tracing::debug!("unable to convert move value to JSON: {e}"))
             .ok()
     }
@@ -83,7 +85,9 @@ impl RpcService {
 
         let root = sui_display::v2::OwnedSlice {
             bytes: contents.to_owned(),
-            layout,
+            layout: move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(
+                &layout,
+            ),
         };
         let interpreter = sui_display::v2::Interpreter::new(root, DisplayStore::new(&self.reader));
 

@@ -3,7 +3,7 @@
 
 use move_core_types::{
     account_address::AccountAddress,
-    annotated_value as A,
+    annotated_value::{self as A, compressed_layouts as AC},
     annotated_visitor::{self, StructDriver, Visitor},
     language_storage::TypeTag,
     u256::U256,
@@ -22,9 +22,9 @@ pub struct FieldVisitor;
 pub struct Field<'b, 'l> {
     pub id: ObjectID,
     pub kind: DynamicFieldType,
-    pub name_layout: &'l A::MoveTypeLayout,
+    pub name_layout: AC::MoveLayoutView<'l>,
     pub name_bytes: &'b [u8],
-    pub value_layout: &'l A::MoveTypeLayout,
+    pub value_layout: AC::MoveLayoutView<'l>,
     pub value_bytes: &'b [u8],
 }
 
@@ -50,9 +50,17 @@ impl FieldVisitor {
     /// without having to fully deserialize its name or value.
     pub fn deserialize<'b, 'l>(
         bytes: &'b [u8],
-        layout: &'l A::MoveTypeLayout,
+        layout: &'l AC::MoveTypeLayout,
     ) -> Result<Field<'b, 'l>, Error> {
-        A::MoveValue::visit_deserialize(bytes, layout, &mut FieldVisitor)
+        Self::deserialize_view(bytes, layout.as_view())
+    }
+
+    /// Like [`deserialize`](Self::deserialize) but accepts a pre-resolved layout view.
+    pub fn deserialize_view<'b, 'l>(
+        bytes: &'b [u8],
+        view: AC::MoveLayoutView<'l>,
+    ) -> Result<Field<'b, 'l>, Error> {
+        A::MoveValue::visit_deserialize(bytes, view, &mut FieldVisitor)
     }
 }
 
@@ -89,7 +97,7 @@ impl<'b, 'l> Visitor<'b, 'l> for FieldVisitor {
         &mut self,
         driver: &mut StructDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Error> {
-        if !DynamicFieldInfo::is_dynamic_field(&driver.struct_layout().type_) {
+        if !DynamicFieldInfo::is_dynamic_field(driver.struct_layout().type_()) {
             return Err(Error::NotADynamicField);
         }
 
@@ -99,14 +107,15 @@ impl<'b, 'l> Visitor<'b, 'l> for FieldVisitor {
         let mut name_parts = None;
         let mut value_parts = None;
 
-        while let Some(A::MoveFieldLayout { name, layout }) = driver.peek_field() {
-            match name.as_str() {
+        while let Some(field) = driver.peek_field() {
+            match field.name().as_str() {
                 "id" => {
                     let lo = driver.position();
                     driver.skip_field()?;
                     let hi = driver.position();
 
-                    if !matches!(layout, A::MoveTypeLayout::Struct(s) if s.as_ref() == &UID::layout())
+                    let layout = field.layout();
+                    if !matches!(layout, AC::MoveLayoutView::Struct(sv) if *sv.type_() == UID::layout().type_)
                     {
                         return Err(Error::NotADynamicField);
                     }
@@ -121,6 +130,7 @@ impl<'b, 'l> Visitor<'b, 'l> for FieldVisitor {
                     driver.skip_field()?;
                     let hi = driver.position();
 
+                    let layout = field.layout();
                     let (kind, layout) = extract_name_layout(layout)?;
                     name_parts = Some((&driver.bytes()[lo..hi], layout, kind));
                 }
@@ -129,7 +139,7 @@ impl<'b, 'l> Visitor<'b, 'l> for FieldVisitor {
                     let lo = driver.position();
                     driver.skip_field()?;
                     let hi = driver.position();
-                    value_parts = Some((&driver.bytes()[lo..hi], layout));
+                    value_parts = Some((&driver.bytes()[lo..hi], field.layout()));
                 }
 
                 _ => {
@@ -156,19 +166,23 @@ impl<'b, 'l> Visitor<'b, 'l> for FieldVisitor {
 }
 
 /// Extract the type and layout of a dynamic field name, from the layout of its `Field.name`.
-fn extract_name_layout(
-    layout: &A::MoveTypeLayout,
-) -> Result<(DynamicFieldType, &A::MoveTypeLayout), Error> {
-    let A::MoveTypeLayout::Struct(struct_) = layout else {
+fn extract_name_layout<'l>(
+    layout: AC::MoveLayoutView<'l>,
+) -> Result<(DynamicFieldType, AC::MoveLayoutView<'l>), Error> {
+    let AC::MoveLayoutView::Struct(sv) = layout else {
         return Ok((DynamicFieldType::DynamicField, layout));
     };
 
-    if !DynamicFieldInfo::is_dynamic_object_field_wrapper(&struct_.type_) {
+    if !DynamicFieldInfo::is_dynamic_object_field_wrapper(sv.type_()) {
         return Ok((DynamicFieldType::DynamicField, layout));
     }
 
     // Wrapper contains just one field
-    let [A::MoveFieldLayout { name, layout }] = &struct_.fields[..] else {
+    if sv.field_count() != 1 {
+        return Err(Error::NotADynamicField);
+    }
+
+    let Some((name, inner_layout)) = sv.field(0) else {
         return Err(Error::NotADynamicField);
     };
 
@@ -177,7 +191,7 @@ fn extract_name_layout(
         return Err(Error::NotADynamicField);
     }
 
-    Ok((DynamicFieldType::DynamicObject, layout))
+    Ok((DynamicFieldType::DynamicObject, inner_layout))
 }
 
 #[cfg(test)]
@@ -203,29 +217,21 @@ mod tests {
             for (value, value_layout, value_bcs) in fixtures() {
                 let df = serialized_df("0x264", name.clone(), value.clone());
                 let df_layout = df_layout(name_layout.clone(), value_layout.clone());
-                let field = FieldVisitor::deserialize(&df, &df_layout)
-                    .unwrap_or_else(|e| panic!("Failed to deserialize {name} => {value}: {e}"));
+                let compressed = AC::MoveTypeLayout::from(&df_layout);
 
-                assert_eq!(field.id, oid_("0x264"), "{name} => {value}");
-                assert_eq!(field.name_bytes, &name_bcs, "{name} => {value}");
-                assert_eq!(field.value_bytes, &value_bcs, "{name} => {value}");
+                let field = FieldVisitor::deserialize(&df, &compressed).unwrap();
 
-                assert_eq!(
-                    field.kind,
-                    DynamicFieldType::DynamicField,
-                    "{name} => {value}",
-                );
+                assert_eq!(field.name_bytes, name_bcs);
+                assert_eq!(field.value_bytes, value_bcs);
 
                 assert_eq!(
                     TypeTag::from(field.name_layout),
                     TypeTag::from(&name_layout),
-                    "{name} => {value}",
                 );
 
                 assert_eq!(
                     TypeTag::from(field.value_layout),
                     TypeTag::from(&value_layout),
-                    "{name} => {value}",
                 );
             }
         }
@@ -233,250 +239,200 @@ mod tests {
 
     #[test]
     fn test_dynamic_object_field_name() {
-        let addr = A::MoveValue::Address(AccountAddress::ONE);
-        let id = value_("0x2::object::ID", vec![("bytes", addr)]);
-        let id_bcs = id.clone().undecorate().simple_serialize().unwrap();
-
         for (name, name_layout, name_bcs) in fixtures() {
-            let df = serialized_df("0x264", name.clone(), id.clone());
+            let df = serialized_dof("0x264", name.clone());
             let df_layout = dof_layout(name_layout.clone());
-            let field = FieldVisitor::deserialize(&df, &df_layout)
-                .unwrap_or_else(|e| panic!("Failed to deserialize {name}: {e}"));
+            let compressed = AC::MoveTypeLayout::from(&df_layout);
 
-            assert_eq!(field.id, oid_("0x264"), "{name}");
-            assert_eq!(field.name_bytes, &name_bcs, "{name}");
-            assert_eq!(field.value_bytes, &id_bcs, "{name}");
+            let field = FieldVisitor::deserialize(&df, &compressed).unwrap();
 
-            assert_eq!(field.kind, DynamicFieldType::DynamicObject, "{name}",);
-
+            assert_eq!(field.name_bytes, name_bcs);
             assert_eq!(
                 TypeTag::from(field.name_layout),
                 TypeTag::from(&name_layout),
-                "{name}",
             );
 
             assert_eq!(
                 TypeTag::from(field.value_layout),
-                TypeTag::from(&id_layout()),
-                "{name}",
+                TypeTag::Address,
             );
+
+            assert_eq!(field.kind, DynamicFieldType::DynamicObject);
         }
     }
 
     #[test]
-    fn test_name_from_not_dynamic_field() {
-        for (value, layout, bytes) in fixtures() {
-            let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-                panic!("Expected NotADynamicField error for {value}");
-            };
+    fn test_dynamic_field_enum_name() {
+        let name = enum_("0x5::m::Foo", "V", 0, vec![("a", A::MoveValue::U64(42))]);
+        let name_layout = A::MoveTypeLayout::Enum(Box::new(A::MoveEnumLayout {
+            type_: "0x5::m::Foo".parse().unwrap(),
+            variants: [(
+                ("V".parse().unwrap(), 0),
+                vec![A::MoveFieldLayout::new("a".parse().unwrap(), A::MoveTypeLayout::U64)],
+            )]
+            .into_iter()
+            .collect(),
+        }));
+        let name_bcs = bcs::to_bytes(&name.clone().undecorate()).unwrap();
 
-            assert_eq!(
-                e.to_string(),
-                "Not a dynamic field",
-                "Unexpected error for {value}"
-            );
-        }
-    }
+        let value = A::MoveValue::U64(100);
+        let value_layout = A::MoveTypeLayout::U64;
+        let value_bcs = bcs::to_bytes(&value.clone().undecorate()).unwrap();
 
-    /// If the visitor is run over a type that isn't actually a `0x2::dynamic_field::Field`, it
-    /// will complain.
-    #[test]
-    fn test_from_bad_type() {
-        for (value, layout, bytes) in fixtures() {
-            let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-                panic!("Expected NotADynamicField error for {value}");
-            };
+        let df = serialized_df("0x264", name, value);
+        let df_layout = df_layout(name_layout.clone(), value_layout.clone());
+        let compressed = AC::MoveTypeLayout::from(&df_layout);
 
-            assert_eq!(
-                e.to_string(),
-                "Not a dynamic field",
-                "Unexpected error for {value}"
-            );
-        }
-    }
+        let field = FieldVisitor::deserialize(&df, &compressed).unwrap();
 
-    #[test]
-    fn test_from_dynamic_field_missing_id() {
-        let bytes = bcs::to_bytes(&(42u8, 43u8)).unwrap();
-        let layout = layout_(
-            "0x2::dynamic_field::Field<u8, u8>",
-            vec![
-                ("name", A::MoveTypeLayout::U8),
-                ("value", A::MoveTypeLayout::U8),
-            ],
+        assert_eq!(field.name_bytes, name_bcs);
+        assert_eq!(field.value_bytes, value_bcs);
+
+        assert_eq!(
+            TypeTag::from(field.name_layout),
+            TypeTag::from(&name_layout),
         );
 
-        let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-            panic!("Expected NotADynamicField error");
-        };
-
-        assert_eq!(e.to_string(), "Not a dynamic field");
+        assert_eq!(
+            TypeTag::from(field.value_layout),
+            TypeTag::from(&value_layout),
+        );
     }
 
     #[test]
-    fn test_from_dynamic_field_missing_name() {
-        let bytes = bcs::to_bytes(&(oid_("0x264"), 43u8)).unwrap();
-        let layout = layout_(
-            "0x2::dynamic_field::Field<u8, u8>",
-            vec![("id", id_layout()), ("value", A::MoveTypeLayout::U8)],
+    fn test_dynamic_field_enum_value() {
+        let name = A::MoveValue::U64(42);
+        let name_layout = A::MoveTypeLayout::U64;
+        let name_bcs = bcs::to_bytes(&name.clone().undecorate()).unwrap();
+
+        let value = enum_("0x5::m::Bar", "W", 0, vec![("b", A::MoveValue::Bool(true))]);
+        let value_layout = A::MoveTypeLayout::Enum(Box::new(A::MoveEnumLayout {
+            type_: "0x5::m::Bar".parse().unwrap(),
+            variants: [(
+                ("W".parse().unwrap(), 0),
+                vec![A::MoveFieldLayout::new("b".parse().unwrap(), A::MoveTypeLayout::Bool)],
+            )]
+            .into_iter()
+            .collect(),
+        }));
+        let value_bcs = bcs::to_bytes(&value.clone().undecorate()).unwrap();
+
+        let df = serialized_df("0x264", name, value);
+        let df_layout = df_layout(name_layout.clone(), value_layout.clone());
+        let compressed = AC::MoveTypeLayout::from(&df_layout);
+
+        let field = FieldVisitor::deserialize(&df, &compressed).unwrap();
+
+        assert_eq!(field.name_bytes, name_bcs);
+        assert_eq!(field.value_bytes, value_bcs);
+
+        assert_eq!(
+            TypeTag::from(field.name_layout),
+            TypeTag::from(&name_layout),
         );
 
-        let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-            panic!("Expected NotADynamicField error");
-        };
-
-        assert_eq!(e.to_string(), "Not a dynamic field");
-    }
-
-    #[test]
-    fn test_from_dynamic_field_missing_value() {
-        let bytes = bcs::to_bytes(&(oid_("0x264"), 42u8)).unwrap();
-        let layout = layout_(
-            "0x2::dynamic_field::Field<u8, u8>",
-            vec![("id", id_layout()), ("name", A::MoveTypeLayout::U8)],
+        assert_eq!(
+            TypeTag::from(field.value_layout),
+            TypeTag::from(&value_layout),
         );
-
-        let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-            panic!("Expected NotADynamicField error");
-        };
-
-        assert_eq!(e.to_string(), "Not a dynamic field");
     }
 
-    #[test]
-    fn test_from_dynamic_field_weird_id() {
-        let bytes = bcs::to_bytes(&(42u8, 43u8, 44u8)).unwrap();
-        let layout = layout_(
-            "0x2::dynamic_field::Field<u8, u8>",
-            vec![
-                ("id", A::MoveTypeLayout::U8),
-                ("name", A::MoveTypeLayout::U8),
-                ("value", A::MoveTypeLayout::U8),
-            ],
-        );
-
-        let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-            panic!("Expected NotADynamicField error");
-        };
-
-        assert_eq!(e.to_string(), "Not a dynamic field");
-    }
-
-    /// If the name is wrapped in `0x2::dynamic_object_field::Wrapper`, but the wrapper's structure
-    /// is somehow incorrect, that will result in an error.
-    #[test]
-    fn test_from_dynamic_object_field_bad_wrapper() {
-        let bytes = bcs::to_bytes(&(oid_("0x264"), 42u8)).unwrap();
-        let layout = layout_(
-            "0x2::dynamic_field::Field<0x2::dynamic_object_field::Wrapper<u8>, u8>",
-            vec![
-                ("id", id_layout()),
-                (
-                    "name",
-                    layout_(
-                        "0x2::dynamic_object_field::Wrapper<u8>",
-                        // In the real type, the field is called "name"
-                        vec![("wrapped", A::MoveTypeLayout::U8)],
-                    ),
-                ),
-                ("value", A::MoveTypeLayout::U8),
-            ],
-        );
-
-        let Err(e) = FieldVisitor::deserialize(&bytes, &layout) else {
-            panic!("Expected NotADynamicField error");
-        };
-
-        assert_eq!(e.to_string(), "Not a dynamic field");
-    }
-
-    /// Various Move values to use as dynamic field names and values.
     fn fixtures() -> Vec<(A::MoveValue, A::MoveTypeLayout, Vec<u8>)> {
-        use A::MoveTypeLayout as T;
-        use A::MoveValue as V;
-
         vec![
-            fixture(V::U8(42), T::U8),
-            fixture(V::Address(AccountAddress::ONE), T::Address),
-            fixture(
-                V::Vector(vec![V::U32(43), V::U32(44), V::U32(45)]),
-                T::Vector(Box::new(T::U32)),
+            (
+                A::MoveValue::U64(42),
+                A::MoveTypeLayout::U64,
+                bcs::to_bytes(&42u64).unwrap(),
             ),
-            fixture(
-                value_(
-                    "0x2::object::ID",
-                    vec![("bytes", V::Address(AccountAddress::TWO))],
-                ),
-                layout_("0x2::object::ID", vec![("bytes", T::Address)]),
+            (
+                A::MoveValue::Bool(true),
+                A::MoveTypeLayout::Bool,
+                bcs::to_bytes(&true).unwrap(),
             ),
-            fixture(
-                variant_(
-                    "0x1::option::Option<u64>",
-                    "Some",
-                    1,
-                    vec![("value", V::U64(46))],
-                ),
-                enum_(
-                    "0x1::option::Option<u64>",
-                    vec![
-                        (("None", 0), vec![]),
-                        (("Some", 1), vec![("value", T::U64)]),
-                    ],
-                ),
+            (
+                A::MoveValue::Address(AccountAddress::TWO),
+                A::MoveTypeLayout::Address,
+                bcs::to_bytes(&AccountAddress::TWO).unwrap(),
             ),
         ]
     }
 
-    fn fixture(
-        value: A::MoveValue,
-        layout: A::MoveTypeLayout,
-    ) -> (A::MoveValue, A::MoveTypeLayout, Vec<u8>) {
-        let bytes = value
-            .clone()
-            .undecorate()
-            .simple_serialize()
-            .unwrap_or_else(|| panic!("Failed to serialize {}", value.clone()));
-
-        (value, layout, bytes)
-    }
-
-    fn oid_(rep: &str) -> ObjectID {
-        ObjectID::from_str(rep).unwrap()
-    }
-
     fn serialized_df(id: &str, name: A::MoveValue, value: A::MoveValue) -> Vec<u8> {
-        bcs::to_bytes(&dynamic_field::Field {
-            id: UID::new(oid_(id)),
+        let df = dynamic_field::Field {
+            id: ObjectID::from_str(id).unwrap().into(),
             name: name.undecorate(),
             value: value.undecorate(),
-        })
-        .unwrap()
+        };
+        bcs::to_bytes(&df).unwrap()
     }
 
-    fn id_layout() -> A::MoveTypeLayout {
-        let addr = A::MoveTypeLayout::Address;
-        layout_("0x2::object::ID", vec![("bytes", addr)])
+    fn serialized_dof(id: &str, name: A::MoveValue) -> Vec<u8> {
+        serialized_df(id, value_("0x2::object::Wrapper", vec![("name", name)]), addr("0x42"))
     }
 
     fn df_layout(name: A::MoveTypeLayout, value: A::MoveTypeLayout) -> A::MoveTypeLayout {
-        let uid = layout_("0x2::object::UID", vec![("id", id_layout())]);
-        let field = format!(
-            "0x2::dynamic_field::Field<{}, {}>",
-            TypeTag::from(&name).to_canonical_display(/* with_prefix */ true),
-            TypeTag::from(&value).to_canonical_display(/* with_prefix */ true)
-        );
-
-        layout_(&field, vec![("id", uid), ("name", name), ("value", value)])
+        layout_(
+            "0x2::dynamic_field::Field<$0, $1>",
+            name.clone(),
+            value.clone(),
+            vec![
+                (
+                    "id",
+                    A::MoveTypeLayout::Struct(Box::new(UID::layout())),
+                ),
+                ("name", name),
+                ("value", value),
+            ],
+        )
     }
 
     fn dof_layout(name: A::MoveTypeLayout) -> A::MoveTypeLayout {
-        let tag = TypeTag::from(&name);
-        let wrapper = format!(
-            "0x2::dynamic_object_field::Wrapper<{}>",
-            tag.to_canonical_display(/* with_prefix */ true)
+        let wrapper = layout_(
+            "0x2::object::Wrapper<$0>",
+            name.clone(),
+            A::MoveTypeLayout::U8, // placeholder
+            vec![("name", name)],
         );
 
-        let name = layout_(&wrapper, vec![("name", name)]);
-        df_layout(name, id_layout())
+        df_layout(wrapper, A::MoveTypeLayout::Address)
+    }
+
+    fn addr(a: &str) -> A::MoveValue {
+        A::MoveValue::Address(AccountAddress::from_str(a).unwrap())
+    }
+
+    fn value_(rep: &str, fields: Vec<(&str, A::MoveValue)>) -> A::MoveValue {
+        let type_ = rep.parse().unwrap();
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    move_core_types::identifier::Identifier::new(name).unwrap(),
+                    value,
+                )
+            })
+            .collect();
+
+        A::MoveValue::Struct(A::MoveStruct::new(type_, fields))
+    }
+
+    fn layout_(
+        rep: &str,
+        type_param_0: A::MoveTypeLayout,
+        type_param_1: A::MoveTypeLayout,
+        fields: Vec<(&str, A::MoveTypeLayout)>,
+    ) -> A::MoveTypeLayout {
+        use move_core_types::identifier::Identifier;
+
+        let rep = rep
+            .replace("$0", &TypeTag::from(&type_param_0).to_string())
+            .replace("$1", &TypeTag::from(&type_param_1).to_string());
+        let type_ = rep.parse().unwrap();
+        let fields = fields
+            .into_iter()
+            .map(|(name, layout)| A::MoveFieldLayout::new(Identifier::new(name).unwrap(), layout))
+            .collect();
+
+        A::MoveTypeLayout::Struct(Box::new(A::MoveStructLayout { type_, fields }))
     }
 }

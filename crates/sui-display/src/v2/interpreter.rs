@@ -142,7 +142,7 @@ impl<S: V::Store> Interpreter<S> {
                         return Ok(None);
                     };
 
-                    let field = match FieldVisitor::deserialize(slice.bytes, slice.layout) {
+                    let field = match FieldVisitor::deserialize_view(slice.bytes, slice.layout) {
                         Ok(f) => f,
                         Err(DFV::Error::Visitor(e)) => return Err(FormatError::Visitor(e)),
                         Err(_) => return Ok(None),
@@ -165,7 +165,7 @@ impl<S: V::Store> Interpreter<S> {
                         return Ok(None);
                     };
 
-                    let field = match FieldVisitor::deserialize(slice.bytes, slice.layout) {
+                    let field = match FieldVisitor::deserialize_view(slice.bytes, slice.layout) {
                         Ok(f) => f,
                         Err(DFV::Error::Visitor(e)) => return Err(FormatError::Visitor(e)),
                         Err(_) => return Ok(None),

@@ -12,6 +12,7 @@ use async_graphql::connection::Connection;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_extractor as AE;
 use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::annotated_visitor as AV;
 use move_core_types::language_storage::StructTag;
 use move_core_types::u256::U256;
@@ -115,7 +116,7 @@ impl ValidatorSetContents {
 
         #[derive(Default)]
         struct Contents<'b, 'l> {
-            native: Option<(&'b [u8], &'l A::MoveTypeLayout)>,
+            native: Option<(&'b [u8], AC::MoveLayoutView<'l>)>,
             active_validators: Vec<(NativeSuiAddress, &'b [u8])>,
             report_records: Option<ReportRecords>,
             at_risk_validators: Option<AtRiskValidators>,
@@ -154,7 +155,7 @@ impl ValidatorSetContents {
                 // When traversing a struct while under `ActiveValidators`, we are visiting a
                 // particular validator.
                 if let Traversal::ActiveValidators(c) = self {
-                    if !driver.struct_layout().is_type(&ValidatorContents::tag()) {
+                    if !driver.struct_layout().is_type(&TypeTag::Struct(Box::new(ValidatorContents::tag()))) {
                         return Err(Error::NotAValidator);
                     }
 
@@ -169,9 +170,9 @@ impl ValidatorSetContents {
                     ];
 
                     let bytes = &driver.bytes()[lo..hi];
-                    let layout = driver.struct_layout();
+                    let sv = driver.struct_layout();
                     if let Some(address) =
-                        AE::Extractor::deserialize_struct(bytes, layout, &mut AddressVisitor, path)?
+                        AE::Extractor::deserialize_struct_view(bytes, sv, &mut AddressVisitor, path)?
                             .flatten()
                     {
                         c.active_validators.push((address, bytes));
@@ -181,7 +182,7 @@ impl ValidatorSetContents {
                 }
 
                 while let Some(field) = driver.peek_field() {
-                    let name = field.name.as_str();
+                    let name = field.name().as_str();
                     match self {
                         Traversal::SystemState(c) if name == "validators" => {
                             let lo = driver.position();
@@ -189,7 +190,7 @@ impl ValidatorSetContents {
                             let hi = driver.position();
 
                             let bytes = &driver.bytes()[lo..hi];
-                            c.native = Some((bytes, &field.layout));
+                            c.native = Some((bytes, field.layout()));
                         }
 
                         Traversal::SystemState(c) if name == "validator_report_records" => {
@@ -244,11 +245,12 @@ impl ValidatorSetContents {
 
         let mut contents = Contents::default();
         let mut traversal = Traversal::SystemState(&mut contents);
-        A::MoveValue::visit_deserialize(bytes, layout, &mut traversal)
+        let compressed = AC::MoveTypeLayout::from(layout);
+        A::MoveValue::visit_deserialize(bytes, compressed.as_view(), &mut traversal)
             .context("Failed to deserialize ValidatorSet")?;
 
         let Contents {
-            native: Some((bytes, layout)),
+            native: Some((bytes, native_layout_view)),
             active_validators,
             report_records: Some(mut reports),
             at_risk_validators: Some(mut at_risk),
@@ -256,6 +258,7 @@ impl ValidatorSetContents {
         else {
             return Err(anyhow!("ValidatorSet deserialization incomplete").into());
         };
+        let _ = native_layout_view; // extracted from visitor, not needed further
 
         let address_to_index: BTreeMap<_, _> = active_validators
             .iter()

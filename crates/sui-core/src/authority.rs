@@ -3235,10 +3235,6 @@ impl AuthorityState {
 
         let layout = resolver
             .get_annotated_layout(&move_object.type_().clone().into())?
-            .inflate()
-            .map_err(|e| SuiErrorKind::ObjectSerializationError {
-                error: e.to_string(),
-            })?
             .into_layout();
 
         let field =
@@ -3252,7 +3248,12 @@ impl AuthorityState {
         let name_type: TypeTag = field.name_layout.into();
         let bcs_name = field.name_bytes.to_owned();
 
-        let name_value = BoundedVisitor::deserialize_value(field.name_bytes, field.name_layout)
+        let name_layout = field.name_layout.inflate().map_err(|e| {
+            SuiErrorKind::ObjectDeserializationError {
+                error: e.to_string(),
+            }
+        })?;
+        let name_value = BoundedVisitor::deserialize_value(field.name_bytes, &name_layout)
             .map_err(|e| {
                 warn!("{e}");
                 SuiErrorKind::ObjectDeserializationError {

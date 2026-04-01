@@ -1561,10 +1561,7 @@ fn load_object_arg_impl(
     assert_expected_move_object_type(&object_metadata.type_, move_obj.type_())?;
     let contained_uids = {
         let fully_annotated_layout = env.fully_annotated_layout(&ty)?;
-        let inflated_layout = fully_annotated_layout.inflate().map_err(|e| {
-            make_invariant_violation!("Failed to inflate annotated layout. Got error: {e}")
-        })?;
-        get_all_uids(&inflated_layout, move_obj.contents()).map_err(|e| {
+        get_all_uids(&fully_annotated_layout, move_obj.contents()).map_err(|e| {
             make_invariant_violation!("Unable to retrieve UIDs for object. Got error: {e}")
         })?
     };

@@ -362,13 +362,8 @@ impl Inner<'_> {
                 }
             };
         // Find all UIDs inside of the value and update the object parent maps
-        let inflated_annotated_layout =
-            child_ty_fully_annotated_layout.inflate().map_err(|e| {
-                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    .with_message(format!("Failed to inflate annotated layout. ERROR: {e}"))
-            })?;
         let contained_uids =
-            get_all_uids(&inflated_annotated_layout, obj_contents).map_err(|e| {
+            get_all_uids(child_ty_fully_annotated_layout, obj_contents).map_err(|e| {
                 PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
                     .with_message(format!("Failed to find UIDs. ERROR: {e}"))
             })?;
@@ -463,15 +458,8 @@ impl<'a> ChildObjectStore<'a> {
                     // Find all UIDs inside of the value and update the object parent maps with the contained
                     // UIDs in the received value. They should all have an upper bound version as the receiving object.
                     // Only do this if we successfully load the object though.
-                    let inflated_annotated_layout =
-                        child_fully_annotated_layout.inflate().map_err(|e| {
-                            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                                .with_message(format!(
-                                    "Failed to inflate annotated layout. ERROR: {e}"
-                                ))
-                        })?;
                     let contained_uids =
-                        get_all_uids(&inflated_annotated_layout, obj.contents()).map_err(|e| {
+                        get_all_uids(child_fully_annotated_layout, obj.contents()).map_err(|e| {
                             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
                                 .with_message(format!(
                                     "Failed to find UIDs for receiving object. ERROR: {e}"

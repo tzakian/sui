@@ -275,8 +275,9 @@ fn to_command_output(
         .flatten()
         .and_then(|layout| {
             let bound = service.config.max_json_move_value_size();
+            let compressed = move_core_types::annotated_value::compressed_layouts::MoveTypeLayout::from(&layout);
             sui_types::object::rpc_visitor::proto::ProtoVisitor::new(bound)
-                .deserialize_value(&bcs, &layout)
+                .deserialize_value(&bcs, &compressed)
                 .map_err(|e| tracing::debug!("unable to convert to JSON: {e}"))
                 .ok()
                 .map(Box::new)

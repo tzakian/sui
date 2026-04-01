@@ -37,7 +37,7 @@ impl<'b, 'l> Traversal<'b, 'l> for BalanceTraversal {
         &mut self,
         driver: &mut StructDriver<'_, 'b, 'l>,
     ) -> Result<(), Self::Error> {
-        let Some(coin_type) = is_balance(&driver.struct_layout().type_) else {
+        let Some(coin_type) = is_balance(driver.struct_layout().type_()) else {
             // Not a balance, search recursively for balances among fields.
             while driver.next_field(self)?.is_some() {}
             return Ok(());

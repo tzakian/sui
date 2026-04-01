@@ -175,12 +175,12 @@ impl<'b, 'l, F: Format, M: Meter> AV::Visitor<'b, 'l> for RpcVisitor<F, M> {
         &mut self,
         driver: &mut AV::StructDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
-        let ty = &driver.struct_layout().type_;
         let layout = driver.struct_layout();
+        let ty = layout.type_();
 
-        if layout == &move_ascii_str_layout()
-            || layout == &move_utf8_str_layout()
-            || layout == &url_layout()
+        if ty == &move_ascii_str_layout().type_
+            || ty == &move_utf8_str_layout().type_
+            || ty == &url_layout().type_
         {
             // 0x1::ascii::String or 0x1::string::String or 0x2::url::Url
 
@@ -192,7 +192,7 @@ impl<'b, 'l, F: Format, M: Meter> AV::Visitor<'b, 'l> for RpcVisitor<F, M> {
             let bytes = &driver.bytes()[lo..hi];
             let s: String = bcs::from_bytes(bytes).map_err(|_| Error::UnexpectedType)?;
             Ok(F::string(&mut self.meter, s)?)
-        } else if layout == &UID::layout() || layout == &ID::layout() {
+        } else if ty == &UID::layout().type_ || ty == &ID::layout().type_ {
             // 0x2::object::UID or 0x2::object::ID
 
             let lo = driver.position();
@@ -213,7 +213,7 @@ impl<'b, 'l, F: Format, M: Meter> AV::Visitor<'b, 'l> for RpcVisitor<F, M> {
                 Some(value) => Ok(value),
                 None => Ok(F::null(&mut self.meter)?),
             }
-        } else if Balance::is_balance_layout(layout) {
+        } else if Balance::is_balance(ty) {
             // 0x2::balance::Balance
 
             let lo = driver.position();
@@ -236,7 +236,7 @@ impl<'b, 'l, F: Format, M: Meter> AV::Visitor<'b, 'l> for RpcVisitor<F, M> {
                 let nested = self.meter.nest()?;
                 let mut visitor = RpcVisitor::<F, _>::new(nested);
                 while let Some((field, elem)) = driver.next_field(&mut visitor)? {
-                    let name = field.name.to_string();
+                    let name = field.name().to_string();
                     F::map_push_field(&mut visitor.meter, &mut map, name, elem)?;
                 }
             }
@@ -258,7 +258,7 @@ impl<'b, 'l, F: Format, M: Meter> AV::Visitor<'b, 'l> for RpcVisitor<F, M> {
 
             let mut visitor = RpcVisitor::<F, _>::new(nested_meter);
             while let Some((field, elem)) = driver.next_field(&mut visitor)? {
-                let name = field.name.to_string();
+                let name = field.name().to_string();
                 F::map_push_field(&mut visitor.meter, &mut map, name, elem)?;
             }
         }
@@ -302,8 +302,9 @@ mod tests {
 
     fn json<T: Serialize>(layout: A::MoveTypeLayout, data: T) -> Value {
         let bcs = bcs::to_bytes(&data).unwrap();
+        let compressed = A::compressed_layouts::MoveTypeLayout::from(&layout);
         let mut visitor = RpcVisitor::new(Unmetered);
-        A::MoveValue::visit_deserialize(&bcs, &layout, &mut visitor).unwrap()
+        A::MoveValue::visit_deserialize(&bcs, &compressed, &mut visitor).unwrap()
     }
 
     fn address(a: &str) -> sui_sdk_types::Address {

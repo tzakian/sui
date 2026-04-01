@@ -14,6 +14,7 @@ use async_graphql::indexmap::IndexMap;
 use async_trait::async_trait;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::compressed_layouts as AC;
 use move_core_types::annotated_visitor as AV;
 use move_core_types::u256::U256;
 use move_core_types::visitor_default;
@@ -151,7 +152,8 @@ impl MoveValue {
                 conn.has_previous_page = 0 < range.start;
                 conn.has_next_page = range.end < total;
 
-                let layout = driver.element_layout().clone();
+                let layout = driver.element_layout().inflate()
+                    .map_err(|e| Error::Internal(e.to_string()))?;
                 let type_ = MoveType::from_layout(layout, self.scope.clone());
 
                 for i in 0..total {
@@ -189,8 +191,9 @@ impl MoveValue {
                 scope: &self.type_.scope,
             };
 
+            let compressed = AC::MoveTypeLayout::from(&layout);
             Ok(
-                A::MoveValue::visit_deserialize(&self.native, &layout, &mut visitor)
+                A::MoveValue::visit_deserialize(&self.native, compressed.as_view(), &mut visitor)
                     .context("Failed to deserialize vector")?,
             )
         }
@@ -232,7 +235,7 @@ impl MoveValue {
 
                 let root = sui_display::v2::OwnedSlice {
                     bytes: self.native.clone(),
-                    layout,
+                    layout: AC::MoveTypeLayout::from(&layout),
                 };
 
                 let interpreter = sui_display::v2::Interpreter::new(root, store);
@@ -318,7 +321,7 @@ impl MoveValue {
             // Create an interpreter that combines the root value with the store
             let root = sui_display::v2::OwnedSlice {
                 bytes: self.native.clone(),
-                layout,
+                layout: AC::MoveTypeLayout::from(&layout),
             };
 
             // Evaluate the extraction and convert to an owned slice
@@ -339,7 +342,9 @@ impl MoveValue {
                 return Err(bad_user_input(Error::NotASlice));
             };
 
-            let type_ = MoveType::from_layout(layout, self.type_.scope.clone());
+            let tree_layout = layout.inflate()
+                .map_err(|e| anyhow!("Failed to inflate layout: {e}"))?;
+            let type_ = MoveType::from_layout(tree_layout, self.type_.scope.clone());
             Ok(Some(MoveValue { type_, native }))
         }
         .await
@@ -366,7 +371,7 @@ impl MoveValue {
             let store = DisplayStore::new(ctx, &self.type_.scope);
             let root = sui_display::v2::OwnedSlice {
                 bytes: self.native.clone(),
-                layout,
+                layout: AC::MoveTypeLayout::from(&layout),
             };
 
             let interpreter = sui_display::v2::Interpreter::new(root, store);
@@ -450,9 +455,10 @@ impl JsonVisitor {
         bytes: &[u8],
         layout: &A::MoveTypeLayout,
     ) -> Result<serde_json::Value, RV::Error> {
+        let compressed = AC::MoveTypeLayout::from(layout);
         A::MoveValue::visit_deserialize(
             bytes,
-            layout,
+            compressed.as_view(),
             &mut RV::RpcVisitor::new(RV::LocalMeter::new(
                 &mut self.size_budget,
                 self.depth_budget,
@@ -503,7 +509,10 @@ impl<'f, 'r> sui_display::v2::Store for DisplayStore<'f, 'r> {
         };
 
         let bytes = move_object.contents().to_owned();
-        Ok(Some(sui_display::v2::OwnedSlice { layout, bytes }))
+        Ok(Some(sui_display::v2::OwnedSlice {
+            layout: AC::MoveTypeLayout::from(&layout),
+            bytes,
+        }))
     }
 }
 

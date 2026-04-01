@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    account_address::AccountAddress, annotated_value as A, annotated_visitor as AV,
+    account_address::AccountAddress,
+    annotated_value::{self as A, compressed_layouts as AC},
+    annotated_visitor as AV,
     language_storage::TypeTag,
 };
 
@@ -67,22 +69,36 @@ where
 
     pub fn deserialize_value(
         bytes: &'b [u8],
-        layout: &'l A::MoveTypeLayout,
+        layout: &'l AC::MoveTypeLayout,
         inner: &'v mut V,
         path: Vec<Element<'p>>,
     ) -> Result<Option<V::Value>, V::Error> {
         let mut extractor = Extractor::new(inner, &path);
-        A::MoveValue::visit_deserialize(bytes, layout, &mut extractor)
+        A::MoveValue::visit_deserialize(bytes, layout.as_view(), &mut extractor)
     }
 
     pub fn deserialize_struct(
         bytes: &'b [u8],
-        layout: &'l A::MoveStructLayout,
+        layout: &'l AC::MoveTypeLayout,
+        inner: &'v mut V,
+        path: Vec<Element<'p>>,
+    ) -> Result<Option<V::Value>, V::Error> {
+        let view = layout.as_view();
+        let sv = match view {
+            AC::MoveLayoutView::Struct(sv) => sv,
+            _ => panic!("deserialize_struct called with non-struct layout"),
+        };
+        Self::deserialize_struct_view(bytes, sv, inner, path)
+    }
+
+    pub fn deserialize_struct_view(
+        bytes: &'b [u8],
+        view: AC::MoveStructView<'l>,
         inner: &'v mut V,
         path: Vec<Element<'p>>,
     ) -> Result<Option<V::Value>, V::Error> {
         let mut extractor = Extractor::new(inner, &path);
-        A::MoveStruct::visit_deserialize(bytes, layout, &mut extractor)
+        A::MoveStruct::visit_deserialize(bytes, view, &mut extractor)
     }
 }
 
@@ -196,12 +212,11 @@ impl<'b, 'l, V: AV::Visitor<'b, 'l>> AV::Visitor<'b, 'l> for Extractor<'_, '_, V
         driver: &mut AV::VecDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
         use Element as E;
-        use TypeTag as T;
 
         // If there is a type element, check that it is a vector type with the correct element
         // type, and remove it from the path.
         let path = if let [E::Type(t), path @ ..] = self.path {
-            if !matches!(t, T::Vector(t) if driver.element_layout().is_type(t)) {
+            if !driver.element_layout().is_type(t) {
                 return Ok(None);
             }
             path
@@ -235,12 +250,12 @@ impl<'b, 'l, V: AV::Visitor<'b, 'l>> AV::Visitor<'b, 'l> for Extractor<'_, '_, V
         driver: &mut AV::StructDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
         use Element as E;
-        use TypeTag as T;
+
 
         // If there is a type element, check that it is a struct type with the correct struct tag,
         // and remove it from the path.
         let path = if let [E::Type(t), path @ ..] = self.path {
-            if !matches!(t, T::Struct(t) if driver.struct_layout().is_type(t)) {
+            if !driver.struct_layout().is_type(t) {
                 return Ok(None);
             }
             path
@@ -256,7 +271,7 @@ impl<'b, 'l, V: AV::Visitor<'b, 'l>> AV::Visitor<'b, 'l> for Extractor<'_, '_, V
         match field {
             // Skip over mismatched fields by name.
             E::Field(f) => {
-                while matches!(driver.peek_field(), Some(l) if l.name.as_str() != *f) {
+                while matches!(driver.peek_field(), Some(l) if l.name().as_str() != *f) {
                     driver.skip_field()?;
                 }
             }
@@ -281,12 +296,12 @@ impl<'b, 'l, V: AV::Visitor<'b, 'l>> AV::Visitor<'b, 'l> for Extractor<'_, '_, V
         driver: &mut AV::VariantDriver<'_, 'b, 'l>,
     ) -> Result<Self::Value, Self::Error> {
         use Element as E;
-        use TypeTag as T;
+
 
         // If there is a type element, check that it is a struct type with the correct struct tag,
         // and remove it from the path.
         let path = if let [E::Type(t), path @ ..] = self.path {
-            if !matches!(t, T::Struct(t) if driver.enum_layout().is_type(t)) {
+            if !driver.enum_layout().is_type(t) {
                 return Ok(None);
             }
             path
@@ -312,7 +327,7 @@ impl<'b, 'l, V: AV::Visitor<'b, 'l>> AV::Visitor<'b, 'l> for Extractor<'_, '_, V
         match field {
             // Skip over mismatched fields by name.
             E::Field(f) => {
-                while matches!(driver.peek_field(), Some(l) if l.name.as_str() != *f) {
+                while matches!(driver.peek_field(), Some(l) if l.name().as_str() != *f) {
                     driver.skip_field()?;
                 }
             }
