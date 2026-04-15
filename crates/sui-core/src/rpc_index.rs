@@ -30,7 +30,7 @@ use sui_types::committee::EpochId;
 use sui_types::digests::TransactionDigest;
 use sui_types::effects::{AccumulatorValue, TransactionEffectsAPI};
 use sui_types::full_checkpoint_content::CheckpointData;
-use sui_types::layout_resolver::LayoutResolver;
+use sui_package_resolver::{PackageStore, Resolver};
 use sui_types::messages_checkpoint::CheckpointContents;
 use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 use sui_types::object::Data;
@@ -624,7 +624,7 @@ impl IndexStoreTables {
     fn index_checkpoint(
         &self,
         checkpoint: &CheckpointData,
-        _resolver: &mut dyn LayoutResolver,
+        _resolver: &Resolver<impl PackageStore>,
         rpc_config: &sui_config::RpcConfig,
     ) -> Result<typed_store::rocks::DBBatch, StorageError> {
         debug!(
@@ -1412,7 +1412,7 @@ impl RpcIndexStore {
         skip_all,
         fields(checkpoint = checkpoint.checkpoint_summary.sequence_number)
     )]
-    pub fn index_checkpoint(&self, checkpoint: &CheckpointData, resolver: &mut dyn LayoutResolver) {
+    pub fn index_checkpoint(&self, checkpoint: &CheckpointData, resolver: &Resolver<impl PackageStore>) {
         let sequence_number = checkpoint.checkpoint_summary.sequence_number;
         let batch = self
             .tables

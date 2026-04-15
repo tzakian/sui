@@ -62,9 +62,9 @@ pub trait StateRead: Send + Sync {
         effects: &[TransactionDigest],
     ) -> StateReadResult<KVStoreTransactionData>;
 
-    fn get_object_read(&self, object_id: &ObjectID) -> StateReadResult<ObjectRead>;
+    async fn get_object_read(&self, object_id: &ObjectID) -> StateReadResult<ObjectRead>;
 
-    fn get_past_object_read(
+    async fn get_past_object_read(
         &self,
         object_id: &ObjectID,
         version: SequenceNumber,
@@ -165,7 +165,7 @@ pub trait StateRead: Send + Sync {
     fn get_bridge(&self) -> StateReadResult<Bridge>;
 
     // coin_api
-    fn find_publish_txn_digest(&self, package_id: ObjectID) -> StateReadResult<TransactionDigest>;
+    async fn find_publish_txn_digest(&self, package_id: ObjectID) -> StateReadResult<TransactionDigest>;
     fn get_owned_coins(
         &self,
         owner: SuiAddress,
@@ -248,8 +248,8 @@ impl StateRead for AuthorityState {
         )
     }
 
-    fn get_object_read(&self, object_id: &ObjectID) -> StateReadResult<ObjectRead> {
-        let result = self.get_object_read(object_id)?;
+    async fn get_object_read(&self, object_id: &ObjectID) -> StateReadResult<ObjectRead> {
+        let result = self.get_object_read(object_id).await?;
 
         // If object not found and coin reservations are enabled, check if this is a
         // masked object ID (fake coin request).
@@ -263,7 +263,7 @@ impl StateRead for AuthorityState {
             let unmasked_id = coin_reservation::mask_or_unmask_id(object_id, chain_identifier);
 
             // Try to load the unmasked object (the accumulator)
-            if let ObjectRead::Exists(_, object, _) = self.get_object_read(&unmasked_id)? {
+            if let ObjectRead::Exists(_, object, _) = self.get_object_read(&unmasked_id).await? {
                 let accumulator_version = object.version();
                 let Some(move_object) = object.data.try_as_move() else {
                     // Not a move object, return original NotExists
@@ -295,7 +295,7 @@ impl StateRead for AuthorityState {
                     previous_transaction,
                 );
 
-                let layout = self.get_object_layout(&coin)?;
+                let layout = self.get_object_layout(&coin).await?;
                 return Ok(ObjectRead::Exists(object_ref, coin, layout));
             }
 
@@ -309,12 +309,12 @@ impl StateRead for AuthorityState {
         Ok(self.get_object(object_id).await)
     }
 
-    fn get_past_object_read(
+    async fn get_past_object_read(
         &self,
         object_id: &ObjectID,
         version: SequenceNumber,
     ) -> StateReadResult<PastObjectRead> {
-        Ok(self.get_past_object_read(object_id, version)?)
+        Ok(self.get_past_object_read(object_id, version).await?)
     }
 
     fn load_epoch_store_one_call_per_task(&self) -> Guard<Arc<AuthorityPerEpochStore>> {
@@ -467,8 +467,8 @@ impl StateRead for AuthorityState {
             .map_err(|err| err.into())
     }
 
-    fn find_publish_txn_digest(&self, package_id: ObjectID) -> StateReadResult<TransactionDigest> {
-        Ok(self.find_publish_txn_digest(package_id)?)
+    async fn find_publish_txn_digest(&self, package_id: ObjectID) -> StateReadResult<TransactionDigest> {
+        Ok(self.find_publish_txn_digest(package_id).await?)
     }
     fn get_owned_coins(
         &self,
@@ -794,7 +794,7 @@ impl<S: ?Sized + StateRead> ObjectProvider for Arc<S> {
         id: &ObjectID,
         version: &SequenceNumber,
     ) -> Result<Object, Self::Error> {
-        Ok(self.get_past_object_read(id, *version)?.into_object()?)
+        Ok(self.get_past_object_read(id, *version).await?.into_object()?)
     }
 
     async fn find_object_lt_or_eq_version(
@@ -817,7 +817,7 @@ impl<S: ?Sized + StateRead> ObjectProvider for (Arc<S>, Arc<TransactionKeyValueS
         id: &ObjectID,
         version: &SequenceNumber,
     ) -> Result<Object, Self::Error> {
-        let object_read = self.0.get_past_object_read(id, *version)?;
+        let object_read = self.0.get_past_object_read(id, *version).await?;
         match object_read {
             PastObjectRead::ObjectNotExists(_) | PastObjectRead::VersionNotFound(..) => {
                 match self.1.get_object(*id, *version).await? {

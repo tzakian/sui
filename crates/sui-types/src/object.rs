@@ -383,7 +383,7 @@ impl MoveObject {
     }
 
     /// Get the total amount of SUI embedded in `self`. Intended for testing purposes
-    pub fn get_total_sui(&self, layout_resolver: &mut dyn LayoutResolver) -> Result<u64, SuiError> {
+    pub async fn get_total_sui(&self, layout_resolver: &mut impl LayoutResolver) -> Result<u64, SuiError> {
         if self.type_.is_gas_coin() {
             let balance = self.get_coin_value_unsafe();
             Ok(balance)
@@ -401,7 +401,7 @@ impl MoveObject {
             );
             Ok(v.value as u64)
         } else {
-            let layout = layout_resolver.get_annotated_layout(&self.type_().clone().into())?;
+            let layout = layout_resolver.get_annotated_layout(&self.type_().clone().into()).await?;
 
             let mut traversal = BalanceTraversal::default();
             MoveValue::visit_deserialize(&self.contents, &layout.into_layout(), &mut traversal)
@@ -1007,10 +1007,10 @@ impl ObjectInner {
 // Testing-related APIs.
 impl Object {
     /// Get the total amount of SUI embedded in `self`, including both Move objects and the storage rebate
-    pub fn get_total_sui(&self, layout_resolver: &mut dyn LayoutResolver) -> Result<u64, SuiError> {
+    pub async fn get_total_sui(&self, layout_resolver: &mut impl LayoutResolver) -> Result<u64, SuiError> {
         Ok(self.storage_rebate
             + match &self.data {
-                Data::Move(m) => m.get_total_sui(layout_resolver)?,
+                Data::Move(m) => m.get_total_sui(layout_resolver).await?,
                 Data::Package(_) => 0,
             })
     }

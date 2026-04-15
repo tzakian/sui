@@ -65,10 +65,10 @@ impl GovernanceReadApi {
         staked_sui_ids: Vec<ObjectID>,
     ) -> Result<Vec<DelegatedStake>, Error> {
         let state = self.state.clone();
-        let stakes_read: Vec<_> = staked_sui_ids
-            .iter()
-            .map(|id| state.get_object_read(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut stakes_read = Vec::with_capacity(staked_sui_ids.len());
+        for id in &staked_sui_ids {
+            stakes_read.push(state.get_object_read(id).await?);
+        }
 
         if stakes_read.is_empty() {
             return Ok(vec![]);

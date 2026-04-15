@@ -24,7 +24,7 @@ const MAX_PAGE_SIZE_BYTES: usize = 512 * 1024; // 512KiB
 const READ_MASK_DEFAULT: &str = "object_id,version,object_type";
 
 #[tracing::instrument(skip(service))]
-pub fn list_owned_objects(
+pub async fn list_owned_objects(
     service: &RpcService,
     request: ListOwnedObjectsRequest,
 ) -> Result<ListOwnedObjectsResponse> {
@@ -83,18 +83,35 @@ pub fn list_owned_objects(
     };
 
     let should_load_object = should_load_object(&read_mask);
-    let mut iter = indexes.owned_objects_iter(
-        owner.into(),
-        object_type.clone(),
-        page_token.map(|t| t.inner),
-    )?;
+
+    // Collect items from the iterator eagerly to avoid holding a non-Send iterator across await
+    // points. We fetch extra to determine if there's a next page.
+    let infos = {
+        let mut iter = indexes.owned_objects_iter(
+            owner.into(),
+            object_type.clone(),
+            page_token.map(|t| t.inner),
+        )?;
+        let mut infos = Vec::with_capacity(page_size + 1);
+        while let Some(info) = iter
+            .next()
+            .transpose()
+            .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
+        {
+            infos.push(info);
+            // Collect enough to fill a page plus one extra for next_page_token, with extra
+            // headroom for skipped objects.
+            if infos.len() >= page_size * 2 + 1 {
+                break;
+            }
+        }
+        infos
+    };
+
     let mut objects = Vec::with_capacity(page_size);
     let mut size_bytes = 0;
-    while let Some(object_info) = iter
-        .next()
-        .transpose()
-        .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
-    {
+    let mut last_info_idx = None;
+    for (idx, object_info) in infos.iter().enumerate() {
         let object = if should_load_object {
             let Some(object) = service
                 .reader
@@ -109,28 +126,29 @@ pub fn list_owned_objects(
                 continue;
             };
 
-            service.render_object_to_proto(&object, &read_mask, &ObjectSet::default())
+            service
+                .render_object_to_proto(&object, &read_mask, &ObjectSet::default())
+                .await
         } else {
-            owned_object_to_proto(object_info, &read_mask)
+            owned_object_to_proto(object_info.clone(), &read_mask)
         };
 
         size_bytes += object.encoded_len();
         objects.push(object);
+        last_info_idx = Some(idx);
 
         if objects.len() >= page_size || size_bytes >= MAX_PAGE_SIZE_BYTES {
             break;
         }
     }
 
-    let next_page_token = iter
-        .next()
-        .transpose()
-        .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
+    let next_page_token = last_info_idx
+        .and_then(|idx| infos.get(idx + 1))
         .map(|cursor| {
             encode_page_token(PageToken {
                 owner,
                 object_type,
-                inner: cursor,
+                inner: cursor.clone(),
             })
         });
 

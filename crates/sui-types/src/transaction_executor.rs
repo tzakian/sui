@@ -24,7 +24,7 @@ pub trait TransactionExecutor: Send + Sync {
         client_addr: Option<std::net::SocketAddr>,
     ) -> Result<ExecuteTransactionResponseV3, TransactionSubmissionError>;
 
-    fn simulate_transaction(
+    async fn simulate_transaction(
         &self,
         transaction: TransactionData,
         checks: TransactionChecks,

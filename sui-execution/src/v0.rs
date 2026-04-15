@@ -37,6 +37,7 @@ use sui_move_natives_v0::all_natives;
 use sui_types::storage::BackingStore;
 use sui_verifier_v0::meter::SuiVerifierMeter;
 
+use async_trait::async_trait;
 use crate::executor;
 use crate::verifier;
 
@@ -62,8 +63,9 @@ impl<'m> Verifier<'m> {
     }
 }
 
+#[async_trait(?Send)]
 impl executor::Executor for Executor {
-    fn execute_transaction_to_effects(
+    async fn execute_transaction_to_effects(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -104,7 +106,8 @@ impl executor::Executor for Executor {
                 metrics,
                 enable_expensive_checks,
                 execution_params,
-            );
+            )
+            .await;
         // note: old versions do not report timings.
         (
             inner_temp_store,
@@ -115,7 +118,7 @@ impl executor::Executor for Executor {
         )
     }
 
-    fn dev_inspect_transaction(
+    async fn dev_inspect_transaction(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -156,6 +159,7 @@ impl executor::Executor for Executor {
                 enable_expensive_checks,
                 execution_params,
             )
+            .await
         } else {
             execute_transaction_to_effects::<execution_mode::DevInspect<false>>(
                 store,
@@ -173,10 +177,11 @@ impl executor::Executor for Executor {
                 enable_expensive_checks,
                 execution_params,
             )
+            .await
         }
     }
 
-    fn execute_transaction_to_effects_and_execution_error(
+    async fn execute_transaction_to_effects_and_execution_error(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -217,7 +222,8 @@ impl executor::Executor for Executor {
                 metrics,
                 enable_expensive_checks,
                 execution_params,
-            );
+            )
+            .await;
         (inner_temp_store, gas_status, effects, vec![], result)
     }
 

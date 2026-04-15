@@ -31,6 +31,8 @@ use sui_types::crypto::default_hash;
 use sui_types::digests::TransactionDigest;
 use sui_types::effects::TransactionEffectsAPI;
 use sui_types::signature::GenericSignature;
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::BackingPackageStoreAdapter;
 use sui_types::storage::PostExecutionPackageResolver;
 use sui_types::sui_serde::BigInt;
 use sui_types::transaction::{
@@ -182,20 +184,21 @@ impl TransactionExecutionApi {
         let _post_orch_timer = self.metrics.post_orchestrator_latency_ms.start_timer();
 
         let events = if opts.show_events {
-            let epoch_store = self.state.load_epoch_store_one_call_per_task();
             let backing_package_store = PostExecutionPackageResolver::new(
                 self.state.get_backing_package_store().clone(),
                 &response.output_objects,
             );
-            let mut layout_resolver = epoch_store
-                .executor()
-                .type_layout_resolver(Box::new(backing_package_store));
-            Some(SuiTransactionBlockEvents::try_from(
-                response.events.unwrap_or_default(),
-                digest,
-                None,
-                layout_resolver.as_mut(),
-            )?)
+            let mut resolver = Resolver::new(BackingPackageStoreAdapter::new(backing_package_store));
+            Some(tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(
+                    SuiTransactionBlockEvents::try_from(
+                        response.events.unwrap_or_default(),
+                        digest,
+                        None,
+                        &mut resolver,
+                    ),
+                )
+            })?)
         } else {
             None
         };

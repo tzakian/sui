@@ -26,7 +26,7 @@ const MAX_PAGE_SIZE_BYTES: usize = 512 * 1024; // 512KiB
 const READ_MASK_DEFAULT: &str = "parent,field_id";
 
 #[tracing::instrument(skip(service))]
-pub fn list_dynamic_fields(
+pub async fn list_dynamic_fields(
     service: &RpcService,
     request: ListDynamicFieldsRequest,
 ) -> Result<ListDynamicFieldsResponse> {
@@ -80,33 +80,51 @@ pub fn list_dynamic_fields(
         FieldMaskTree::from(read_mask)
     };
 
-    let mut iter =
-        indexes.dynamic_field_iter(parent.into(), page_token.map(|t| t.field_id.into()))?;
+    // Collect keys from the iterator eagerly to avoid holding a non-Send iterator across await
+    // points. We fetch one extra beyond page_size to determine if there's a next page.
+    let keys = {
+        let mut iter =
+            indexes.dynamic_field_iter(parent.into(), page_token.map(|t| t.field_id.into()))?;
+        let mut keys = Vec::with_capacity(page_size + 1);
+        // We don't know how many we need due to skips, so collect generously.
+        // The MAX_PAGE_SIZE is bounded, so this is fine.
+        while let Some(key) = iter
+            .next()
+            .transpose()
+            .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
+        {
+            keys.push(key);
+            // Collect enough extra keys beyond what we might need (page_size entries + possible
+            // skips). We over-collect slightly to account for entries that get_dynamic_field skips.
+            // In the worst case we re-query on the next page.
+            if keys.len() >= page_size * 2 + 1 {
+                break;
+            }
+        }
+        keys
+    };
+
     let mut dynamic_fields = Vec::with_capacity(page_size);
     let mut size_bytes = 0;
-    while let Some(key) = iter
-        .next()
-        .transpose()
-        .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
-    {
+    let mut last_key_idx = None;
+    for (idx, key) in keys.iter().enumerate() {
         let Some(dynamic_field) =
-            get_dynamic_field(service, &key.parent, &key.field_id, &read_mask)
+            get_dynamic_field(service, &key.parent, &key.field_id, &read_mask).await
         else {
             continue;
         };
 
         size_bytes += dynamic_field.encoded_len();
         dynamic_fields.push(dynamic_field);
+        last_key_idx = Some(idx);
 
         if dynamic_fields.len() >= page_size || size_bytes >= MAX_PAGE_SIZE_BYTES {
             break;
         }
     }
 
-    let next_page_token = iter
-        .next()
-        .transpose()
-        .map_err(|e| RpcError::new(tonic::Code::Internal, e.to_string()))?
+    let next_page_token = last_key_idx
+        .and_then(|idx| keys.get(idx + 1))
         .map(|cursor| {
             encode_page_token(PageToken {
                 parent,
@@ -139,7 +157,7 @@ struct PageToken {
     field_id: Address,
 }
 
-fn get_dynamic_field(
+async fn get_dynamic_field(
     service: &RpcService,
     parent: &ObjectID,
     field_id: &ObjectID,
@@ -156,7 +174,7 @@ fn get_dynamic_field(
     }
 
     if should_load_field(read_mask)
-        && let Err(e) = load_dynamic_field(service, field_id, read_mask, &mut message)
+        && let Err(e) = load_dynamic_field(service, field_id, read_mask, &mut message).await
     {
         tracing::warn!("error loading dynamic object: {e}");
         return None;
@@ -178,7 +196,7 @@ fn should_load_field(mask: &FieldMaskTree) -> bool {
     .any(|field| mask.contains(field))
 }
 
-fn load_dynamic_field(
+async fn load_dynamic_field(
     service: &RpcService,
     field_id: &ObjectID,
     read_mask: &FieldMaskTree,
@@ -211,6 +229,7 @@ fn load_dynamic_field(
         .reader
         .inner()
         .get_struct_layout(&move_object.type_().clone().into())
+        .await
     {
         Ok(Some(layout)) => layout,
         Ok(None) => {
@@ -254,11 +273,11 @@ fn load_dynamic_field(
     }
 
     if let Some(submask) = read_mask.subtree(DynamicField::FIELD_OBJECT_FIELD) {
-        message.set_field_object(service.render_object_to_proto(
-            &field_object,
-            &submask,
-            &ObjectSet::default(),
-        ));
+        message.set_field_object(
+            service
+                .render_object_to_proto(&field_object, &submask, &ObjectSet::default())
+                .await,
+        );
     }
 
     match field.value_metadata()? {
@@ -289,11 +308,11 @@ fn load_dynamic_field(
                 }
 
                 if let Some(submask) = read_mask.subtree(DynamicField::CHILD_OBJECT_FIELD) {
-                    message.set_child_object(service.render_object_to_proto(
-                        &object,
-                        &submask,
-                        &ObjectSet::default(),
-                    ));
+                    message.set_child_object(
+                        service
+                            .render_object_to_proto(&object, &submask, &ObjectSet::default())
+                            .await,
+                    );
                 }
             }
         }

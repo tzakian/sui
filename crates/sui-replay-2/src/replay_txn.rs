@@ -156,7 +156,7 @@ pub(crate) async fn replay_transaction<S: ReadDataStore>(
 
     let exec_t0 = Instant::now();
     let (result, context_and_effects) =
-        execute_transaction_to_effects(replay_txn, data_store, data_store, &mut trace_builder_opt)?;
+        execute_transaction_to_effects(replay_txn, data_store, data_store, &mut trace_builder_opt).await?;
     let exec_ms = exec_t0.elapsed().as_millis();
 
     // TODO: make tracing better abstracted? different tracers?

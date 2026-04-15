@@ -27,7 +27,7 @@ impl<S> BackingPackageStoreAdapter<S> {
 #[async_trait]
 impl<S> PackageStore for BackingPackageStoreAdapter<S>
 where
-    S: BackingPackageStore + Send + Sync + 'static,
+    S: BackingPackageStore + Send + Sync,
 {
     async fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
         let object_id = ObjectID::from(id);
@@ -70,3 +70,4 @@ where
         }
     }
 }
+

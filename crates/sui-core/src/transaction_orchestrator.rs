@@ -1164,7 +1164,7 @@ where
         self.execute_transaction_v3(request, client_addr).await
     }
 
-    fn simulate_transaction(
+    async fn simulate_transaction(
         &self,
         transaction: TransactionData,
         checks: TransactionChecks,
@@ -1173,6 +1173,7 @@ where
         self.inner
             .validator_state
             .simulate_transaction(transaction, checks, allow_mock_gas_coin)
+            .await
     }
 }
 

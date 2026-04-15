@@ -21,7 +21,7 @@ move-command-line-common.workspace = true
 mysten-common.workspace = true
 sui-types.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 eyre.workspace = true
 serde.workspace = true
 lru.workspace = true

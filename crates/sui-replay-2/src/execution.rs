@@ -65,7 +65,7 @@ pub struct TxnContextAndEffects {
 // Return all the information that can be used by a client
 // to verify execution.
 #[allow(clippy::type_complexity)]
-pub fn execute_transaction_to_effects(
+pub async fn execute_transaction_to_effects(
     txn: ReplayTransaction,
     epoch_store: &dyn EpochStore,
     object_store: &dyn ObjectStore,
@@ -147,7 +147,8 @@ pub fn execute_transaction_to_effects(
             txn_data.sender(),
             digest,
             trace_builder_opt,
-        );
+        )
+        .await;
     let ReplayStore {
         object_cache,
         checkpoint: _,

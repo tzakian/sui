@@ -28,7 +28,7 @@ mod resolve;
 
 const GAS_COIN_SIZE_BYTES: u64 = 40;
 
-pub fn simulate_transaction(
+pub async fn simulate_transaction(
     service: &RpcService,
     request: SimulateTransactionRequest,
 ) -> Result<SimulateTransactionResponse> {
@@ -118,6 +118,7 @@ pub fn simulate_transaction(
                     TransactionChecks::Enabled,
                     true, /* allow mock gas coin */
                 )
+                .await
                 .map_err(anyhow::Error::from)?;
 
             let estimate = estimate_gas_budget_from_gas_cost(
@@ -161,6 +162,7 @@ pub fn simulate_transaction(
         suggested_gas_price,
     } = executor
         .simulate_transaction(transaction.clone(), checks, allow_mock_gas_coin)
+        .await
         .map_err(anyhow::Error::from)?;
 
     if !allow_mock_gas_coin && mock_gas_id.is_some() {
@@ -196,31 +198,36 @@ pub fn simulate_transaction(
                 )
             });
 
-        message.events = submask
-            .subtree(ExecutedTransaction::EVENTS_FIELD.name)
-            .and_then(|mask| {
-                events.map(|events| service.render_events_to_proto(&events, &mask, &objects))
-            });
+        message.events = if let Some(mask) =
+            submask.subtree(ExecutedTransaction::EVENTS_FIELD.name)
+        {
+            if let Some(events) = events {
+                Some(service.render_events_to_proto(&events, &mask, &objects).await)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         message.transaction = submask
             .subtree(ExecutedTransaction::TRANSACTION_FIELD.name)
             .map(|mask| Transaction::merge_from(transaction, &mask));
 
-        message.objects = submask
-            .subtree(
-                ExecutedTransaction::path_builder()
-                    .objects()
-                    .objects()
-                    .finish(),
-            )
-            .map(|mask| {
-                ObjectSet::default().with_objects(
-                    objects
-                        .iter()
-                        .map(|o| service.render_object_to_proto(o, &mask, &objects))
-                        .collect(),
-                )
-            });
+        message.objects = if let Some(mask) = submask.subtree(
+            ExecutedTransaction::path_builder()
+                .objects()
+                .objects()
+                .finish(),
+        ) {
+            let mut rendered = Vec::with_capacity(objects.len());
+            for o in objects.iter() {
+                rendered.push(service.render_object_to_proto(o, &mask, &objects).await);
+            }
+            Some(ObjectSet::default().with_objects(rendered))
+        } else {
+            None
+        };
 
         Some(message)
     } else {
@@ -228,22 +235,22 @@ pub fn simulate_transaction(
     };
 
     let outputs = if read_mask.contains(SimulateTransactionResponse::COMMAND_OUTPUTS_FIELD) {
-        execution_result
-            .into_iter()
-            .flatten()
-            .map(|(reference_outputs, return_values)| {
-                let mut message = CommandResult::default();
-                message.return_values = return_values
-                    .into_iter()
-                    .map(|(bcs, ty)| to_command_output(service, None, bcs, ty))
-                    .collect();
-                message.mutated_by_ref = reference_outputs
-                    .into_iter()
-                    .map(|(arg, bcs, ty)| to_command_output(service, Some(arg), bcs, ty))
-                    .collect();
-                message
-            })
-            .collect()
+        let mut outputs = Vec::new();
+        for (reference_outputs, return_values) in execution_result.into_iter().flatten() {
+            let mut message = CommandResult::default();
+            let mut return_vals = Vec::with_capacity(return_values.len());
+            for (bcs, ty) in return_values {
+                return_vals.push(to_command_output(service, None, bcs, ty).await);
+            }
+            message.return_values = return_vals;
+            let mut mutated = Vec::with_capacity(reference_outputs.len());
+            for (arg, bcs, ty) in reference_outputs {
+                mutated.push(to_command_output(service, Some(arg), bcs, ty).await);
+            }
+            message.mutated_by_ref = mutated;
+            outputs.push(message);
+        }
+        outputs
     } else {
         Vec::new()
     };
@@ -257,7 +264,7 @@ pub fn simulate_transaction(
     Ok(response)
 }
 
-fn to_command_output(
+async fn to_command_output(
     service: &RpcService,
     arg: Option<sui_types::transaction::Argument>,
     bcs: Vec<u8>,
@@ -267,6 +274,7 @@ fn to_command_output(
         .reader
         .inner()
         .get_type_layout(&ty)
+        .await
         .ok()
         .flatten()
         .and_then(|layout| {

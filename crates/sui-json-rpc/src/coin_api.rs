@@ -339,12 +339,12 @@ async fn find_package_object_id(
     kv_store: Arc<TransactionKeyValueStore>,
 ) -> RpcInterimResult<ObjectID> {
     async move {
-        let publish_txn_digest = state.find_publish_txn_digest(package_id)?;
+        let publish_txn_digest = state.find_publish_txn_digest(package_id).await?;
 
         let effect = kv_store.get_fx_by_tx_digest(publish_txn_digest).await?;
 
         for ((id, _, _), _) in effect.created() {
-            if let Ok(object_read) = state.get_object_read(&id)
+            if let Ok(object_read) = state.get_object_read(&id).await
                 && let Ok(object) = object_read.into_object()
                 && matches!(object.type_(), Some(type_) if type_.is(&object_struct_tag))
             {
@@ -478,7 +478,7 @@ impl CoinReadInternal for CoinReadInternalImpl {
         let kv_store = self.transaction_kv_store.clone();
         let object_id =
             find_package_object_id(state, *package_id, object_struct_tag, kv_store).await?;
-        Ok(self.state.get_object_read(&object_id)?.into_object()?)
+        Ok(self.state.get_object_read(&object_id).await?.into_object()?)
     }
 
     async fn get_coins_iterator(

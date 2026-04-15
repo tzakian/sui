@@ -42,7 +42,9 @@ use sui_types::storage::RpcStateReader;
 use sui_types::storage::WriteStore;
 use sui_types::storage::error::Error as StorageError;
 use sui_types::storage::error::Result;
-use sui_types::storage::{ObjectKey, OverlayBackingPackageStore, ReadStore};
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::{BackingPackageStoreAdapter, FallbackPackageStore};
+use sui_types::storage::{ObjectKey, ReadStore};
 use sui_types::transaction::VerifiedTransaction;
 use tap::Pipe;
 use tap::TapFallible;
@@ -529,6 +531,7 @@ impl ChildObjectResolver for RestReadStore {
     }
 }
 
+#[async_trait::async_trait]
 impl RpcStateReader for RestReadStore {
     fn get_lowest_available_checkpoint_objects(
         &self,
@@ -549,22 +552,20 @@ impl RpcStateReader for RestReadStore {
         Some(self)
     }
 
-    fn get_struct_layout_with_overlay(
+    async fn get_struct_layout_with_overlay(
         &self,
         struct_tag: &move_core_types::language_storage::StructTag,
         overlay: &ObjectSet,
     ) -> Result<Option<move_core_types::annotated_value::MoveTypeLayout>> {
-        let backing_store = self.state.get_backing_package_store();
-        let overlay_store = OverlayBackingPackageStore::new(overlay, backing_store.as_ref());
-        self.state
-            .load_epoch_store_one_call_per_task()
-            .executor()
-            // TODO(cache) - must read through cache
-            .type_layout_resolver(Box::new(overlay_store))
-            .get_annotated_layout(struct_tag)
-            .map(|layout| layout.into_layout())
-            .map(Some)
-            .map_err(StorageError::custom)
+        let resolver = Resolver::new(FallbackPackageStore::new(
+            BackingPackageStoreAdapter::new(overlay),
+            BackingPackageStoreAdapter::new(self.state.get_backing_package_store().as_ref()),
+        ));
+        let layout = resolver
+            .datatype_layout(struct_tag)
+            .await
+            .map_err(|e| StorageError::custom(e))?;
+        Ok(Some(layout.into_layout()))
     }
 }
 

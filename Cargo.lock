@@ -14133,6 +14133,7 @@ name = "sui-adapter-latest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bcs",
  "either",
  "indexmap 2.8.0",
@@ -14175,6 +14176,7 @@ name = "sui-adapter-v0"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bcs",
  "leb128",
  "move-binary-format",
@@ -14202,6 +14204,7 @@ name = "sui-adapter-v1"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bcs",
  "leb128",
  "move-binary-format",
@@ -14228,6 +14231,7 @@ name = "sui-adapter-v2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bcs",
  "leb128",
  "move-binary-format",
@@ -14254,6 +14258,7 @@ name = "sui-adapter-v3"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bcs",
  "either",
  "indexmap 2.8.0",
@@ -14769,6 +14774,7 @@ dependencies = [
  "sui-move",
  "sui-move-build",
  "sui-network",
+ "sui-package-resolver",
  "sui-protocol-config",
  "sui-rpc",
  "sui-simulator",
@@ -14970,6 +14976,7 @@ dependencies = [
  "sui-move-build",
  "sui-network",
  "sui-node",
+ "sui-package-resolver",
  "sui-protocol-config",
  "sui-rpc",
  "sui-rpc-api",
@@ -15003,6 +15010,7 @@ dependencies = [
 name = "sui-execution"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cargo_metadata 0.15.4",
  "move-abstract-interpreter",
  "move-abstract-interpreter-v2",
@@ -15219,6 +15227,7 @@ dependencies = [
  "bcs",
  "camino",
  "fastcrypto",
+ "futures",
  "move-binary-format",
  "move-core-types",
  "mysten-common",
@@ -15774,6 +15783,7 @@ dependencies = [
  "sui-name-service",
  "sui-open-rpc",
  "sui-open-rpc-macros",
+ "sui-package-resolver",
  "sui-protocol-config",
  "sui-storage",
  "sui-transaction-builder",
@@ -16686,6 +16696,7 @@ dependencies = [
  "sui-framework",
  "sui-json-rpc-api",
  "sui-json-rpc-types",
+ "sui-package-resolver",
  "sui-protocol-config",
  "sui-sdk",
  "sui-storage",
@@ -17312,6 +17323,7 @@ dependencies = [
  "sui-simulator",
  "sui-types",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 
@@ -19102,6 +19114,7 @@ dependencies = [
  "rand 0.8.5",
  "sui-core",
  "sui-move-build",
+ "sui-package-resolver",
  "sui-protocol-config",
  "sui-types",
  "tokio",

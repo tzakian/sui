@@ -131,6 +131,7 @@ impl SingleValidator {
                 transaction.data().intent_message().value.clone(),
                 *transaction.digest(),
             )
+            .await
             .unwrap()
             .2;
         assert!(effects.status().is_ok());
@@ -221,7 +222,7 @@ impl SingleValidator {
         )
         .unwrap();
         let (kind, signer, gas_data) = executable.transaction_data().execution_parts();
-        let (inner_temp_store, _, effects, _timings, _) =
+        let (inner_temp_store, _, effects, _timings, _) = futures::executor::block_on(
             self.epoch_store.executor().execute_transaction_to_effects(
                 &store,
                 self.epoch_store.protocol_config(),
@@ -238,7 +239,8 @@ impl SingleValidator {
                 signer,
                 *executable.digest(),
                 &mut None,
-            );
+            ),
+        );
         assert!(effects.status().is_ok());
         store.commit_objects(inner_temp_store);
         effects

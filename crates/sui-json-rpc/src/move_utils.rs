@@ -45,7 +45,7 @@ pub trait MoveUtilsInternalTrait {
         package: ObjectID,
     ) -> Result<BTreeMap<String, NormalizedModule>, Error>;
 
-    fn get_object_read(&self, package: ObjectID) -> Result<ObjectRead, Error>;
+    async fn get_object_read(&self, package: ObjectID) -> Result<ObjectRead, Error>;
 }
 
 pub struct MoveUtilsInternal {
@@ -83,7 +83,7 @@ impl MoveUtilsInternalTrait for MoveUtilsInternal {
         &self,
         package: ObjectID,
     ) -> Result<BTreeMap<String, NormalizedModule>, Error> {
-        let object_read = self.get_state().get_object_read(&package).tap_err(|_| {
+        let object_read = self.get_state().get_object_read(&package).await.tap_err(|_| {
             warn!("Failed to call get_move_modules_by_package for package: {package:?}");
         })?;
         let pool = &mut normalized::RcPool::new();
@@ -121,8 +121,8 @@ impl MoveUtilsInternalTrait for MoveUtilsInternal {
         }
     }
 
-    fn get_object_read(&self, package: ObjectID) -> Result<ObjectRead, Error> {
-        self.state.get_object_read(&package).map_err(Error::from)
+    async fn get_object_read(&self, package: ObjectID) -> Result<ObjectRead, Error> {
+        self.state.get_object_read(&package).await.map_err(Error::from)
     }
 }
 
@@ -229,7 +229,7 @@ impl MoveUtilsServer for MoveUtils {
         function: String,
     ) -> RpcResult<Vec<MoveFunctionArgType>> {
         with_tracing!(async move {
-            let object_read = self.internal.get_object_read(package)?;
+            let object_read = self.internal.get_object_read(package).await?;
 
             let pool = &mut normalized::RcPool::new();
             let normalized = match object_read {

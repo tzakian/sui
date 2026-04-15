@@ -412,13 +412,13 @@ pub fn get_module_by_id<S: BackingPackageStore>(
 /// Move modules right after transaction execution, but newly published packages have not yet been
 /// committed to the backing store on a fullnode.
 pub struct PostExecutionPackageResolver {
-    backing_store: Arc<dyn BackingPackageStore>,
+    backing_store: Arc<dyn BackingPackageStore + Send + Sync>,
     new_packages: BTreeMap<ObjectID, PackageObject>,
 }
 
 impl PostExecutionPackageResolver {
     pub fn new(
-        backing_store: Arc<dyn BackingPackageStore>,
+        backing_store: Arc<dyn BackingPackageStore + Send + Sync>,
         output_objects: &Option<Vec<Object>>,
     ) -> Self {
         let new_packages = output_objects

@@ -781,7 +781,7 @@ impl TemporaryStore<'_> {
 type ModifiedObjectInfo<'a> = (ObjectID, Option<(SequenceNumber, u64)>, Option<&'a Object>);
 
 impl TemporaryStore<'_> {
-    fn get_input_sui(
+    async fn get_input_sui(
         &self,
         id: &ObjectID,
         expected_version: SequenceNumber,
@@ -797,7 +797,7 @@ impl TemporaryStore<'_> {
                     obj.version(),
                 );
             }
-            obj.get_total_sui(layout_resolver).map_err(|e| {
+            obj.get_total_sui(layout_resolver).await.map_err(|e| {
                 make_invariant_violation!(
                     "Failed looking up input SUI in SUI conservation checking for input with \
                          type {:?}: {e:#?}",
@@ -811,7 +811,7 @@ impl TemporaryStore<'_> {
                     "Failed looking up dynamic field {id} in SUI conservation checking"
                 );
             };
-            obj.get_total_sui(layout_resolver).map_err(|e| {
+            obj.get_total_sui(layout_resolver).await.map_err(|e| {
                 make_invariant_violation!(
                     "Failed looking up input SUI in SUI conservation checking for type \
                          {:?}: {e:#?}",
@@ -871,7 +871,7 @@ impl TemporaryStore<'_> {
     /// rea `epoch_fees` and `epoch_rebates` are only set for advance epoch transactions.  The
     /// advance epoch transaction would mint `epoch_fees` amount of SUI, and burn `epoch_rebates`
     /// amount of SUI. We need these information for conservation check.
-    pub fn check_sui_conserved(
+    pub async fn check_sui_conserved(
         &self,
         gas_summary: &GasCostSummary,
         advance_epoch_gas_summary: Option<(u64, u64)>,
@@ -890,13 +890,13 @@ impl TemporaryStore<'_> {
             if let Some((version, storage_rebate)) = input {
                 total_input_rebate += storage_rebate;
                 if do_expensive_checks {
-                    total_input_sui += self.get_input_sui(&id, version, layout_resolver)?;
+                    total_input_sui += self.get_input_sui(&id, version, layout_resolver).await?;
                 }
             }
             if let Some(object) = output {
                 total_output_rebate += object.storage_rebate;
                 if do_expensive_checks {
-                    total_output_sui += object.get_total_sui(layout_resolver).map_err(|e| {
+                    total_output_sui += object.get_total_sui(layout_resolver).await.map_err(|e| {
                         make_invariant_violation!(
                             "Failed looking up output SUI in SUI conservation checking for \
                              mutated type {:?}: {e:#?}",

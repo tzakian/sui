@@ -30,6 +30,7 @@ use move_command_line_common::display::try_render_constant;
 use move_command_line_common::error_bitset::ErrorBitset;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value as A;
+use move_core_types::annotated_value::MoveDatatypeLayout;
 use move_core_types::annotated_value::MoveEnumLayout;
 use move_core_types::annotated_value::MoveFieldLayout;
 use move_core_types::annotated_value::MoveStructLayout;
@@ -307,7 +308,7 @@ struct ResolutionContext<'l> {
 /// Interface to abstract over access to a store of live packages.  Used to override the default
 /// store during testing.
 #[async_trait]
-pub trait PackageStore: Send + Sync + 'static {
+pub trait PackageStore: Send + Sync {
     /// Read package contents. Fails if `id` is not an object, not a package, or is malformed in
     /// some way.
     async fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>>;
@@ -651,6 +652,21 @@ impl<S: PackageStore> Resolver<S> {
         let _bitset = ErrorBitset::from_u64(abort_code)?;
         let package = self.package_store.fetch(*module_id.address()).await.ok()?;
         package.resolve_clever_error(module_id.name().as_str(), abort_code)
+    }
+}
+
+#[async_trait(?Send)]
+impl<S: PackageStore> sui_types::layout_resolver::LayoutResolver for Resolver<S> {
+    async fn get_annotated_layout(
+        &mut self,
+        struct_tag: &move_core_types::language_storage::StructTag,
+    ) -> std::result::Result<MoveDatatypeLayout, sui_types::error::SuiError> {
+        self.datatype_layout(struct_tag).await.map_err(|e| {
+            sui_types::error::SuiErrorKind::FailObjectLayout {
+                st: e.to_string(),
+            }
+            .into()
+        })
     }
 }
 

@@ -639,8 +639,8 @@ impl<R: rand::RngCore + rand::CryptoRng> ConfigBuilder<R> {
 mod tests {
     use sui_config::node::Genesis;
 
-    #[test]
-    fn serialize_genesis_config_in_place() {
+    #[tokio::test]
+    async fn serialize_genesis_config_in_place() {
         let dir = tempfile::TempDir::new().unwrap();
         let network_config = crate::network_config_builder::ConfigBuilder::new(&dir).build();
         let genesis = network_config.genesis;

@@ -10,7 +10,8 @@ use crate::object::Object;
 use crate::signature::GenericSignature;
 use crate::storage::ObjectKey;
 use crate::storage::error::Error as StorageError;
-use crate::storage::{BackingPackageStore, EpochInfo};
+use crate::error::SuiErrorKind;
+use crate::storage::{BackingPackageStore, EpochInfo, PackageObject};
 use crate::sui_system_state::SuiSystemStateTrait;
 use crate::sui_system_state::get_sui_system_state;
 use crate::transaction::{Transaction, TransactionData, TransactionDataAPI, TransactionKind};
@@ -243,6 +244,27 @@ impl ObjectSet {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+impl BackingPackageStore for ObjectSet {
+    fn get_package_object(
+        &self,
+        package_id: &ObjectID,
+    ) -> crate::error::SuiResult<Option<PackageObject>> {
+        for obj in self.iter() {
+            if &obj.id() == package_id {
+                fp_ensure!(
+                    obj.is_package(),
+                    SuiErrorKind::BadObjectType {
+                        error: format!("Package expected, Move object found: {package_id}"),
+                    }
+                    .into()
+                );
+                return Ok(Some(PackageObject::new(obj.clone())));
+            }
+        }
+        Ok(None)
     }
 }
 

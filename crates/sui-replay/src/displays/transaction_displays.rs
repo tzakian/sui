@@ -6,8 +6,8 @@ use crate::replay::LocalExec;
 use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 use move_core_types::language_storage::TypeTag;
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use sui_execution::Executor;
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::BackingPackageStoreAdapter;
 use sui_types::execution::ExecutionResult;
 use sui_types::object::bounded_visitor::BoundedVisitor;
 use sui_types::transaction::CallArg::Pure;
@@ -299,20 +299,18 @@ impl Display for Pretty<'_, TypeTag> {
 
 fn resolve_to_layout(
     type_tag: &TypeTag,
-    executor: &Arc<dyn Executor + Send + Sync>,
-    store_factory: &LocalExec,
+    resolver: &Resolver<BackingPackageStoreAdapter<&LocalExec>>,
 ) -> MoveTypeLayout {
     match type_tag {
         TypeTag::Vector(inner) => {
-            MoveTypeLayout::Vector(Box::from(resolve_to_layout(inner, executor, store_factory)))
+            MoveTypeLayout::Vector(Box::from(resolve_to_layout(inner, resolver)))
         }
-        TypeTag::Struct(inner) => {
-            let mut layout_resolver = executor.type_layout_resolver(Box::new(store_factory));
-            layout_resolver
-                .get_annotated_layout(inner)
+        TypeTag::Struct(inner) => tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(resolver.datatype_layout(inner))
                 .unwrap()
                 .into_layout()
-        }
+        }),
         TypeTag::Bool => MoveTypeLayout::Bool,
         TypeTag::U8 => MoveTypeLayout::U8,
         TypeTag::U64 => MoveTypeLayout::U64,
@@ -328,27 +326,26 @@ fn resolve_to_layout(
 fn resolve_value(
     bytes: &[u8],
     type_tag: &TypeTag,
-    executor: &Arc<dyn Executor + Send + Sync>,
-    store_factory: &LocalExec,
+    resolver: &Resolver<BackingPackageStoreAdapter<&LocalExec>>,
 ) -> anyhow::Result<MoveValue> {
-    let layout = resolve_to_layout(type_tag, executor, store_factory);
+    let layout = resolve_to_layout(type_tag, resolver);
     BoundedVisitor::deserialize_value(bytes, &layout)
 }
 
 pub fn transform_command_results_to_annotated(
-    executor: &Arc<dyn Executor + Send + Sync>,
     store_factory: &LocalExec,
     results: Vec<ExecutionResult>,
 ) -> anyhow::Result<Vec<ResolvedResults>> {
+    let resolver = Resolver::new(BackingPackageStoreAdapter::new(store_factory));
     let mut output = Vec::new();
     for (m_refs, return_vals) in results.iter() {
         let mut m_refs_out = Vec::new();
         let mut return_vals_out = Vec::new();
         for (arg, bytes, tag) in m_refs {
-            m_refs_out.push((*arg, resolve_value(bytes, tag, executor, store_factory)?));
+            m_refs_out.push((*arg, resolve_value(bytes, tag, &resolver)?));
         }
         for (bytes, tag) in return_vals {
-            return_vals_out.push(resolve_value(bytes, tag, executor, store_factory)?);
+            return_vals_out.push(resolve_value(bytes, tag, &resolver)?);
         }
         output.push(ResolvedResults {
             mutable_reference_outputs: m_refs_out,

@@ -1,6 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use async_trait::async_trait;
+
 use crate::error::{SuiError, SuiErrorKind};
 use move_bytecode_utils::{layout::TypeLayoutBuilder, module_cache::GetModule};
 use move_core_types::{
@@ -8,8 +10,9 @@ use move_core_types::{
     language_storage::{StructTag, TypeTag},
 };
 
+#[async_trait(?Send)]
 pub trait LayoutResolver {
-    fn get_annotated_layout(
+    async fn get_annotated_layout(
         &mut self,
         struct_tag: &StructTag,
     ) -> Result<A::MoveDatatypeLayout, SuiError>;

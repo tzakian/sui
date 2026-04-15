@@ -25,7 +25,9 @@ use std::{sync::Arc, time::Instant};
 use sui_types::SUI_ACCUMULATOR_ROOT_OBJECT_ID;
 use sui_types::base_types::SequenceNumber;
 use sui_types::crypto::RandomnessRound;
-use sui_types::inner_temporary_store::PackageStoreWithFallback;
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::{BackingPackageStoreAdapter, FallbackPackageStore};
+use sui_types::full_checkpoint_content::CheckpointData;
 use sui_types::messages_checkpoint::{CheckpointContents, CheckpointSequenceNumber};
 use sui_types::transaction::{TransactionDataAPI, TransactionKind};
 
@@ -713,18 +715,16 @@ impl CheckpointExecutor {
         .expect("failed to load checkpoint data");
 
         if self.state.rpc_index.is_some() || self.config.data_ingestion_dir.is_some() {
-            let checkpoint_data = checkpoint.clone().into();
+            let checkpoint_data: CheckpointData = checkpoint.clone().into();
             // Index the checkpoint. this is done out of order and is not written and committed to the
             // DB until later (committing must be done in-order)
             if let Some(rpc_index) = &self.state.rpc_index {
-                let mut layout_resolver = self.epoch_store.executor().type_layout_resolver(
-                    Box::new(PackageStoreWithFallback::new(
-                        self.state.get_backing_package_store(),
-                        &checkpoint_data,
-                    )),
-                );
+                let resolver = Resolver::new(FallbackPackageStore::new(
+                    BackingPackageStoreAdapter::new(self.state.get_backing_package_store().as_ref()),
+                    BackingPackageStoreAdapter::new(&checkpoint_data),
+                ));
 
-                rpc_index.index_checkpoint(&checkpoint_data, layout_resolver.as_mut());
+                rpc_index.index_checkpoint(&checkpoint_data, &resolver);
             }
 
             if let Some(path) = &self.config.data_ingestion_dir {

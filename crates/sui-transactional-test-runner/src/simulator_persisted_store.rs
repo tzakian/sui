@@ -721,6 +721,7 @@ impl ChildObjectResolver for PersistedStoreInnerReadOnlyWrapper {
     }
 }
 
+#[async_trait::async_trait]
 impl RpcStateReader for PersistedStoreInnerReadOnlyWrapper {
     fn get_lowest_available_checkpoint_objects(
         &self,
@@ -738,7 +739,7 @@ impl RpcStateReader for PersistedStoreInnerReadOnlyWrapper {
         None
     }
 
-    fn get_struct_layout_with_overlay(
+    async fn get_struct_layout_with_overlay(
         &self,
         _: &move_core_types::language_storage::StructTag,
         _overlay: &sui_types::full_checkpoint_content::ObjectSet,

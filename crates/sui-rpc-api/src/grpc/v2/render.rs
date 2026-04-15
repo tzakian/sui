@@ -13,7 +13,7 @@ use sui_types::full_checkpoint_content::ObjectSet;
 use crate::{RpcService, reader::DisplayStore};
 
 impl RpcService {
-    pub fn render_object_to_proto(
+    pub async fn render_object_to_proto(
         &self,
         object: &sui_types::object::Object,
         read_mask: &FieldMaskTree,
@@ -23,14 +23,16 @@ impl RpcService {
 
         if read_mask.contains(Object::JSON_FIELD) {
             let move_object = object.data.try_as_move();
-            message.json = move_object.and_then(|m| {
-                self.render_json(&m.type_().clone().into(), m.contents(), output_objects)
-                    .map(Box::new)
-            });
+            if let Some(m) = move_object {
+                message.json = self
+                    .render_json(&m.type_().clone().into(), m.contents(), output_objects)
+                    .await
+                    .map(Box::new);
+            }
         }
 
         if read_mask.contains(Object::DISPLAY_FIELD) {
-            message.display = self.render_object_display(object).map(Box::new);
+            message.display = self.render_object_display(object).await.map(Box::new);
         }
 
         message.merge(object, read_mask);
@@ -40,7 +42,7 @@ impl RpcService {
 
     /// Render a Move value as JSON.
     /// If output_objects is provided, packages from it will be checked first before the backing store.
-    pub fn render_json(
+    pub async fn render_json(
         &self,
         struct_tag: &move_core_types::language_storage::StructTag,
         contents: &[u8],
@@ -50,6 +52,7 @@ impl RpcService {
             .reader
             .inner()
             .get_struct_layout_with_overlay(struct_tag, output_objects)
+            .await
             .ok()
             .flatten()?;
 
@@ -60,7 +63,10 @@ impl RpcService {
             .ok()
     }
 
-    pub fn render_object_display(&self, object: &sui_types::object::Object) -> Option<Display> {
+    pub async fn render_object_display(
+        &self,
+        object: &sui_types::object::Object,
+    ) -> Option<Display> {
         let move_object = object.data.try_as_move()?;
         let object_type = &move_object.type_().clone().into();
         let contents = move_object.contents();
@@ -78,6 +84,7 @@ impl RpcService {
             .reader
             .inner()
             .get_struct_layout(object_type)
+            .await
             .ok()
             .flatten()?;
 
@@ -129,7 +136,7 @@ impl RpcService {
         Some(display)
     }
 
-    pub fn render_events_to_proto(
+    pub async fn render_events_to_proto(
         &self,
         events: &sui_types::effects::TransactionEvents,
         mask: &FieldMaskTree,
@@ -148,17 +155,18 @@ impl RpcService {
         }
 
         if let Some(event_mask) = mask.subtree(TransactionEvents::EVENTS_FIELD) {
-            message.events = events
-                .data
-                .iter()
-                .map(|event| self.render_event_to_proto(event, &event_mask, output_objects))
-                .collect();
+            let mut rendered_events = Vec::with_capacity(events.data.len());
+            for event in &events.data {
+                rendered_events
+                    .push(self.render_event_to_proto(event, &event_mask, output_objects).await);
+            }
+            message.events = rendered_events;
         }
 
         message
     }
 
-    pub fn render_event_to_proto(
+    pub async fn render_event_to_proto(
         &self,
         event: &sui_types::event::Event,
         mask: &FieldMaskTree,
@@ -191,6 +199,7 @@ impl RpcService {
         if mask.contains(Event::JSON_FIELD) {
             message.json = self
                 .render_json(&event.type_, &event.contents, output_objects)
+                .await
                 .map(Box::new);
         }
 

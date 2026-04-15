@@ -81,10 +81,10 @@ use sui_types::execution_params::ExecutionOrEarlyError;
 use sui_types::execution_params::FundsWithdrawStatus;
 use sui_types::execution_params::get_early_execution_error;
 use sui_types::execution_status::ExecutionStatus;
-use sui_types::inner_temporary_store::PackageStoreWithFallback;
-use sui_types::layout_resolver::LayoutResolver;
 use sui_types::layout_resolver::into_struct_layout;
 use sui_types::messages_consensus::AuthorityCapabilitiesV2;
+use sui_package_resolver::backing_store::{BackingPackageStoreAdapter, FallbackPackageStore};
+use sui_package_resolver::Resolver;
 use sui_types::object::bounded_visitor::BoundedVisitor;
 use sui_types::storage::ChildObjectResolver;
 use sui_types::storage::InputKey;
@@ -1942,25 +1942,29 @@ impl AuthorityState {
             accumulator_version,
         );
 
-        let (inner_temp_store, gas_status, effects, timings, execution_error) = executor
-            // TODO only run this function on FullNodes, use `execute_transaction_to_effects` on validators.
-            .execute_transaction_to_effects_and_execution_error(
-                store,
-                protocol_config,
-                self.metrics.execution_metrics.clone(),
-                enable_expensive_checks,
-                execution_params,
-                epoch_id,
-                epoch_timestamp_ms,
-                input_objects,
-                gas_data,
-                gas_status,
-                kind,
-                rewritten_inputs,
-                signer,
-                tx_digest,
-                &mut None,
-            );
+        let (inner_temp_store, gas_status, effects, timings, execution_error) =
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(
+                    executor
+                        .execute_transaction_to_effects_and_execution_error(
+                            store,
+                            protocol_config,
+                            self.metrics.execution_metrics.clone(),
+                            enable_expensive_checks,
+                            execution_params,
+                            epoch_id,
+                            epoch_timestamp_ms,
+                            input_objects,
+                            gas_data,
+                            gas_status,
+                            kind,
+                            rewritten_inputs,
+                            signer,
+                            tx_digest,
+                            &mut None,
+                        ),
+                )
+            });
 
         (
             inner_temp_store,
@@ -2206,7 +2210,7 @@ impl AuthorityState {
         ExecutionOutput::Success((transaction_outputs, timings, execution_error_opt.err()))
     }
 
-    pub fn prepare_certificate_for_benchmark(
+    pub async fn prepare_certificate_for_benchmark(
         &self,
         certificate: &VerifiedExecutableTransaction,
         input_objects: InputObjects,
@@ -2256,10 +2260,11 @@ impl AuthorityState {
         }
 
         self.dry_exec_transaction_impl(&epoch_store, transaction, transaction_digest)
+            .await
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn dry_exec_transaction_for_benchmark(
+    pub async fn dry_exec_transaction_for_benchmark(
         &self,
         transaction: TransactionData,
         transaction_digest: TransactionDigest,
@@ -2271,10 +2276,11 @@ impl AuthorityState {
     )> {
         let epoch_store = self.load_epoch_store_one_call_per_task();
         self.dry_exec_transaction_impl(&epoch_store, transaction, transaction_digest)
+            .await
     }
 
     #[allow(clippy::type_complexity)]
-    fn dry_exec_transaction_impl(
+    async fn dry_exec_transaction_impl(
         &self,
         epoch_store: &AuthorityPerEpochStore,
         transaction: TransactionData,
@@ -2420,13 +2426,21 @@ impl AuthorityState {
         let module_cache =
             TemporaryModuleResolver::new(&inner_temp_store, epoch_store.module_cache().clone());
 
-        let mut layout_resolver =
-            epoch_store
-                .executor()
-                .type_layout_resolver(Box::new(PackageStoreWithFallback::new(
-                    &inner_temp_store,
-                    self.get_backing_package_store(),
-                )));
+        // Compute these before `transaction` is consumed by try_from_with_module_cache.
+        let suggested_gas_price = self
+            .congestion_tracker
+            .get_suggested_gas_prices(&transaction);
+        let input = SuiTransactionBlockData::try_from_with_module_cache(
+            transaction,
+            &module_cache,
+        )
+        .map_err(|e| SuiErrorKind::TransactionSerializationError {
+            error: format!(
+                "Failed to convert transaction to SuiTransactionBlockData: {}",
+                e
+            ),
+        })?; // TODO: replace the underlying try_from to SuiError. This one goes deep
+
         // Returning empty vector here because we recalculate changes in the rpc layer.
         let object_changes = Vec::new();
 
@@ -2461,28 +2475,26 @@ impl AuthorityState {
             .err()
             .and_then(|e| e.source_ref().as_ref().map(|e| e.to_string()));
 
+        let mut resolver = Resolver::new(FallbackPackageStore::new(
+            BackingPackageStoreAdapter::new(&inner_temp_store),
+            BackingPackageStoreAdapter::new(self.get_backing_package_store().as_ref()),
+        ));
+
+        let events = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(SuiTransactionBlockEvents::try_from(
+                inner_temp_store.events.clone(),
+                tx_digest,
+                None,
+                &mut resolver,
+            ))
+        })?;
+
         Ok((
             DryRunTransactionBlockResponse {
-                suggested_gas_price: self
-                    .congestion_tracker
-                    .get_suggested_gas_prices(&transaction),
-                input: SuiTransactionBlockData::try_from_with_module_cache(
-                    transaction,
-                    &module_cache,
-                )
-                .map_err(|e| SuiErrorKind::TransactionSerializationError {
-                    error: format!(
-                        "Failed to convert transaction to SuiTransactionBlockData: {}",
-                        e
-                    ),
-                })?, // TODO: replace the underlying try_from to SuiError. This one goes deep
+                suggested_gas_price,
+                input,
                 effects: effects.clone().try_into()?,
-                events: SuiTransactionBlockEvents::try_from(
-                    inner_temp_store.events.clone(),
-                    tx_digest,
-                    None,
-                    layout_resolver.as_mut(),
-                )?,
+                events,
                 object_changes,
                 balance_changes,
                 execution_error_source,
@@ -2493,7 +2505,7 @@ impl AuthorityState {
         ))
     }
 
-    pub fn simulate_transaction(
+    pub async fn simulate_transaction(
         &self,
         mut transaction: TransactionData,
         checks: TransactionChecks,
@@ -2649,23 +2661,26 @@ impl AuthorityState {
             .epoch_start_config()
             .epoch_data()
             .epoch_start_timestamp();
-        let (inner_temp_store, _, effects, execution_result) = executor.dev_inspect_transaction(
-            &tracking_store,
-            protocol_config,
-            self.metrics.execution_metrics.clone(),
-            false, // expensive_checks
-            execution_params,
-            &epoch_id,
-            epoch_timestamp_ms,
-            checked_input_objects,
-            gas_data,
-            gas_status,
-            kind,
-            rewritten_inputs.clone(),
-            signer,
-            tx_digest,
-            dev_inspect,
-        );
+        let (inner_temp_store, _, effects, execution_result) =
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(executor.dev_inspect_transaction(
+                    &tracking_store,
+                    protocol_config,
+                    self.metrics.execution_metrics.clone(),
+                    false, // expensive_checks
+                    execution_params,
+                    &epoch_id,
+                    epoch_timestamp_ms,
+                    checked_input_objects,
+                    gas_data,
+                    gas_status,
+                    kind,
+                    rewritten_inputs.clone(),
+                    signer,
+                    tx_digest,
+                    dev_inspect,
+                ))
+            });
 
         // Post-execution: check object funds (non-address withdrawals discovered during execution).
         let (inner_temp_store, effects, execution_result) = if execution_result.is_ok() {
@@ -2685,23 +2700,27 @@ impl AuthorityState {
                     epoch_store.reference_gas_price(),
                     protocol_config,
                 )?;
-                let (store, _, effects, result) = executor.dev_inspect_transaction(
-                    &tracking_store,
-                    protocol_config,
-                    self.metrics.execution_metrics.clone(),
-                    false,
-                    ExecutionOrEarlyError::Err(ExecutionErrorKind::InsufficientFundsForWithdraw),
-                    &epoch_id,
-                    epoch_timestamp_ms,
-                    cloned_input_objects,
-                    cloned_gas,
-                    retry_gas_status,
-                    cloned_kind,
-                    rewritten_inputs,
-                    signer,
-                    tx_digest,
-                    dev_inspect,
-                );
+                let (store, _, effects, result) = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(executor.dev_inspect_transaction(
+                        &tracking_store,
+                        protocol_config,
+                        self.metrics.execution_metrics.clone(),
+                        false,
+                        ExecutionOrEarlyError::Err(
+                            ExecutionErrorKind::InsufficientFundsForWithdraw,
+                        ),
+                        &epoch_id,
+                        epoch_timestamp_ms,
+                        cloned_input_objects,
+                        cloned_gas,
+                        retry_gas_status,
+                        cloned_kind,
+                        rewritten_inputs,
+                        signer,
+                        tx_digest,
+                        dev_inspect,
+                    ))
+                });
                 (store, effects, result)
             } else {
                 (inner_temp_store, effects, execution_result)
@@ -2944,26 +2963,29 @@ impl AuthorityState {
             &mut transaction_kind,
             None,
         );
-        let (inner_temp_store, _, effects, execution_result) = executor.dev_inspect_transaction(
-            self.get_backing_store().as_ref(),
-            protocol_config,
-            self.metrics.execution_metrics.clone(),
-            /* expensive checks */ false,
-            execution_params,
-            &epoch_store.epoch_start_config().epoch_data().epoch_id(),
-            epoch_store
-                .epoch_start_config()
-                .epoch_data()
-                .epoch_start_timestamp(),
-            checked_input_objects,
-            gas_data,
-            gas_status,
-            transaction_kind,
-            rewritten_inputs,
-            sender,
-            transaction_digest,
-            skip_checks,
-        );
+        let (inner_temp_store, _, effects, execution_result) =
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(executor.dev_inspect_transaction(
+                    self.get_backing_store().as_ref(),
+                    protocol_config,
+                    self.metrics.execution_metrics.clone(),
+                    /* expensive checks */ false,
+                    execution_params,
+                    &epoch_store.epoch_start_config().epoch_data().epoch_id(),
+                    epoch_store
+                        .epoch_start_config()
+                        .epoch_data()
+                        .epoch_start_timestamp(),
+                    checked_input_objects,
+                    gas_data,
+                    gas_status,
+                    transaction_kind,
+                    rewritten_inputs,
+                    sender,
+                    transaction_digest,
+                    skip_checks,
+                ))
+            });
 
         let raw_effects = if show_raw_txn_data_and_effects {
             bcs::to_bytes(&effects).map_err(|_| SuiErrorKind::TransactionSerializationError {
@@ -2973,22 +2995,21 @@ impl AuthorityState {
             vec![]
         };
 
-        let mut layout_resolver =
-            epoch_store
-                .executor()
-                .type_layout_resolver(Box::new(PackageStoreWithFallback::new(
-                    &inner_temp_store,
-                    self.get_backing_package_store(),
-                )));
+        let mut resolver = Resolver::new(FallbackPackageStore::new(
+            BackingPackageStoreAdapter::new(&inner_temp_store),
+            BackingPackageStoreAdapter::new(self.get_backing_package_store().as_ref()),
+        ));
 
-        DevInspectResults::new(
-            effects,
-            inner_temp_store.events.clone(),
-            execution_result,
-            raw_txn_data,
-            raw_effects,
-            layout_resolver.as_mut(),
-        )
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(DevInspectResults::new(
+                effects,
+                inner_temp_store.events.clone(),
+                execution_result,
+                raw_txn_data,
+                raw_effects,
+                &mut resolver,
+            ))
+        })
     }
 
     // Only used for testing because of how epoch store is loaded.
@@ -3003,7 +3024,7 @@ impl AuthorityState {
     }
 
     #[instrument(level = "debug", skip_all, err(level = "debug"))]
-    fn index_tx(
+    async fn index_tx(
         sequence: u64,
         backing_package_store: &Arc<dyn BackingPackageStore + Send + Sync>,
         object_store: &Arc<dyn ObjectStore + Send + Sync>,
@@ -3017,10 +3038,10 @@ impl AuthorityState {
         tx_coins: Option<TxCoins>,
         written: &WrittenObjects,
         inner_temporary_store: &InnerTemporaryStore,
-        epoch_store: &Arc<AuthorityPerEpochStore>,
         acquire_locks: bool,
     ) -> SuiResult<(StagedBatch, IndexStoreCacheUpdatesWithLocks)> {
-        let changes = Self::process_object_index(backing_package_store, object_store, effects, written, inner_temporary_store, epoch_store)
+        let changes = Self::process_object_index(backing_package_store, object_store, effects, written, inner_temporary_store)
+            .await
             .tap_err(|e| warn!(tx_digest=?digest, "Failed to process object index, index_tx is skipped: {e}"))?;
 
         indexes.index_tx(
@@ -3138,21 +3159,17 @@ impl AuthorityState {
         }
     }
 
-    fn process_object_index(
+    async fn process_object_index(
         backing_package_store: &Arc<dyn BackingPackageStore + Send + Sync>,
         object_store: &Arc<dyn ObjectStore + Send + Sync>,
         effects: &TransactionEffects,
         written: &WrittenObjects,
         inner_temporary_store: &InnerTemporaryStore,
-        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult<ObjectIndexChanges> {
-        let mut layout_resolver =
-            epoch_store
-                .executor()
-                .type_layout_resolver(Box::new(PackageStoreWithFallback::new(
-                    inner_temporary_store,
-                    backing_package_store,
-                )));
+        let resolver = Resolver::new(FallbackPackageStore::new(
+            BackingPackageStoreAdapter::new(inner_temporary_store),
+            BackingPackageStoreAdapter::new(backing_package_store.as_ref()),
+        ));
 
         let modified_at_version = effects
             .modified_at_versions()
@@ -3264,8 +3281,9 @@ impl AuthorityState {
                         object_store,
                         new_object,
                         written,
-                        layout_resolver.as_mut(),
+                        &resolver,
                     )
+                    .await
                     .unwrap_or_else(|e| {
                         error!(
                             "try_create_dynamic_field_info should not fail, {}, new_object={:?}",
@@ -3290,11 +3308,11 @@ impl AuthorityState {
         })
     }
 
-    fn try_create_dynamic_field_info(
+    async fn try_create_dynamic_field_info(
         object_store: &Arc<dyn ObjectStore + Send + Sync>,
         o: &Object,
         written: &WrittenObjects,
-        resolver: &mut dyn LayoutResolver,
+        resolver: &Resolver<impl sui_package_resolver::PackageStore>,
     ) -> SuiResult<Option<DynamicFieldInfo>> {
         // Skip if not a move object
         let Some(move_object) = o.data.try_as_move().cloned() else {
@@ -3307,7 +3325,11 @@ impl AuthorityState {
         }
 
         let layout = resolver
-            .get_annotated_layout(&move_object.type_().clone().into())?
+            .datatype_layout(&move_object.type_().clone().into())
+            .await
+            .map_err(|e| SuiErrorKind::ObjectSerializationError {
+                error: e.to_string(),
+            })?
             .into_layout();
 
         let field =
@@ -3406,7 +3428,7 @@ impl AuthorityState {
         let sequence = indexes.allocate_sequence_number();
 
         if self.config.sync_post_process_one_tx {
-            // Synchronous mode: run post-processing inline on the calling thread
+            // Synchronous mode: run post-processing inline on the calling task
             // and commit the index batch immediately with locks held.
             // Used as a rollback mechanism and for testing correctness against async mode.
             // TODO: delete this branch once async mode has shipped
@@ -3464,7 +3486,6 @@ impl AuthorityState {
         let inner_temporary_store = inner_temporary_store.clone();
         let epoch_store = epoch_store.clone();
 
-        // spawn post processing on a blocking thread
         tokio::spawn(async move {
             let permit = {
                 let _scope = monitored_scope("Execution::post_process_one_tx::semaphore_acquire");
@@ -3474,37 +3495,34 @@ impl AuthorityState {
                     .expect("post-processing semaphore should not be closed")
             };
 
-            let _ = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
+            let _permit = permit;
 
-                let result = Self::post_process_one_tx_impl(
-                    sequence,
-                    &indexes,
-                    &subscription_handler,
-                    &metrics,
-                    name,
-                    &backing_package_store,
-                    &object_store,
-                    &certificate,
-                    &effects,
-                    &inner_temporary_store,
-                    &epoch_store,
-                    false, // acquire_locks
-                );
+            let result = Self::post_process_one_tx_impl(
+                sequence,
+                &indexes,
+                &subscription_handler,
+                &metrics,
+                name,
+                &backing_package_store,
+                &object_store,
+                &certificate,
+                &effects,
+                &inner_temporary_store,
+                &epoch_store,
+                false, // acquire_locks
+            );
 
-                match result {
-                    Ok((raw_batch, cache_updates_with_locks)) => {
-                        fail_point!("crash-after-post-process-one-tx");
-                        let output = (raw_batch, cache_updates_with_locks.into_inner());
-                        let _ = done_tx.send(output);
-                    }
-                    Err(e) => {
-                        metrics.post_processing_total_failures.inc();
-                        error!(?tx_digest, "tx post processing failed: {e}");
-                    }
+            match result {
+                Ok((raw_batch, cache_updates_with_locks)) => {
+                    fail_point!("crash-after-post-process-one-tx");
+                    let output = (raw_batch, cache_updates_with_locks.into_inner());
+                    let _ = done_tx.send(output);
                 }
-            })
-            .await;
+                Err(e) => {
+                    metrics.post_processing_total_failures.inc();
+                    error!(?tx_digest, "tx post processing failed: {e}");
+                }
+            }
         });
 
         Ok(())
@@ -3538,38 +3556,45 @@ impl AuthorityState {
             epoch_store,
         );
 
-        let (raw_batch, cache_updates) = Self::index_tx(
-            sequence,
-            backing_package_store,
-            object_store,
-            indexes,
-            tx_digest,
-            certificate,
-            effects,
-            events,
-            timestamp_ms,
-            tx_coins,
-            written,
-            inner_temporary_store,
-            epoch_store,
-            acquire_locks,
-        )
+        let sui_effects: SuiTransactionBlockEffects = effects.clone().try_into()?;
+        let sui_events = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(Self::make_transaction_block_events(
+                backing_package_store,
+                events.clone(),
+                *tx_digest,
+                timestamp_ms,
+                inner_temporary_store,
+            ))
+        })?;
+
+        let (raw_batch, cache_updates) = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(Self::index_tx(
+                sequence,
+                backing_package_store,
+                object_store,
+                indexes,
+                tx_digest,
+                certificate,
+                effects,
+                events,
+                timestamp_ms,
+                tx_coins,
+                written,
+                inner_temporary_store,
+                acquire_locks,
+            ))
+        })
         .tap_ok(|_| metrics.post_processing_total_tx_indexed.inc())
         .tap_err(|e| error!(?tx_digest, "Post processing - Couldn't index tx: {e}"))
         .expect("Indexing tx should not fail");
 
-        let effects: SuiTransactionBlockEffects = effects.clone().try_into()?;
-        let events = Self::make_transaction_block_events(
-            backing_package_store,
-            events.clone(),
-            *tx_digest,
-            timestamp_ms,
-            epoch_store,
-            inner_temporary_store,
-        )?;
         // Emit events
         subscription_handler
-            .process_tx(certificate.data().transaction_data(), &effects, &events)
+            .process_tx(
+                certificate.data().transaction_data(),
+                &sui_effects,
+                &sui_events,
+            )
             .tap_ok(|_| metrics.post_processing_total_tx_had_event_processed.inc())
             .tap_err(|e| {
                 warn!(
@@ -3580,32 +3605,29 @@ impl AuthorityState {
 
         metrics
             .post_processing_total_events_emitted
-            .inc_by(events.data.len() as u64);
+            .inc_by(sui_events.data.len() as u64);
 
         Ok((raw_batch, cache_updates))
     }
 
-    fn make_transaction_block_events(
+    async fn make_transaction_block_events(
         backing_package_store: &Arc<dyn BackingPackageStore + Send + Sync>,
         transaction_events: TransactionEvents,
         digest: TransactionDigest,
         timestamp_ms: u64,
-        epoch_store: &Arc<AuthorityPerEpochStore>,
         inner_temporary_store: &InnerTemporaryStore,
     ) -> SuiResult<SuiTransactionBlockEvents> {
-        let mut layout_resolver =
-            epoch_store
-                .executor()
-                .type_layout_resolver(Box::new(PackageStoreWithFallback::new(
-                    inner_temporary_store,
-                    backing_package_store,
-                )));
+        let mut resolver = Resolver::new(FallbackPackageStore::new(
+            BackingPackageStoreAdapter::new(inner_temporary_store),
+            BackingPackageStoreAdapter::new(backing_package_store.as_ref()),
+        ));
         SuiTransactionBlockEvents::try_from(
             transaction_events,
             digest,
             Some(timestamp_ms),
-            layout_resolver.as_mut(),
+            &mut resolver,
         )
+        .await
     }
 
     pub fn unixtime_now_ms() -> u64 {
@@ -3672,12 +3694,16 @@ impl AuthorityState {
         let layout = if let (LayoutGenerationOption::Generate, Some(move_obj)) =
             (request.generate_layout, object.data.try_as_move())
         {
-            Some(into_struct_layout(
-                self.load_epoch_store_one_call_per_task()
-                    .executor()
-                    .type_layout_resolver(Box::new(self.get_backing_package_store().as_ref()))
-                    .get_annotated_layout(&move_obj.type_().clone().into())?,
-            )?)
+            let resolver = Resolver::new(BackingPackageStoreAdapter::new(
+                self.get_backing_package_store().as_ref(),
+            ));
+            let datatype_layout = resolver
+                .datatype_layout(&move_obj.type_().clone().into())
+                .await
+                .map_err(|e| SuiErrorKind::FailObjectLayout {
+                    st: e.to_string(),
+                })?;
+            Some(into_struct_layout(datatype_layout)?)
         } else {
             None
         };
@@ -3909,7 +3935,8 @@ impl AuthorityState {
         ));
         // TODO: This doesn't belong to the constructor of AuthorityState.
         state
-            .create_owner_index_if_empty(genesis_objects, &epoch_store)
+            .create_owner_index_if_empty(genesis_objects)
+            .await
             .expect("Error indexing genesis objects.");
 
         if epoch_store
@@ -4087,10 +4114,9 @@ impl AuthorityState {
         &self.execution_scheduler
     }
 
-    fn create_owner_index_if_empty(
+    async fn create_owner_index_if_empty(
         &self,
         genesis_objects: &[Object],
-        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult {
         let Some(index_store) = &self.indexes else {
             return Ok(());
@@ -4099,11 +4125,12 @@ impl AuthorityState {
             return Ok(());
         }
 
+        let resolver = Resolver::new(BackingPackageStoreAdapter::new(
+            self.get_backing_package_store().clone(),
+        ));
+
         let mut new_owners = vec![];
         let mut new_dynamic_fields = vec![];
-        let mut layout_resolver = epoch_store
-            .executor()
-            .type_layout_resolver(Box::new(self.get_backing_package_store().as_ref()));
         for o in genesis_objects.iter() {
             match o.owner {
                 Owner::AddressOwner(addr) | Owner::ConsensusAddressOwner { owner: addr, .. } => {
@@ -4118,8 +4145,9 @@ impl AuthorityState {
                         self.get_object_store(),
                         o,
                         &BTreeMap::new(),
-                        layout_resolver.as_mut(),
-                    )?
+                        &resolver,
+                    )
+                    .await?
                     else {
                         continue;
                     };
@@ -4701,14 +4729,14 @@ impl AuthorityState {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub fn get_object_read(&self, object_id: &ObjectID) -> SuiResult<ObjectRead> {
+    pub async fn get_object_read(&self, object_id: &ObjectID) -> SuiResult<ObjectRead> {
         Ok(
             match self
                 .get_object_cache_reader()
                 .get_latest_object_or_tombstone(*object_id)
             {
                 Some((_, ObjectOrTombstone::Object(object))) => {
-                    let layout = self.get_object_layout(&object)?;
+                    let layout = self.get_object_layout(&object).await?;
                     ObjectRead::Exists(object.compute_object_reference(), object, layout)
                 }
                 Some((_, ObjectOrTombstone::Tombstone(objref))) => ObjectRead::Deleted(objref),
@@ -4727,11 +4755,11 @@ impl AuthorityState {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub fn get_move_object<T>(&self, object_id: &ObjectID) -> SuiResult<T>
+    pub async fn get_move_object<T>(&self, object_id: &ObjectID) -> SuiResult<T>
     where
         T: DeserializeOwned,
     {
-        let o = self.get_object_read(object_id)?.into_object()?;
+        let o = self.get_object_read(object_id).await?.into_object()?;
         if let Some(move_object) = o.data.try_as_move() {
             Ok(bcs::from_bytes(move_object.contents()).map_err(|e| {
                 SuiErrorKind::ObjectDeserializationError {
@@ -4752,7 +4780,7 @@ impl AuthorityState {
     /// future there is no software-level guarantee/SLA to retrieve an object
     /// with an old version even if it exists/existed.
     #[instrument(level = "trace", skip_all)]
-    pub fn get_past_object_read(
+    pub async fn get_past_object_read(
         &self,
         object_id: &ObjectID,
         version: SequenceNumber,
@@ -4775,7 +4803,7 @@ impl AuthorityState {
 
         if version < obj_ref.1 {
             // Read past objects
-            return Ok(match self.read_object_at_version(object_id, version)? {
+            return Ok(match self.read_object_at_version(object_id, version).await? {
                 Some((object, layout)) => {
                     let obj_ref = object.compute_object_reference();
                     PastObjectRead::VersionFound(obj_ref, object, layout)
@@ -4789,7 +4817,7 @@ impl AuthorityState {
             return Ok(PastObjectRead::ObjectDeleted(obj_ref));
         }
 
-        match self.read_object_at_version(object_id, obj_ref.1)? {
+        match self.read_object_at_version(object_id, obj_ref.1).await? {
             Some((object, layout)) => Ok(PastObjectRead::VersionFound(obj_ref, object, layout)),
             None => {
                 debug_fatal!(
@@ -4806,7 +4834,7 @@ impl AuthorityState {
     }
 
     #[instrument(level = "trace", skip_all)]
-    fn read_object_at_version(
+    async fn read_object_at_version(
         &self,
         object_id: &ObjectID,
         version: SequenceNumber,
@@ -4818,25 +4846,27 @@ impl AuthorityState {
             return Ok(None);
         };
 
-        let layout = self.get_object_layout(&object)?;
+        let layout = self.get_object_layout(&object).await?;
         Ok(Some((object, layout)))
     }
 
-    pub fn get_object_layout(&self, object: &Object) -> SuiResult<Option<MoveStructLayout>> {
-        let layout = object
-            .data
-            .try_as_move()
-            .map(|object| {
-                into_struct_layout(
-                    self.load_epoch_store_one_call_per_task()
-                        .executor()
-                        // TODO(cache) - must read through cache
-                        .type_layout_resolver(Box::new(self.get_backing_package_store().as_ref()))
-                        .get_annotated_layout(&object.type_().clone().into())?,
-                )
-            })
-            .transpose()?;
-        Ok(layout)
+    pub async fn get_object_layout(
+        &self,
+        object: &Object,
+    ) -> SuiResult<Option<MoveStructLayout>> {
+        let Some(move_object) = object.data.try_as_move() else {
+            return Ok(None);
+        };
+        let resolver = Resolver::new(BackingPackageStoreAdapter::new(
+            self.get_backing_package_store().clone(),
+        ));
+        let datatype_layout = resolver
+            .datatype_layout(&move_object.type_().clone().into())
+            .await
+            .map_err(|e| SuiErrorKind::FailObjectLayout {
+                st: e.to_string(),
+            })?;
+        Ok(Some(into_struct_layout(datatype_layout)?))
     }
 
     /// Returns a fake ObjectRef representing an address balance, along with the balance value
@@ -5231,12 +5261,12 @@ impl AuthorityState {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub fn find_publish_txn_digest(&self, package_id: ObjectID) -> SuiResult<TransactionDigest> {
+    pub async fn find_publish_txn_digest(&self, package_id: ObjectID) -> SuiResult<TransactionDigest> {
         if is_system_package(package_id) {
             return self.find_genesis_txn_digest();
         }
         Ok(self
-            .get_object_read(&package_id)?
+            .get_object_read(&package_id).await?
             .into_object()?
             .previous_transaction)
     }
@@ -5444,19 +5474,23 @@ impl AuthorityState {
             )
             .collect::<Result<Vec<_>, _>>()?;
 
-        let epoch_store = self.load_epoch_store_one_call_per_task();
-        let backing_store = self.get_backing_package_store().as_ref();
-        let mut layout_resolver = epoch_store
-            .executor()
-            .type_layout_resolver(Box::new(backing_store));
+        let resolver = Resolver::new(BackingPackageStoreAdapter::new(
+            self.get_backing_package_store().clone(),
+        ));
         let mut events = vec![];
         for (e, tx_digest, event_seq, timestamp) in stored_events.into_iter() {
+            let layout = resolver
+                .datatype_layout(&e.type_)
+                .await
+                .map_err(|e| SuiErrorKind::ObjectSerializationError {
+                    error: e.to_string(),
+                })?;
             events.push(SuiEvent::try_from(
                 e.clone(),
                 tx_digest,
                 event_seq as u64,
                 Some(timestamp),
-                layout_resolver.get_annotated_layout(&e.type_)?,
+                layout,
             )?)
         }
         Ok(events)

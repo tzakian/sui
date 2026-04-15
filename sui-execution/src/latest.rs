@@ -35,6 +35,7 @@ use sui_move_natives_latest::all_natives;
 use sui_types::storage::BackingStore;
 use sui_verifier_latest::meter::SuiVerifierMeter;
 
+use async_trait::async_trait;
 use crate::executor;
 use crate::verifier;
 use sui_adapter_latest::execution_mode;
@@ -61,8 +62,9 @@ impl<'m> Verifier<'m> {
     }
 }
 
+#[async_trait(?Send)]
 impl executor::Executor for Executor {
-    fn execute_transaction_to_effects(
+    async fn execute_transaction_to_effects(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -104,11 +106,12 @@ impl executor::Executor for Executor {
                 enable_expensive_checks,
                 execution_params,
                 trace_builder_opt,
-            );
+            )
+            .await;
         (store_out, gas_status_out, effects, timings, result)
     }
 
-    fn execute_transaction_to_effects_and_execution_error(
+    async fn execute_transaction_to_effects_and_execution_error(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -150,9 +153,10 @@ impl executor::Executor for Executor {
             execution_params,
             trace_builder_opt,
         )
+        .await
     }
 
-    fn dev_inspect_transaction(
+    async fn dev_inspect_transaction(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -194,6 +198,7 @@ impl executor::Executor for Executor {
                 execution_params,
                 &mut None,
             )
+            .await
         } else {
             execute_transaction_to_effects::<execution_mode::DevInspect<false>>(
                 store,
@@ -213,6 +218,7 @@ impl executor::Executor for Executor {
                 execution_params,
                 &mut None,
             )
+            .await
         };
         (inner_temp_store, gas_status, effects, result)
     }

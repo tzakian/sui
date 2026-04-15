@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use async_trait::async_trait;
 use super::ObjectStore;
 use super::error::Result;
 use crate::balance_change::{BalanceChange, derive_balance_changes};
@@ -624,6 +625,7 @@ impl<T: ReadStore + ?Sized> ReadStore for Arc<T> {
 ///
 /// It extends both ObjectStore and ReadStore by adding functionality that may require more
 /// detailed underlying databases or indexes to support.
+#[async_trait]
 pub trait RpcStateReader:
     ObjectStore + ReadStore + super::ChildObjectResolver + Send + Sync
 {
@@ -638,7 +640,7 @@ pub trait RpcStateReader:
     // Get a handle to an instance of the RpcIndexes
     fn indexes(&self) -> Option<&dyn RpcIndexes>;
 
-    fn get_type_layout(&self, type_tag: &TypeTag) -> Result<Option<MoveTypeLayout>> {
+    async fn get_type_layout(&self, type_tag: &TypeTag) -> Result<Option<MoveTypeLayout>> {
         match type_tag {
             TypeTag::Bool => Ok(Some(MoveTypeLayout::Bool)),
             TypeTag::U8 => Ok(Some(MoveTypeLayout::U8)),
@@ -647,20 +649,22 @@ pub trait RpcStateReader:
             TypeTag::Address => Ok(Some(MoveTypeLayout::Address)),
             TypeTag::Signer => Ok(Some(MoveTypeLayout::Signer)),
             TypeTag::Vector(type_tag) => Ok(self
-                .get_type_layout(type_tag)?
+                .get_type_layout(type_tag)
+                .await?
                 .map(|layout| MoveTypeLayout::Vector(Box::new(layout)))),
-            TypeTag::Struct(struct_tag) => self.get_struct_layout(struct_tag),
+            TypeTag::Struct(struct_tag) => self.get_struct_layout(struct_tag).await,
             TypeTag::U16 => Ok(Some(MoveTypeLayout::U16)),
             TypeTag::U32 => Ok(Some(MoveTypeLayout::U32)),
             TypeTag::U256 => Ok(Some(MoveTypeLayout::U256)),
         }
     }
 
-    fn get_struct_layout(&self, struct_tag: &StructTag) -> Result<Option<MoveTypeLayout>> {
+    async fn get_struct_layout(&self, struct_tag: &StructTag) -> Result<Option<MoveTypeLayout>> {
         self.get_struct_layout_with_overlay(struct_tag, &ObjectSet::default())
+            .await
     }
 
-    fn get_struct_layout_with_overlay(
+    async fn get_struct_layout_with_overlay(
         &self,
         struct_tag: &StructTag,
         overlay: &ObjectSet,

@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use async_trait::async_trait;
 use move_trace_format::format::MoveTraceBuilder;
 use std::sync::Arc;
 use sui_protocol_config::ProtocolConfig;
@@ -24,8 +25,9 @@ use sui_types::{
 };
 
 /// Abstracts over access to the VM across versions of the execution layer.
+#[async_trait(?Send)]
 pub trait Executor {
-    fn execute_transaction_to_effects(
+    async fn execute_transaction_to_effects(
         &self,
         store: &dyn BackingStore,
         // Configuration
@@ -57,7 +59,7 @@ pub trait Executor {
 
     /// Execution mode returns greater error information, primarily used in fullnode execution
     /// as opposed to `execute_transaction_to_effects` which only includes basic `ExecutionFailure` error.
-    fn execute_transaction_to_effects_and_execution_error(
+    async fn execute_transaction_to_effects_and_execution_error(
         &self,
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
@@ -82,7 +84,7 @@ pub trait Executor {
         Result<(), ExecutionError>,
     );
 
-    fn dev_inspect_transaction(
+    async fn dev_inspect_transaction(
         &self,
         store: &dyn BackingStore,
         // Configuration

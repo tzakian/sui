@@ -11,6 +11,8 @@ use std::{
     sync::Arc,
 };
 use sui_core::authority::AuthorityState;
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::BackingPackageStoreAdapter;
 use sui_macros::*;
 use sui_swarm_config::genesis_config::{AccountConfig, DEFAULT_GAS_AMOUNT};
 use sui_types::{
@@ -172,11 +174,10 @@ impl StressTestRunner {
         println!("CREATED:");
         let state = self.state();
 
-        let epoch_store = state.load_epoch_store_one_call_per_task();
         let backing_package_store = state.get_backing_package_store();
-        let mut layout_resolver = epoch_store
-            .executor()
-            .type_layout_resolver(Box::new(backing_package_store.as_ref()));
+        let mut resolver = Resolver::new(BackingPackageStoreAdapter::new(
+            backing_package_store.as_ref(),
+        ));
         for (obj_ref, _) in effects.created() {
             let object_opt = state
                 .get_object_store()
@@ -184,7 +185,7 @@ impl StressTestRunner {
             let Some(object) = object_opt else { continue };
             let struct_tag = object.struct_tag().unwrap();
             let total_sui =
-                object.get_total_sui(layout_resolver.as_mut()).unwrap() - object.storage_rebate;
+                object.get_total_sui(&mut resolver).await.unwrap() - object.storage_rebate;
             println!(">> {struct_tag} TOTAL_SUI: {total_sui}");
         }
 
@@ -196,7 +197,7 @@ impl StressTestRunner {
                 .unwrap();
             let struct_tag = object.struct_tag().unwrap();
             let total_sui =
-                object.get_total_sui(layout_resolver.as_mut()).unwrap() - object.storage_rebate;
+                object.get_total_sui(&mut layout_resolver).unwrap() - object.storage_rebate;
             println!(">> {struct_tag} TOTAL_SUI: {total_sui}");
         }
 
@@ -209,7 +210,7 @@ impl StressTestRunner {
                 .unwrap();
             let struct_tag = object.struct_tag().unwrap();
             let total_sui =
-                object.get_total_sui(layout_resolver.as_mut()).unwrap() - object.storage_rebate;
+                object.get_total_sui(&mut layout_resolver).unwrap() - object.storage_rebate;
             println!(">> {struct_tag} TOTAL_SUI: {total_sui}");
         }
     }
@@ -338,12 +339,9 @@ mod add_stake {
             {
                 let state = runner.state();
                 let cache = state.get_backing_package_store();
-                let epoch_store = state.load_epoch_store_one_call_per_task();
-                let mut layout_resolver = epoch_store
-                    .executor()
-                    .type_layout_resolver(Box::new(cache.as_ref()));
+                let mut resolver = Resolver::new(BackingPackageStoreAdapter::new(cache.as_ref()));
                 let staked_amount =
-                    object.get_total_sui(layout_resolver.as_mut()).unwrap() - object.storage_rebate;
+                    object.get_total_sui(&mut resolver).await.unwrap() - object.storage_rebate;
                 assert_eq!(staked_amount, self.stake_amount);
             };
 

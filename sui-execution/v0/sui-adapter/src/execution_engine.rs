@@ -52,7 +52,7 @@ mod checked {
     use tracing::{info, instrument, trace, warn};
 
     #[instrument(name = "tx_execute_to_effects", level = "debug", skip_all)]
-    pub fn execute_transaction_to_effects<Mode: ExecutionMode>(
+    pub async fn execute_transaction_to_effects<Mode: ExecutionMode>(
         store: &dyn BackingStore,
         input_objects: CheckedInputObjects,
         gas_coins: Vec<ObjectRef>,
@@ -106,7 +106,8 @@ mod checked {
             metrics,
             enable_expensive_checks,
             execution_params,
-        );
+        )
+        .await;
 
         let status = if let Err(error) = &execution_result {
             // Elaborate errors in logs if they are unexpected or their status is terse.
@@ -214,7 +215,7 @@ mod checked {
     }
 
     #[instrument(name = "tx_execute", level = "debug", skip_all)]
-    fn execute_transaction<Mode: ExecutionMode>(
+    async fn execute_transaction<Mode: ExecutionMode>(
         temporary_store: &mut TemporaryStore<'_>,
         transaction_kind: TransactionKind,
         gas_charger: &mut GasCharger,
@@ -348,6 +349,7 @@ mod checked {
                     &mut layout_resolver,
                     enable_expensive_checks,
                 )
+                .await
             };
             if let Err(conservation_err) = conservation_result {
                 // conservation violated. try to avoid panic by dumping all writes, charging for gas, re-checking
@@ -363,7 +365,9 @@ mod checked {
                     advance_epoch_gas_summary,
                     &mut layout_resolver,
                     enable_expensive_checks,
-                ) {
+                )
+                .await
+                {
                     // if we still fail, it's a problem with gas
                     // charging that happens even in the "aborted" case--no other option but panic.
                     // we will create or destroy SUI otherwise

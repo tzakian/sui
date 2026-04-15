@@ -46,6 +46,7 @@ impl TransactionExecutionService for RpcService {
         request: tonic::Request<SimulateTransactionRequest>,
     ) -> Result<tonic::Response<SimulateTransactionResponse>, tonic::Status> {
         simulate::simulate_transaction(self, request.into_inner())
+            .await
             .map(tonic::Response::new)
             .map_err(Into::into)
     }
@@ -155,11 +156,15 @@ pub async fn execute_transaction(
             objects
         };
 
-        let events = read_mask
-            .subtree(ExecutedTransaction::EVENTS_FIELD)
-            .and_then(|mask| {
-                events.map(|events| service.render_events_to_proto(&events, &mask, &objects))
-            });
+        let events = if let Some(mask) = read_mask.subtree(ExecutedTransaction::EVENTS_FIELD) {
+            if let Some(events) = events {
+                Some(service.render_events_to_proto(&events, &mask, &objects).await)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let balance_changes = if read_mask.contains(ExecutedTransaction::BALANCE_CHANGES_FIELD) {
             derive_balance_changes_2(&effects, &objects)
@@ -193,21 +198,20 @@ pub async fn execute_transaction(
         message.effects = effects;
         message.events = events;
         message.balance_changes = balance_changes;
-        message.objects = read_mask
-            .subtree(
-                ExecutedTransaction::path_builder()
-                    .objects()
-                    .objects()
-                    .finish(),
-            )
-            .map(|mask| {
-                ObjectSet::default().with_objects(
-                    objects
-                        .iter()
-                        .map(|o| service.render_object_to_proto(o, &mask, &objects))
-                        .collect(),
-                )
-            });
+        message.objects = if let Some(mask) = read_mask.subtree(
+            ExecutedTransaction::path_builder()
+                .objects()
+                .objects()
+                .finish(),
+        ) {
+            let mut rendered = Vec::with_capacity(objects.len());
+            for o in objects.iter() {
+                rendered.push(service.render_object_to_proto(o, &mask, &objects).await);
+            }
+            Some(ObjectSet::default().with_objects(rendered))
+        } else {
+            None
+        };
         message
     };
 

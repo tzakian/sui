@@ -26,7 +26,7 @@ use sui_types::full_checkpoint_content::ObjectSet as TypesObjectSet;
 pub const READ_MASK_DEFAULT: &str = "sequence_number,digest";
 
 #[tracing::instrument(skip(service))]
-pub fn get_checkpoint(
+pub async fn get_checkpoint(
     service: &RpcService,
     request: GetCheckpointRequest,
 ) -> Result<GetCheckpointResponse, RpcError> {
@@ -121,52 +121,51 @@ pub fn get_checkpoint(
             }
 
             if let Some(submask) = read_mask.subtree(Checkpoint::TRANSACTIONS_FIELD.name) {
-                checkpoint.transactions = checkpoint_data
-                    .transactions
-                    .into_iter()
-                    .map(|t| {
-                        let balance_changes =
-                            if submask.contains(ExecutedTransaction::BALANCE_CHANGES_FIELD) {
-                                derive_balance_changes_2(&t.effects, &checkpoint_data.object_set)
-                                    .into_iter()
-                                    .map(Into::into)
-                                    .collect()
-                            } else {
-                                Vec::new()
-                            };
-                        let mut transaction = ExecutedTransaction::merge_from(&t, &submask);
-                        transaction.checkpoint = submask
-                            .contains(ExecutedTransaction::CHECKPOINT_FIELD)
-                            .then_some(sequence_number);
-                        transaction.timestamp = submask
-                            .contains(ExecutedTransaction::TIMESTAMP_FIELD)
-                            .then(|| sui_rpc::proto::timestamp_ms_to_proto(timestamp_ms));
-                        transaction.balance_changes = balance_changes;
+                let mut transactions = Vec::with_capacity(checkpoint_data.transactions.len());
+                for t in &checkpoint_data.transactions {
+                    let balance_changes =
+                        if submask.contains(ExecutedTransaction::BALANCE_CHANGES_FIELD) {
+                            derive_balance_changes_2(&t.effects, &checkpoint_data.object_set)
+                                .into_iter()
+                                .map(Into::into)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                    let mut transaction = ExecutedTransaction::merge_from(t, &submask);
+                    transaction.checkpoint = submask
+                        .contains(ExecutedTransaction::CHECKPOINT_FIELD)
+                        .then_some(sequence_number);
+                    transaction.timestamp = submask
+                        .contains(ExecutedTransaction::TIMESTAMP_FIELD)
+                        .then(|| sui_rpc::proto::timestamp_ms_to_proto(timestamp_ms));
+                    transaction.balance_changes = balance_changes;
 
-                        if let Some(events_mask) =
-                            submask.subtree(ExecutedTransaction::EVENTS_FIELD.name)
-                            && let Some(event_mask) =
-                                events_mask.subtree(TransactionEvents::EVENTS_FIELD.name)
-                            && event_mask.contains(Event::JSON_FIELD.name)
-                            && let Some(events) = transaction.events.as_mut()
-                            && let Some(sdk_events) = &t.events
+                    if let Some(events_mask) =
+                        submask.subtree(ExecutedTransaction::EVENTS_FIELD.name)
+                        && let Some(event_mask) =
+                            events_mask.subtree(TransactionEvents::EVENTS_FIELD.name)
+                        && event_mask.contains(Event::JSON_FIELD.name)
+                        && let Some(events) = transaction.events.as_mut()
+                        && let Some(sdk_events) = &t.events
+                    {
+                        for (message, event) in
+                            events.events.iter_mut().zip_debug_eq(&sdk_events.data)
                         {
-                            for (message, event) in
-                                events.events.iter_mut().zip_debug_eq(&sdk_events.data)
-                            {
-                                message.json = service
-                                    .render_json(
-                                        &event.type_,
-                                        &event.contents,
-                                        &TypesObjectSet::default(),
-                                    )
-                                    .map(Box::new);
-                            }
+                            message.json = service
+                                .render_json(
+                                    &event.type_,
+                                    &event.contents,
+                                    &TypesObjectSet::default(),
+                                )
+                                .await
+                                .map(Box::new);
                         }
+                    }
 
-                        transaction
-                    })
-                    .collect();
+                    transactions.push(transaction);
+                }
+                checkpoint.transactions = transactions;
             }
         }
     }

@@ -87,7 +87,7 @@ mod checked {
     };
 
     #[instrument(name = "tx_execute_to_effects", level = "debug", skip_all)]
-    pub fn execute_transaction_to_effects<Mode: ExecutionMode>(
+    pub async fn execute_transaction_to_effects<Mode: ExecutionMode>(
         store: &dyn BackingStore,
         input_objects: CheckedInputObjects,
         gas_data: GasData,
@@ -182,7 +182,8 @@ mod checked {
             enable_expensive_checks,
             execution_params,
             trace_builder_opt,
-        );
+        )
+        .await;
 
         let status = if let Err(error) = &execution_result {
             // Elaborate errors in logs if they are unexpected or their status is terse.
@@ -318,7 +319,7 @@ mod checked {
     }
 
     #[instrument(name = "tx_execute", level = "debug", skip_all)]
-    fn execute_transaction<Mode: ExecutionMode>(
+    async fn execute_transaction<Mode: ExecutionMode>(
         store: &dyn BackingStore,
         temporary_store: &mut TemporaryStore<'_>,
         transaction_kind: TransactionKind,
@@ -425,7 +426,9 @@ mod checked {
             &cost_summary,
             is_genesis_tx,
             advance_epoch_gas_summary,
-        ) {
+        )
+        .await
+        {
             // FIXME: we cannot fail the transaction if this is an epoch change transaction.
             result = Err(e);
         }
@@ -434,7 +437,7 @@ mod checked {
     }
 
     #[instrument(name = "run_conservation_checks", level = "debug", skip_all)]
-    fn run_conservation_checks<Mode: ExecutionMode>(
+    async fn run_conservation_checks<Mode: ExecutionMode>(
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         tx_digest: TransactionDigest,
@@ -447,53 +450,51 @@ mod checked {
     ) -> Result<(), ExecutionError> {
         let mut result: std::result::Result<(), sui_types::error::ExecutionError> = Ok(());
         if !is_genesis_tx && !Mode::skip_conservation_checks() {
-            // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
-            let conservation_result = {
-                temporary_store
-                    .check_sui_conserved(simple_conservation_checks, cost_summary)
-                    .and_then(|()| {
-                        if enable_expensive_checks {
-                            // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
-                            let mut layout_resolver =
-                                TypeLayoutResolver::new(move_vm, Box::new(&*temporary_store));
-                            temporary_store.check_sui_conserved_expensive(
+            let conservation_result = match temporary_store
+                .check_sui_conserved(simple_conservation_checks, cost_summary)
+            {
+                Err(e) => Err(e),
+                Ok(()) => {
+                    if enable_expensive_checks {
+                        let mut layout_resolver =
+                            TypeLayoutResolver::new(move_vm, Box::new(&*temporary_store));
+                        temporary_store
+                            .check_sui_conserved_expensive(
                                 cost_summary,
                                 advance_epoch_gas_summary,
                                 &mut layout_resolver,
                             )
-                        } else {
-                            Ok(())
-                        }
-                    })
+                            .await
+                    } else {
+                        Ok(())
+                    }
+                }
             };
             if let Err(conservation_err) = conservation_result {
-                // conservation violated. try to avoid panic by dumping all writes, charging for gas, re-checking
-                // conservation, and surfacing an aborted transaction with an invariant violation if all of that works
                 result = Err(conservation_err);
                 gas_charger.reset(temporary_store);
                 gas_charger.charge_gas(temporary_store, &mut result);
-                // check conservation once more
-                if let Err(recovery_err) = {
-                    temporary_store
-                        .check_sui_conserved(simple_conservation_checks, cost_summary)
-                        .and_then(|()| {
-                            if enable_expensive_checks {
-                                // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
-                                let mut layout_resolver =
-                                    TypeLayoutResolver::new(move_vm, Box::new(&*temporary_store));
-                                temporary_store.check_sui_conserved_expensive(
+                let recovery_result = match temporary_store
+                    .check_sui_conserved(simple_conservation_checks, cost_summary)
+                {
+                    Err(e) => Err(e),
+                    Ok(()) => {
+                        if enable_expensive_checks {
+                            let mut layout_resolver =
+                                TypeLayoutResolver::new(move_vm, Box::new(&*temporary_store));
+                            temporary_store
+                                .check_sui_conserved_expensive(
                                     cost_summary,
                                     advance_epoch_gas_summary,
                                     &mut layout_resolver,
                                 )
-                            } else {
-                                Ok(())
-                            }
-                        })
-                } {
-                    // if we still fail, it's a problem with gas
-                    // charging that happens even in the "aborted" case--no other option but panic.
-                    // we will create or destroy SUI otherwise
+                                .await
+                        } else {
+                            Ok(())
+                        }
+                    }
+                };
+                if let Err(recovery_err) = recovery_result {
                     panic!(
                         "SUI conservation fail in tx block {}: {}\nGas status is {}\nTx was ",
                         tx_digest,
@@ -502,8 +503,7 @@ mod checked {
                     )
                 }
             }
-        } // else, we're in the genesis transaction which mints the SUI supply, and hence does not satisfy SUI conservation, or
-        // we're in the non-production dev inspect mode which allows us to violate conservation
+        }
         result
     }
 

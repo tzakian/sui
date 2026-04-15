@@ -34,7 +34,7 @@ use crate::authority::AuthorityState;
 // note: clippy is confused about this being dead - it appears to only be used in cfg(test), but
 // adding #[cfg(test)] causes other targets to fail
 #[allow(dead_code)]
-pub(crate) fn init_state_parameters_from_rng<R>(rng: &mut R) -> (Genesis, AuthorityKeyPair)
+pub(crate) async fn init_state_parameters_from_rng<R>(rng: &mut R) -> (Genesis, AuthorityKeyPair)
 where
     R: rand::CryptoRng + rand::RngCore,
 {

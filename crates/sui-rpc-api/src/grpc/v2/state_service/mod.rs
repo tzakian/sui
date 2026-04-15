@@ -27,6 +27,7 @@ impl StateService for RpcService {
         request: tonic::Request<ListDynamicFieldsRequest>,
     ) -> Result<tonic::Response<ListDynamicFieldsResponse>, tonic::Status> {
         list_dynamic_fields::list_dynamic_fields(self, request.into_inner())
+            .await
             .map(tonic::Response::new)
             .map_err(Into::into)
     }
@@ -36,6 +37,7 @@ impl StateService for RpcService {
         request: tonic::Request<ListOwnedObjectsRequest>,
     ) -> Result<tonic::Response<ListOwnedObjectsResponse>, tonic::Status> {
         list_owned_objects::list_owned_objects(self, request.into_inner())
+            .await
             .map(tonic::Response::new)
             .map_err(Into::into)
     }

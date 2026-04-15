@@ -792,8 +792,8 @@ impl LocalExec {
             Some(error) => ExecutionOrEarlyError::Err(error),
             None => ExecutionOrEarlyError::Ok(()),
         };
-        let (inner_store, gas_status, effects, _timings, result) = executor
-            .execute_transaction_to_effects_and_execution_error(
+        let (inner_store, gas_status, effects, _timings, result) =
+            futures::executor::block_on(executor.execute_transaction_to_effects_and_execution_error(
                 &self,
                 protocol_config,
                 metrics.clone(),
@@ -809,7 +809,7 @@ impl LocalExec {
                 tx_info.sender,
                 *tx_digest,
                 &mut None,
-            );
+            ));
 
         if let Err(err) = self.pretty_print_for_tracing(
             &gas_status,
@@ -877,9 +877,8 @@ impl LocalExec {
                 Pretty(&FullPTB {
                     ptb: pt.clone(),
                     results: transform_command_results_to_annotated(
-                        executor,
                         &self.clone(),
-                        executor.dev_inspect_transaction(
+                        futures::executor::block_on(executor.dev_inspect_transaction(
                             &self,
                             protocol_config,
                             metrics,
@@ -900,7 +899,7 @@ impl LocalExec {
                             tx_info.sender,
                             tx_info.sender_signed_data.digest(),
                             skip_checks,
-                        )
+                        ))
                         .3
                         .unwrap_or_default(),
                     )?,
@@ -987,8 +986,8 @@ impl LocalExec {
             Some(error) => ExecutionOrEarlyError::Err(error),
             None => ExecutionOrEarlyError::Ok(()),
         };
-        let (_, _, effects, _timings, exec_res) = executor
-            .execute_transaction_to_effects_and_execution_error(
+        let (_, _, effects, _timings, exec_res) = futures::executor::block_on(
+            executor.execute_transaction_to_effects_and_execution_error(
                 &store,
                 &protocol_config,
                 Arc::new(ExecutionMetrics::new(&Registry::new())),
@@ -1004,7 +1003,8 @@ impl LocalExec {
                 signer,
                 *executable.digest(),
                 &mut None,
-            );
+            ),
+        );
 
         let effects =
             SuiTransactionBlockEffects::try_from(effects).map_err(ReplayEngineError::from)?;

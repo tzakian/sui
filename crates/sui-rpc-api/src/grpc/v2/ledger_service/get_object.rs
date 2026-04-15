@@ -61,7 +61,7 @@ pub fn validate_get_object_requests(
 }
 
 #[tracing::instrument(skip(service))]
-pub fn get_object(
+pub async fn get_object(
     service: &RpcService,
     GetObjectRequest {
         object_id,
@@ -73,11 +73,13 @@ pub fn get_object(
     let (requests, read_mask) =
         validate_get_object_requests(vec![(object_id, version)], read_mask)?;
     let (object_id, version) = requests[0];
-    get_object_impl(service, object_id, version, &read_mask).map(GetObjectResponse::new)
+    get_object_impl(service, object_id, version, &read_mask)
+        .await
+        .map(GetObjectResponse::new)
 }
 
 #[tracing::instrument(skip(service))]
-pub fn batch_get_objects(
+pub async fn batch_get_objects(
     service: &RpcService,
     BatchGetObjectsRequest {
         requests,
@@ -97,19 +99,19 @@ pub fn batch_get_objects(
         .map(|req| (req.object_id, req.version))
         .collect();
     let (requests, read_mask) = validate_get_object_requests(requests, read_mask)?;
-    let objects = requests
-        .into_iter()
-        .map(|(object_id, version)| get_object_impl(service, object_id, version, &read_mask))
-        .map(|result| match result {
+    let mut objects = Vec::with_capacity(requests.len());
+    for (object_id, version) in requests {
+        let result = get_object_impl(service, object_id, version, &read_mask).await;
+        objects.push(match result {
             Ok(object) => GetObjectResult::new_object(object),
             Err(error) => GetObjectResult::new_error(error.into_status_proto()),
-        })
-        .collect();
+        });
+    }
     Ok(BatchGetObjectsResponse::new(objects))
 }
 
 #[tracing::instrument(skip(service))]
-fn get_object_impl(
+async fn get_object_impl(
     service: &RpcService,
     object_id: Address,
     version: Option<u64>,
@@ -129,5 +131,7 @@ fn get_object_impl(
             .ok_or_else(|| ObjectNotFoundError::new(object_id))?
     };
 
-    Ok(service.render_object_to_proto(&object, read_mask, &ObjectSet::default()))
+    Ok(service
+        .render_object_to_proto(&object, read_mask, &ObjectSet::default())
+        .await)
 }

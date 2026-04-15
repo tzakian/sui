@@ -1234,23 +1234,24 @@ pub struct SuiTransactionBlockEvents {
 }
 
 impl SuiTransactionBlockEvents {
-    pub fn try_from(
+    pub async fn try_from(
         events: TransactionEvents,
         tx_digest: TransactionDigest,
         timestamp_ms: Option<u64>,
-        resolver: &mut dyn LayoutResolver,
+        resolver: &mut impl LayoutResolver,
     ) -> SuiResult<Self> {
-        Ok(Self {
-            data: events
-                .data
-                .into_iter()
-                .enumerate()
-                .map(|(seq, event)| {
-                    let layout = resolver.get_annotated_layout(&event.type_)?;
-                    SuiEvent::try_from(event, tx_digest, seq as u64, timestamp_ms, layout)
-                })
-                .collect::<Result<_, _>>()?,
-        })
+        let mut data = Vec::with_capacity(events.data.len());
+        for (seq, event) in events.data.into_iter().enumerate() {
+            let layout = resolver.get_annotated_layout(&event.type_).await?;
+            data.push(SuiEvent::try_from(
+                event,
+                tx_digest,
+                seq as u64,
+                timestamp_ms,
+                layout,
+            )?);
+        }
+        Ok(Self { data })
     }
 
     // TODO: this is only called from the indexer. Remove this once indexer moves to its own resolver.
@@ -1357,13 +1358,13 @@ type ExecutionResult = (
 );
 
 impl DevInspectResults {
-    pub fn new(
+    pub async fn new(
         effects: TransactionEffects,
         events: TransactionEvents,
         return_values: Result<Vec<ExecutionResult>, ExecutionError>,
         raw_txn_data: Vec<u8>,
         raw_effects: Vec<u8>,
-        resolver: &mut dyn LayoutResolver,
+        resolver: &mut impl LayoutResolver,
     ) -> SuiResult<Self> {
         let tx_digest = *effects.transaction_digest();
         let mut error = None;
@@ -1394,7 +1395,7 @@ impl DevInspectResults {
         };
         Ok(Self {
             effects: effects.try_into()?,
-            events: SuiTransactionBlockEvents::try_from(events, tx_digest, None, resolver)?,
+            events: SuiTransactionBlockEvents::try_from(events, tx_digest, None, resolver).await?,
             results,
             error,
             raw_txn_data,

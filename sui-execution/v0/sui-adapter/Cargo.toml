@@ -11,6 +11,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 anyhow = { workspace = true, features = ["backtrace"] }
 bcs.workspace = true
 leb128.workspace = true

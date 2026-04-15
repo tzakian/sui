@@ -237,7 +237,7 @@ impl sui_display::v2::Store for DisplayStore<'_> {
 
         let object_type = move_object.type_().clone().into();
 
-        let Some(layout) = self.state.inner().get_struct_layout(&object_type)? else {
+        let Some(layout) = self.state.inner().get_struct_layout(&object_type).await? else {
             return Ok(None);
         };
 

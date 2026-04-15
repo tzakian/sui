@@ -47,6 +47,8 @@ use sui_json_rpc_types::{
     SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions,
 };
 use sui_open_rpc::Module;
+use sui_package_resolver::Resolver;
+use sui_package_resolver::backing_store::BackingPackageStoreAdapter;
 use sui_protocol_config::{ProtocolConfig, ProtocolVersion};
 use sui_storage::key_value_store::TransactionKeyValueStore;
 use sui_types::base_types::{ObjectID, SequenceNumber, TransactionDigest};
@@ -54,7 +56,7 @@ use sui_types::crypto::AggregateAuthoritySignature;
 use sui_types::display::DisplayVersionUpdatedEvent;
 use sui_types::display_registry;
 use sui_types::effects::{TransactionEffects, TransactionEffectsAPI, TransactionEvents};
-use sui_types::error::{SuiError, SuiObjectResponseError};
+use sui_types::error::{SuiError, SuiErrorKind, SuiObjectResponseError};
 use sui_types::messages_checkpoint::{
     CheckpointContents, CheckpointSequenceNumber, CheckpointSummary, CheckpointTimestamp,
 };
@@ -167,7 +169,7 @@ impl sui_display::v2::Store for DisplayStore<'_> {
         &self,
         id: AccountAddress,
     ) -> anyhow::Result<Option<(MoveTypeLayout, Vec<u8>)>> {
-        let read = self.state.get_object_read(&id.into())?;
+        let read = self.state.get_object_read(&id.into()).await?;
         let ObjectRead::Exists(_, object, Some(layout)) = read else {
             return Ok(None);
         };
@@ -479,8 +481,9 @@ impl ReadApi {
                 {
                     match events.next() {
                         Some(Some(ev)) => {
-                            cache_entry.events =
-                                Some(to_sui_transaction_events(self, cache_entry.digest, ev)?)
+                            cache_entry.events = Some(
+                                to_sui_transaction_events(self, cache_entry.digest, ev).await?,
+                            )
                         }
                         None | Some(None) => {
                             error!(
@@ -645,7 +648,7 @@ impl ReadApiServer for ReadApi {
     ) -> RpcResult<SuiObjectResponse> {
         with_tracing!(async move {
             let state = self.state.clone();
-            let object_read = state.get_object_read(&object_id).map_err(|e| {
+            let object_read = state.get_object_read(&object_id).await.map_err(|e| {
                 warn!(?object_id, "Failed to get object: {:?}", e);
                 Error::from(e)
             })?;
@@ -745,6 +748,7 @@ impl ReadApiServer for ReadApi {
             let state = self.state.clone();
             let past_read = state
                 .get_past_object_read(&object_id, version)
+                .await
                 .map_err(|e| {
                     error!("Failed to call try_get_past_object for object: {object_id:?} version: {version:?} with error: {e:?}");
                     Error::from(e)
@@ -948,7 +952,7 @@ impl ReadApiServer for ReadApi {
                     .flatten();
                 match events {
                     None => temp_response.events = Some(SuiTransactionBlockEvents::default()),
-                    Some(events) => match to_sui_transaction_events(self, digest, events) {
+                    Some(events) => match to_sui_transaction_events(self, digest, events).await {
                         Ok(e) => temp_response.events = Some(e),
                         Err(e) => temp_response.errors.push(e.to_string()),
                     },
@@ -1021,7 +1025,6 @@ impl ReadApiServer for ReadApi {
             let state = self.state.clone();
             let transaction_kv_store = self.transaction_kv_store.clone();
             async move {
-                let store = state.load_epoch_store_one_call_per_task();
                 let events = transaction_kv_store
                     .multi_get_events_by_tx_digests(&[transaction_digest])
                     .await
@@ -1032,21 +1035,35 @@ impl ReadApiServer for ReadApi {
                     .pop()
                     .flatten();
                 Ok(match events {
-                    Some(events) => events
-                        .data
-                        .into_iter()
-                        .enumerate()
-                        .map(|(seq, e)| {
-                            let layout = store
-                                .executor()
-                                .type_layout_resolver(Box::new(
-                                    &state.get_backing_package_store().as_ref(),
-                                ))
-                                .get_annotated_layout(&e.type_)?;
-                            SuiEvent::try_from(e, transaction_digest, seq as u64, None, layout)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(Error::SuiError)?,
+                    Some(events) => {
+                        let resolver = Resolver::new(BackingPackageStoreAdapter::new(
+                            state.get_backing_package_store().as_ref(),
+                        ));
+                        let mut result = Vec::with_capacity(events.data.len());
+                        for (seq, e) in events.data.into_iter().enumerate() {
+                            let layout = resolver
+                                .datatype_layout(&e.type_)
+                                .await
+                                .map_err(|e| {
+                                    Error::SuiError(SuiError::from(
+                                        SuiErrorKind::ObjectSerializationError {
+                                            error: e.to_string(),
+                                        },
+                                    ))
+                                })?;
+                            result.push(
+                                SuiEvent::try_from(
+                                    e,
+                                    transaction_digest,
+                                    seq as u64,
+                                    None,
+                                    layout,
+                                )
+                                .map_err(Error::SuiError)?,
+                            );
+                        }
+                        result
+                    }
                     None => vec![],
                 })
             }
@@ -1288,22 +1305,22 @@ impl SuiRpcModule for ReadApi {
 }
 
 #[instrument(skip_all)]
-fn to_sui_transaction_events(
+async fn to_sui_transaction_events(
     fullnode_api: &ReadApi,
     tx_digest: TransactionDigest,
     events: TransactionEvents,
 ) -> Result<SuiTransactionBlockEvents, Error> {
-    let epoch_store = fullnode_api.state.load_epoch_store_one_call_per_task();
-    let backing_package_store = fullnode_api.state.get_backing_package_store();
-    let mut layout_resolver = epoch_store
-        .executor()
-        .type_layout_resolver(Box::new(backing_package_store.as_ref()));
-    Ok(SuiTransactionBlockEvents::try_from(
-        events,
-        tx_digest,
-        None,
-        layout_resolver.as_mut(),
-    )?)
+    let mut resolver = Resolver::new(BackingPackageStoreAdapter::new(
+        fullnode_api.state.get_backing_package_store().as_ref(),
+    ));
+    Ok(tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(SuiTransactionBlockEvents::try_from(
+            events,
+            tx_digest,
+            None,
+            &mut resolver,
+        ))
+    })?)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1353,7 +1370,7 @@ async fn get_display_fields(
     };
 
     let display: Vec<(String, Result<Json, anyhow::Error>)> =
-        if let Some(display_object) = get_display_object_v2_by_type(fullnode_api, type_)? {
+        if let Some(display_object) = get_display_object_v2_by_type(fullnode_api, type_).await? {
             let root = sui_display::v2::OwnedSlice::new(layout, move_object.contents().to_owned());
             let store = DisplayStore::new(fullnode_api.state.as_ref());
             let interpreter = sui_display::v2::Interpreter::new(root, store);
@@ -1480,12 +1497,12 @@ async fn get_display_object_v1_by_type(
 }
 
 #[instrument(skip(fullnode_api))]
-fn get_display_object_v2_by_type(
+async fn get_display_object_v2_by_type(
     fullnode_api: &ReadApi,
     object_type: &StructTag,
 ) -> Result<Option<display_registry::Display>, ObjectDisplayError> {
     let object_id = display_registry::display_object_id(object_type.clone().into())?;
-    let ObjectRead::Exists(_, object, _) = fullnode_api.state.get_object_read(&object_id)? else {
+    let ObjectRead::Exists(_, object, _) = fullnode_api.state.get_object_read(&object_id).await? else {
         return Ok(None);
     };
 

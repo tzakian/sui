@@ -190,12 +190,14 @@ impl Builder {
                 )
             };
 
-        self.built_genesis = Some(build_unsigned_genesis_data(
-            &self.parameters,
-            &token_distribution_schedule,
-            &validators,
-            &objects,
-        ));
+        self.built_genesis = Some(
+            build_unsigned_genesis_data(
+                &self.parameters,
+                &token_distribution_schedule,
+                &validators,
+                &objects,
+            )
+        );
 
         self.token_distribution_schedule = Some(token_distribution_schedule);
 
@@ -541,7 +543,7 @@ impl Builder {
         }
     }
 
-    pub fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self, anyhow::Error> {
+    pub async fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self, anyhow::Error> {
         let path = path.as_ref();
         let path: &Utf8Path = path.try_into()?;
         trace!("Reading Genesis Builder from {}", path);
@@ -922,23 +924,25 @@ fn create_genesis_transaction(
         let (kind, signer, mut gas_data) = transaction_data.execution_parts();
         gas_data.payment = vec![];
         let input_objects = CheckedInputObjects::new_for_genesis(vec![]);
-        let (inner_temp_store, _, effects, _timings, _execution_error) = executor
-            .execute_transaction_to_effects_and_execution_error(
-                &InMemoryStorage::new(Vec::new()),
-                protocol_config,
-                metrics,
-                expensive_checks,
-                ExecutionOrEarlyError::Ok(()),
-                &epoch_data.epoch_id(),
-                epoch_data.epoch_start_timestamp(),
-                input_objects,
-                gas_data,
-                SuiGasStatus::new_unmetered(),
-                kind,
-                None, // compat_args
-                signer,
-                genesis_digest,
-                &mut None,
+        let (inner_temp_store, _, effects, _timings, _execution_error) =
+            futures::executor::block_on(
+                executor.execute_transaction_to_effects_and_execution_error(
+                    &InMemoryStorage::new(Vec::new()),
+                    protocol_config,
+                    metrics,
+                    expensive_checks,
+                    ExecutionOrEarlyError::Ok(()),
+                    &epoch_data.epoch_id(),
+                    epoch_data.epoch_start_timestamp(),
+                    input_objects,
+                    gas_data,
+                    SuiGasStatus::new_unmetered(),
+                    kind,
+                    None, // compat_args
+                    signer,
+                    genesis_digest,
+                    &mut None,
+                ),
             );
         assert!(inner_temp_store.input_objects.is_empty());
         assert!(inner_temp_store.mutable_inputs.is_empty());

@@ -28,7 +28,7 @@ pub const MAX_BATCH_REQUESTS: usize = 200;
 pub const READ_MASK_DEFAULT: &str = "digest";
 
 #[tracing::instrument(skip(service))]
-pub fn get_transaction(
+pub async fn get_transaction(
     service: &RpcService,
     request: GetTransactionRequest,
 ) -> Result<GetTransactionResponse, RpcError> {
@@ -86,13 +86,14 @@ pub fn get_transaction(
         transaction_read,
         transaction_checkpoint,
         &read_mask,
-    )?;
+    )
+    .await?;
 
     Ok(GetTransactionResponse::new(transaction))
 }
 
 #[tracing::instrument(skip(service))]
-pub fn batch_get_transactions(
+pub async fn batch_get_transactions(
     service: &RpcService,
     BatchGetTransactionsRequest {
         digests, read_mask, ..
@@ -124,10 +125,9 @@ pub fn batch_get_transactions(
         .sequence_number;
     let lowest_available_checkpoint = service.reader.get_lowest_available_checkpoint()?;
 
-    let transactions = digests
-        .into_iter()
-        .enumerate()
-        .map(|(idx, digest)| -> Result<ExecutedTransaction, RpcError> {
+    let mut transactions = Vec::with_capacity(digests.len());
+    for (idx, digest) in digests.into_iter().enumerate() {
+        let result = async {
             let digest: Digest = digest.parse().map_err(|e| {
                 FieldViolation::new_at("digests", idx)
                     .with_description(format!("invalid digest: {e}"))
@@ -155,17 +155,20 @@ pub fn batch_get_transactions(
                 transaction_checkpoint,
                 &read_mask,
             )
-        })
-        .map(|result| match result {
+            .await
+        }
+        .await;
+
+        transactions.push(match result {
             Ok(transaction) => GetTransactionResult::new_transaction(transaction),
             Err(error) => GetTransactionResult::new_error(error.into_status_proto()),
-        })
-        .collect();
+        });
+    }
 
     Ok(BatchGetTransactionsResponse::new(transactions))
 }
 
-fn render_executed_transaction(
+async fn render_executed_transaction(
     service: &RpcService,
     crate::reader::TransactionRead {
         digest,
@@ -248,8 +251,15 @@ fn render_executed_transaction(
     if let Some(submask) = mask.subtree(ExecutedTransaction::EVENTS_FIELD) {
         // For historical transactions read from the ledger, packages should already be in the
         // backing store, so we pass an empty ObjectSet for overlay resolution.
-        message.events = events
-            .map(|events| service.render_events_to_proto(&events, &submask, &ObjectSet::default()));
+        message.events = if let Some(events) = events {
+            Some(
+                service
+                    .render_events_to_proto(&events, &submask, &ObjectSet::default())
+                    .await,
+            )
+        } else {
+            None
+        };
     }
 
     if mask.contains(ExecutedTransaction::CHECKPOINT_FIELD) {
