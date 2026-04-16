@@ -493,16 +493,20 @@ impl<S: PackageStore> Resolver<S> {
 
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
-        for sig in def.parameters.iter().chain(def.return_.iter()) {
-            add_signature(
-                &mut context,
-                sig.body.clone(),
-                &self.package_store,
-                package.as_ref(),
-                /* visit_fields */ false,
-            )
-            .await?;
-        }
+        let sigs: Vec<OpenSignatureBody> = def
+            .parameters
+            .iter()
+            .chain(def.return_.iter())
+            .map(|s| s.body.clone())
+            .collect();
+        add_signature(
+            &mut context,
+            sigs,
+            &self.package_store,
+            package.as_ref(),
+            /* visit_fields */ false,
+        )
+        .await?;
 
         // (2). Use that information to relocate package IDs in the signature.
         for sig in def.parameters.iter_mut().chain(def.return_.iter_mut()) {
@@ -863,6 +867,20 @@ impl Package {
             source_line_number,
             error_code,
         })
+    }
+}
+
+impl DataDef {
+    /// Clone every field signature in this definition into a flat `Vec`. For structs this is the
+    /// field list; for enums it is the concatenation of each variant's field list.
+    fn field_signatures(&self) -> Vec<OpenSignatureBody> {
+        match &self.data {
+            MoveData::Struct(fields) => fields.iter().map(|(_, s)| s.clone()).collect(),
+            MoveData::Enum(variants) => variants
+                .iter()
+                .flat_map(|v| v.signatures.iter().map(|(_, s)| s.clone()))
+                .collect(),
+        }
     }
 }
 
@@ -1672,31 +1690,21 @@ async fn add_type_tag<S: PackageStore + ?Sized>(
                     continue;
                 }
 
-                if visit_fields {
-                    match &def.data {
-                        MoveData::Struct(fields) => {
-                            for (_, sig) in fields {
-                                add_signature(ctx, sig.clone(), store, &context, visit_fields)
-                                    .await?;
-                            }
-                        }
-                        MoveData::Enum(variants) => {
-                            for variant in variants {
-                                for (_, sig) in &variant.signatures {
-                                    add_signature(ctx, sig.clone(), store, &context, visit_fields)
-                                        .await?;
-                                }
-                            }
-                        }
-                    };
-                }
-
                 check_max_limit!(
                     TooManyTypeNodes, ctx.limits;
                     max_type_nodes > ctx.datatypes.len()
                 );
 
+                // Gather field signatures before moving `def` into the map so we don't clone
+                // its data twice. Inserting now (rather than after the visit) is safe because
+                // `add_signature` uses `.entry(key).or_insert` for recursive references, so
+                // discovering this datatype mid-visit is a no-op.
+                let sigs = def.field_signatures();
                 ctx.datatypes.insert(key, def);
+
+                if visit_fields {
+                    add_signature(ctx, sigs, store, &context, visit_fields).await?;
+                }
             }
         }
     }
@@ -1704,18 +1712,19 @@ async fn add_type_tag<S: PackageStore + ?Sized>(
     Ok(())
 }
 
-/// Like `add_type_tag` but for type signatures. Needs a linkage table to translate runtime IDs
-/// into storage IDs.
+/// Like `add_type_tag` but for type signatures. Seeds an internal frontier with `sigs` and walks
+/// every datatype reachable from it, fetching packages via `store` as needed. `context` supplies
+/// the linkage table used to translate runtime IDs into storage IDs.
 async fn add_signature<T: PackageStore + ?Sized>(
     ctx: &mut ResolutionContext<'_>,
-    sig: OpenSignatureBody,
+    sigs: Vec<OpenSignatureBody>,
     store: &T,
     context: &Package,
     visit_fields: bool,
 ) -> Result<()> {
     use OpenSignatureBody as O;
 
-    let mut frontier = vec![sig];
+    let mut frontier = sigs;
     while let Some(sig) = frontier.pop() {
         match sig {
             O::Address
@@ -1740,7 +1749,7 @@ async fn add_signature<T: PackageStore + ?Sized>(
 
                 let params_count = params.len();
                 let data_count = ctx.datatypes.len();
-                frontier.extend(params.into_iter());
+                frontier.extend(params);
 
                 let type_params = if let Some(def) = ctx.datatypes.get(&key) {
                     &def.type_params
@@ -1756,19 +1765,7 @@ async fn add_signature<T: PackageStore + ?Sized>(
 
                     let def = package.data_def(&key.module, &key.name)?;
                     if visit_fields {
-                        match &def.data {
-                            MoveData::Struct(fields) => {
-                                frontier.extend(fields.iter().map(|f| &f.1).cloned());
-                            }
-                            MoveData::Enum(variants) => {
-                                frontier.extend(
-                                    variants
-                                        .iter()
-                                        .flat_map(|v| v.signatures.iter().map(|(_, s)| s))
-                                        .cloned(),
-                                );
-                            }
-                        };
+                        frontier.extend(def.field_signatures());
                     }
 
                     &ctx.datatypes.entry(key).or_insert(def).type_params
