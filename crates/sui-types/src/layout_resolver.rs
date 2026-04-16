@@ -18,6 +18,15 @@ pub trait LayoutResolver {
     ) -> Result<A::MoveDatatypeLayout, SuiError>;
 }
 
+/// Synchronous counterpart to [`LayoutResolver`]. Used at the authority/validator layer where
+/// layout resolution is backed by synchronous package store access.
+pub trait SyncLayoutResolver {
+    fn get_annotated_layout(
+        &mut self,
+        struct_tag: &StructTag,
+    ) -> Result<A::MoveDatatypeLayout, SuiError>;
+}
+
 pub fn get_layout_from_struct_tag(
     struct_tag: StructTag,
     resolver: &impl GetModule,

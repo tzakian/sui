@@ -9,7 +9,7 @@ use sui_types::base_types::ObjectID;
 use sui_types::storage::BackingPackageStore;
 
 use crate::error::Error;
-use crate::{Package, PackageStore, Result};
+use crate::{Package, PackageStore, Result, SyncPackageStore};
 
 /// Adapts a sync [`BackingPackageStore`] into an async [`PackageStore`] for use with
 /// [`crate::Resolver`]. This bridges the validator/authority storage layer (which uses
@@ -43,9 +43,26 @@ where
     }
 }
 
+impl<S> SyncPackageStore for BackingPackageStoreAdapter<S>
+where
+    S: BackingPackageStore,
+{
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        let object_id = ObjectID::from(id);
+        let package_obj = self
+            .backing
+            .get_package_object(&object_id)
+            .map_err(|e| Error::Store {
+                store: "BackingPackageStore",
+                error: e.to_string(),
+            })?
+            .ok_or(Error::PackageNotFound(id))?;
+        Ok(Arc::new(Package::read_from_object(package_obj.object())?))
+    }
+}
+
 /// A [`PackageStore`] that checks a primary store first, falling back to a secondary store if the
-/// primary does not contain the requested package. This is the async equivalent of
-/// [`sui_types::inner_temporary_store::PackageStoreWithFallback`].
+/// primary does not contain the requested package.
 pub struct FallbackPackageStore<P, F> {
     primary: P,
     fallback: F,
@@ -67,6 +84,19 @@ where
         match self.primary.fetch(id).await {
             Ok(package) => Ok(package),
             Err(_) => self.fallback.fetch(id).await,
+        }
+    }
+}
+
+impl<P, F> SyncPackageStore for FallbackPackageStore<P, F>
+where
+    P: SyncPackageStore,
+    F: SyncPackageStore,
+{
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        match self.primary.fetch(id) {
+            Ok(package) => Ok(package),
+            Err(_) => self.fallback.fetch(id),
         }
     }
 }

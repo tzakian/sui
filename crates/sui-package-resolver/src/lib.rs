@@ -335,6 +335,24 @@ impl<S: PackageStore> PackageStore for Arc<S> {
     }
 }
 
+/// Synchronous counterpart to [`PackageStore`]. Used at the authority/validator layer where
+/// package reads are backed by synchronous RocksDB access and async is unnecessary overhead.
+pub trait SyncPackageStore {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>>;
+}
+
+impl<S: SyncPackageStore> SyncPackageStore for &S {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        (*self).fetch(id)
+    }
+}
+
+impl<S: SyncPackageStore> SyncPackageStore for Arc<S> {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        self.as_ref().fetch(id)
+    }
+}
+
 /// Check $value does not exceed $limit in config, if the limit config exists, returning an error
 /// containing the max value and actual value otherwise.
 macro_rules! check_max_limit {
@@ -655,6 +673,37 @@ impl<S: PackageStore> Resolver<S> {
     }
 }
 
+/// Synchronous resolution methods for use with [`SyncPackageStore`] implementations.
+impl<S: SyncPackageStore> Resolver<S> {
+    pub fn type_layout_sync(&self, mut tag: TypeTag) -> Result<MoveTypeLayout> {
+        let mut context = ResolutionContext::new(self.limits.as_ref());
+        context.add_type_tag_sync(
+            &mut tag,
+            &self.package_store,
+            /* visit_fields */ true,
+            /* visit_phantoms */ true,
+        )?;
+        let max_depth = self
+            .limits
+            .as_ref()
+            .map_or(usize::MAX, |l| l.max_move_value_depth);
+        Ok(context.resolve_type_layout(&tag, max_depth)?.0)
+    }
+
+    pub fn datatype_layout_sync(
+        &self,
+        struct_tag: &StructTag,
+    ) -> Result<A::MoveDatatypeLayout> {
+        let type_tag = TypeTag::Struct(Box::new(struct_tag.clone()));
+        let layout = self.type_layout_sync(type_tag)?;
+        match layout {
+            MoveTypeLayout::Struct(s) => Ok(A::MoveDatatypeLayout::Struct(s)),
+            MoveTypeLayout::Enum(e) => Ok(A::MoveDatatypeLayout::Enum(e)),
+            _ => unreachable!("StructTag always resolves to a struct or enum layout"),
+        }
+    }
+}
+
 #[async_trait(?Send)]
 impl<S: PackageStore> sui_types::layout_resolver::LayoutResolver for Resolver<S> {
     async fn get_annotated_layout(
@@ -662,6 +711,20 @@ impl<S: PackageStore> sui_types::layout_resolver::LayoutResolver for Resolver<S>
         struct_tag: &move_core_types::language_storage::StructTag,
     ) -> std::result::Result<MoveDatatypeLayout, sui_types::error::SuiError> {
         self.datatype_layout(struct_tag).await.map_err(|e| {
+            sui_types::error::SuiErrorKind::FailObjectLayout {
+                st: e.to_string(),
+            }
+            .into()
+        })
+    }
+}
+
+impl<S: SyncPackageStore> sui_types::layout_resolver::SyncLayoutResolver for Resolver<S> {
+    fn get_annotated_layout(
+        &mut self,
+        struct_tag: &move_core_types::language_storage::StructTag,
+    ) -> std::result::Result<MoveDatatypeLayout, sui_types::error::SuiError> {
+        self.datatype_layout_sync(struct_tag).map_err(|e| {
             sui_types::error::SuiErrorKind::FailObjectLayout {
                 st: e.to_string(),
             }
@@ -1422,6 +1485,193 @@ impl<'l> ResolutionContext<'l> {
                         // Need to resolve the datatype, so fetch the package that contains it.
                         let storage_id = context.relocate(key.package)?;
                         let package = store.fetch(storage_id).await?;
+
+                        let def = package.data_def(&key.module, &key.name)?;
+                        if visit_fields {
+                            match &def.data {
+                                MoveData::Struct(fields) => {
+                                    frontier.extend(fields.iter().map(|f| &f.1).cloned());
+                                }
+                                MoveData::Enum(variants) => {
+                                    frontier.extend(
+                                        variants
+                                            .iter()
+                                            .flat_map(|v| v.signatures.iter().map(|(_, s)| s))
+                                            .cloned(),
+                                    );
+                                }
+                            };
+                        }
+
+                        &self.datatypes.entry(key).or_insert(def).type_params
+                    };
+
+                    if type_params.len() != params_count {
+                        return Err(Error::TypeArityMismatch(type_params.len(), params_count));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Synchronous version of [`Self::add_type_tag`] for use with [`SyncPackageStore`].
+    fn add_type_tag_sync<S: SyncPackageStore + ?Sized>(
+        &mut self,
+        tag: &mut TypeTag,
+        store: &S,
+        visit_fields: bool,
+        visit_phantoms: bool,
+    ) -> Result<()> {
+        use TypeTag as T;
+
+        struct ToVisit<'t> {
+            tag: &'t mut TypeTag,
+            depth: usize,
+        }
+
+        let mut frontier = vec![ToVisit { tag, depth: 0 }];
+        while let Some(ToVisit { tag, depth }) = frontier.pop() {
+            macro_rules! push_ty_param {
+                ($tag:expr) => {{
+                    check_max_limit!(
+                        TypeParamNesting, self.limits;
+                        max_type_argument_depth > depth
+                    );
+
+                    frontier.push(ToVisit { tag: $tag, depth: depth + 1 })
+                }}
+            }
+
+            match tag {
+                T::Address
+                | T::Bool
+                | T::U8
+                | T::U16
+                | T::U32
+                | T::U64
+                | T::U128
+                | T::U256
+                | T::Signer => {
+                    // Nothing further to add to context
+                }
+
+                T::Vector(tag) => push_ty_param!(tag),
+
+                T::Struct(s) => {
+                    let context = store.fetch(s.address)?;
+                    let def = context
+                        .clone()
+                        .data_def(s.module.as_str(), s.name.as_str())?;
+
+                    s.address = context.runtime_id;
+                    let key = DatatypeRef::from(s.as_ref()).as_key();
+
+                    if def.type_params.len() != s.type_params.len() {
+                        return Err(Error::TypeArityMismatch(
+                            def.type_params.len(),
+                            s.type_params.len(),
+                        ));
+                    }
+
+                    check_max_limit!(
+                        TooManyTypeParams, self.limits;
+                        max_type_argument_width >= s.type_params.len()
+                    );
+
+                    for (param, def) in s.type_params.iter_mut().zip_eq(def.type_params.iter()) {
+                        if !def.is_phantom || visit_phantoms {
+                            push_ty_param!(param);
+                        }
+                    }
+
+                    if self.datatypes.contains_key(&key) {
+                        continue;
+                    }
+
+                    if visit_fields {
+                        match &def.data {
+                            MoveData::Struct(fields) => {
+                                for (_, sig) in fields {
+                                    self.add_signature_sync(sig.clone(), store, &context, visit_fields)?;
+                                }
+                            }
+                            MoveData::Enum(variants) => {
+                                for variant in variants {
+                                    for (_, sig) in &variant.signatures {
+                                        self.add_signature_sync(
+                                            sig.clone(),
+                                            store,
+                                            &context,
+                                            visit_fields,
+                                        )?;
+                                    }
+                                }
+                            }
+                        };
+                    }
+
+                    check_max_limit!(
+                        TooManyTypeNodes, self.limits;
+                        max_type_nodes > self.datatypes.len()
+                    );
+
+                    self.datatypes.insert(key, def);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Synchronous version of [`Self::add_signature`] for use with [`SyncPackageStore`].
+    fn add_signature_sync<T: SyncPackageStore + ?Sized>(
+        &mut self,
+        sig: OpenSignatureBody,
+        store: &T,
+        context: &Package,
+        visit_fields: bool,
+    ) -> Result<()> {
+        use OpenSignatureBody as O;
+
+        let mut frontier = vec![sig];
+        while let Some(sig) = frontier.pop() {
+            match sig {
+                O::Address
+                | O::Bool
+                | O::U8
+                | O::U16
+                | O::U32
+                | O::U64
+                | O::U128
+                | O::U256
+                | O::TypeParameter(_) => {
+                    // Nothing further to add to context
+                }
+
+                O::Vector(sig) => frontier.push(*sig),
+
+                O::Datatype(key, params) => {
+                    check_max_limit!(
+                        TooManyTypeParams, self.limits;
+                        max_type_argument_width >= params.len()
+                    );
+
+                    let params_count = params.len();
+                    let data_count = self.datatypes.len();
+                    frontier.extend(params.into_iter());
+
+                    let type_params = if let Some(def) = self.datatypes.get(&key) {
+                        &def.type_params
+                    } else {
+                        check_max_limit!(
+                            TooManyTypeNodes, self.limits;
+                            max_type_nodes > data_count
+                        );
+
+                        let storage_id = context.relocate(key.package)?;
+                        let package = store.fetch(storage_id)?;
 
                         let def = package.data_def(&key.module, &key.name)?;
                         if visit_fields {
