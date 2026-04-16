@@ -304,6 +304,13 @@ struct ResolutionContext<'l> {
     limits: Option<&'l Limits>,
 }
 
+/// A type tag pending exploration during context-building, with its accumulated type-parameter
+/// nesting depth. `'t` binds the mutable borrow of the caller's `TypeTag`.
+struct ToVisit<'t> {
+    tag: &'t mut TypeTag,
+    depth: usize,
+}
+
 /// Interface to abstract over access to a store of live packages.  Used to override the default
 /// store during testing.
 #[async_trait]
@@ -386,14 +393,14 @@ impl<S: PackageStore> Resolver<S> {
 
         // (1). Fetch all the information from this store that is necessary to relocate package IDs
         // in the type.
-        context
-            .add_type_tag(
-                &mut tag,
-                &self.package_store,
-                /* visit_fields */ false,
-                /* visit_phantoms */ true,
-            )
-            .await?;
+        add_type_tag(
+            &mut context,
+            &mut tag,
+            &self.package_store,
+            /* visit_fields */ false,
+            /* visit_phantoms */ true,
+        )
+        .await?;
 
         // (2). Use that information to relocate package IDs in the type.
         context.canonicalize_type(&mut tag)?;
@@ -408,14 +415,14 @@ impl<S: PackageStore> Resolver<S> {
 
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
-        context
-            .add_type_tag(
-                &mut tag,
-                &self.package_store,
-                /* visit_fields */ true,
-                /* visit_phantoms */ true,
-            )
-            .await?;
+        add_type_tag(
+            &mut context,
+            &mut tag,
+            &self.package_store,
+            /* visit_fields */ true,
+            /* visit_phantoms */ true,
+        )
+        .await?;
 
         // (2). Use that information to resolve the tag into a layout.
         let max_depth = self
@@ -452,14 +459,14 @@ impl<S: PackageStore> Resolver<S> {
 
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
-        context
-            .add_type_tag(
-                &mut tag,
-                &self.package_store,
-                /* visit_fields */ false,
-                /* visit_phantoms */ false,
-            )
-            .await?;
+        add_type_tag(
+            &mut context,
+            &mut tag,
+            &self.package_store,
+            /* visit_fields */ false,
+            /* visit_phantoms */ false,
+        )
+        .await?;
 
         // (2). Use that information to calculate the type's abilities.
         context.resolve_abilities(&tag)
@@ -487,14 +494,14 @@ impl<S: PackageStore> Resolver<S> {
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
         for sig in def.parameters.iter().chain(def.return_.iter()) {
-            context
-                .add_signature(
-                    sig.body.clone(),
-                    &self.package_store,
-                    package.as_ref(),
-                    /* visit_fields */ false,
-                )
-                .await?;
+            add_signature(
+                &mut context,
+                sig.body.clone(),
+                &self.package_store,
+                package.as_ref(),
+                /* visit_fields */ false,
+            )
+            .await?;
         }
 
         // (2). Use that information to relocate package IDs in the signature.
@@ -1243,200 +1250,6 @@ impl<'l> ResolutionContext<'l> {
     ///
     /// The `visit_phantoms` flag controls whether the traversal recurses through phantom type
     /// parameters (which is also necessary for type resolution) or not.
-    async fn add_type_tag<S: PackageStore + ?Sized>(
-        &mut self,
-        tag: &mut TypeTag,
-        store: &S,
-        visit_fields: bool,
-        visit_phantoms: bool,
-    ) -> Result<()> {
-        use TypeTag as T;
-
-        struct ToVisit<'t> {
-            tag: &'t mut TypeTag,
-            depth: usize,
-        }
-
-        let mut frontier = vec![ToVisit { tag, depth: 0 }];
-        while let Some(ToVisit { tag, depth }) = frontier.pop() {
-            macro_rules! push_ty_param {
-                ($tag:expr) => {{
-                    check_max_limit!(
-                        TypeParamNesting, self.limits;
-                        max_type_argument_depth > depth
-                    );
-
-                    frontier.push(ToVisit { tag: $tag, depth: depth + 1 })
-                }}
-            }
-
-            match tag {
-                T::Address
-                | T::Bool
-                | T::U8
-                | T::U16
-                | T::U32
-                | T::U64
-                | T::U128
-                | T::U256
-                | T::Signer => {
-                    // Nothing further to add to context
-                }
-
-                T::Vector(tag) => push_ty_param!(tag),
-
-                T::Struct(s) => {
-                    let context = store.fetch(s.address).await?;
-                    let def = context
-                        .clone()
-                        .data_def(s.module.as_str(), s.name.as_str())?;
-
-                    // Normalize `address` (the ID of a package that contains the definition of this
-                    // struct) to be a runtime ID, because that's what the resolution context uses
-                    // for keys.  Take care to do this before generating the key that is used to
-                    // query and/or write into `self.structs.
-                    s.address = context.runtime_id;
-                    let key = DatatypeRef::from(s.as_ref()).as_key();
-
-                    if def.type_params.len() != s.type_params.len() {
-                        return Err(Error::TypeArityMismatch(
-                            def.type_params.len(),
-                            s.type_params.len(),
-                        ));
-                    }
-
-                    check_max_limit!(
-                        TooManyTypeParams, self.limits;
-                        max_type_argument_width >= s.type_params.len()
-                    );
-
-                    for (param, def) in s.type_params.iter_mut().zip_eq(def.type_params.iter()) {
-                        if !def.is_phantom || visit_phantoms {
-                            push_ty_param!(param);
-                        }
-                    }
-
-                    if self.datatypes.contains_key(&key) {
-                        continue;
-                    }
-
-                    if visit_fields {
-                        match &def.data {
-                            MoveData::Struct(fields) => {
-                                for (_, sig) in fields {
-                                    self.add_signature(sig.clone(), store, &context, visit_fields)
-                                        .await?;
-                                }
-                            }
-                            MoveData::Enum(variants) => {
-                                for variant in variants {
-                                    for (_, sig) in &variant.signatures {
-                                        self.add_signature(
-                                            sig.clone(),
-                                            store,
-                                            &context,
-                                            visit_fields,
-                                        )
-                                        .await?;
-                                    }
-                                }
-                            }
-                        };
-                    }
-
-                    check_max_limit!(
-                        TooManyTypeNodes, self.limits;
-                        max_type_nodes > self.datatypes.len()
-                    );
-
-                    self.datatypes.insert(key, def);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    // Like `add_type_tag` but for type signatures.  Needs a linkage table to translate runtime IDs
-    // into storage IDs.
-    async fn add_signature<T: PackageStore + ?Sized>(
-        &mut self,
-        sig: OpenSignatureBody,
-        store: &T,
-        context: &Package,
-        visit_fields: bool,
-    ) -> Result<()> {
-        use OpenSignatureBody as O;
-
-        let mut frontier = vec![sig];
-        while let Some(sig) = frontier.pop() {
-            match sig {
-                O::Address
-                | O::Bool
-                | O::U8
-                | O::U16
-                | O::U32
-                | O::U64
-                | O::U128
-                | O::U256
-                | O::TypeParameter(_) => {
-                    // Nothing further to add to context
-                }
-
-                O::Vector(sig) => frontier.push(*sig),
-
-                O::Datatype(key, params) => {
-                    check_max_limit!(
-                        TooManyTypeParams, self.limits;
-                        max_type_argument_width >= params.len()
-                    );
-
-                    let params_count = params.len();
-                    let data_count = self.datatypes.len();
-                    frontier.extend(params.into_iter());
-
-                    let type_params = if let Some(def) = self.datatypes.get(&key) {
-                        &def.type_params
-                    } else {
-                        check_max_limit!(
-                            TooManyTypeNodes, self.limits;
-                            max_type_nodes > data_count
-                        );
-
-                        // Need to resolve the datatype, so fetch the package that contains it.
-                        let storage_id = context.relocate(key.package)?;
-                        let package = store.fetch(storage_id).await?;
-
-                        let def = package.data_def(&key.module, &key.name)?;
-                        if visit_fields {
-                            match &def.data {
-                                MoveData::Struct(fields) => {
-                                    frontier.extend(fields.iter().map(|f| &f.1).cloned());
-                                }
-                                MoveData::Enum(variants) => {
-                                    frontier.extend(
-                                        variants
-                                            .iter()
-                                            .flat_map(|v| v.signatures.iter().map(|(_, s)| s))
-                                            .cloned(),
-                                    );
-                                }
-                            };
-                        }
-
-                        &self.datatypes.entry(key).or_insert(def).type_params
-                    };
-
-                    if type_params.len() != params_count {
-                        return Err(Error::TypeArityMismatch(type_params.len(), params_count));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Translate runtime IDs in a type `tag` into defining IDs using only the information
     /// contained in this context. Requires that the necessary information was added to the context
     /// through calls to `add_type_tag`.
@@ -1774,6 +1587,201 @@ impl<'l> ResolutionContext<'l> {
 
         Ok(())
     }
+}
+
+/// Gather definitions for types that contribute to the definition of `tag` into `ctx`, fetching
+/// data from the `store` as necessary. Also updates package addresses in `tag` to point to runtime
+/// IDs instead of storage IDs to ensure queries made using these addresses during the subsequent
+/// resolution phase find the relevant type information in the context.
+///
+/// The `visit_fields` flag controls whether the traversal looks inside types at their fields
+/// (which is necessary for layout resolution) or not (only explores the outer type and any type
+/// parameters).
+///
+/// The `visit_phantoms` flag controls whether the traversal recurses through phantom type
+/// parameters (which is also necessary for type resolution) or not.
+async fn add_type_tag<S: PackageStore + ?Sized>(
+    ctx: &mut ResolutionContext<'_>,
+    tag: &mut TypeTag,
+    store: &S,
+    visit_fields: bool,
+    visit_phantoms: bool,
+) -> Result<()> {
+    use TypeTag as T;
+
+    let mut frontier = vec![ToVisit { tag, depth: 0 }];
+    while let Some(ToVisit { tag, depth }) = frontier.pop() {
+        macro_rules! push_ty_param {
+            ($tag:expr) => {{
+                check_max_limit!(
+                    TypeParamNesting, ctx.limits;
+                    max_type_argument_depth > depth
+                );
+
+                frontier.push(ToVisit { tag: $tag, depth: depth + 1 })
+            }}
+        }
+
+        match tag {
+            T::Address
+            | T::Bool
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::U128
+            | T::U256
+            | T::Signer => {
+                // Nothing further to add to context
+            }
+
+            T::Vector(tag) => push_ty_param!(tag),
+
+            T::Struct(s) => {
+                let context = store.fetch(s.address).await?;
+                let def = context
+                    .clone()
+                    .data_def(s.module.as_str(), s.name.as_str())?;
+
+                // Normalize `address` (the ID of a package that contains the definition of this
+                // struct) to be a runtime ID, because that's what the resolution context uses
+                // for keys.  Take care to do this before generating the key that is used to
+                // query and/or write into `ctx.datatypes`.
+                s.address = context.runtime_id;
+                let key = DatatypeRef::from(s.as_ref()).as_key();
+
+                if def.type_params.len() != s.type_params.len() {
+                    return Err(Error::TypeArityMismatch(
+                        def.type_params.len(),
+                        s.type_params.len(),
+                    ));
+                }
+
+                check_max_limit!(
+                    TooManyTypeParams, ctx.limits;
+                    max_type_argument_width >= s.type_params.len()
+                );
+
+                for (param, def) in s.type_params.iter_mut().zip_eq(def.type_params.iter()) {
+                    if !def.is_phantom || visit_phantoms {
+                        push_ty_param!(param);
+                    }
+                }
+
+                if ctx.datatypes.contains_key(&key) {
+                    continue;
+                }
+
+                if visit_fields {
+                    match &def.data {
+                        MoveData::Struct(fields) => {
+                            for (_, sig) in fields {
+                                add_signature(ctx, sig.clone(), store, &context, visit_fields)
+                                    .await?;
+                            }
+                        }
+                        MoveData::Enum(variants) => {
+                            for variant in variants {
+                                for (_, sig) in &variant.signatures {
+                                    add_signature(ctx, sig.clone(), store, &context, visit_fields)
+                                        .await?;
+                                }
+                            }
+                        }
+                    };
+                }
+
+                check_max_limit!(
+                    TooManyTypeNodes, ctx.limits;
+                    max_type_nodes > ctx.datatypes.len()
+                );
+
+                ctx.datatypes.insert(key, def);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Like `add_type_tag` but for type signatures. Needs a linkage table to translate runtime IDs
+/// into storage IDs.
+async fn add_signature<T: PackageStore + ?Sized>(
+    ctx: &mut ResolutionContext<'_>,
+    sig: OpenSignatureBody,
+    store: &T,
+    context: &Package,
+    visit_fields: bool,
+) -> Result<()> {
+    use OpenSignatureBody as O;
+
+    let mut frontier = vec![sig];
+    while let Some(sig) = frontier.pop() {
+        match sig {
+            O::Address
+            | O::Bool
+            | O::U8
+            | O::U16
+            | O::U32
+            | O::U64
+            | O::U128
+            | O::U256
+            | O::TypeParameter(_) => {
+                // Nothing further to add to context
+            }
+
+            O::Vector(sig) => frontier.push(*sig),
+
+            O::Datatype(key, params) => {
+                check_max_limit!(
+                    TooManyTypeParams, ctx.limits;
+                    max_type_argument_width >= params.len()
+                );
+
+                let params_count = params.len();
+                let data_count = ctx.datatypes.len();
+                frontier.extend(params.into_iter());
+
+                let type_params = if let Some(def) = ctx.datatypes.get(&key) {
+                    &def.type_params
+                } else {
+                    check_max_limit!(
+                        TooManyTypeNodes, ctx.limits;
+                        max_type_nodes > data_count
+                    );
+
+                    // Need to resolve the datatype, so fetch the package that contains it.
+                    let storage_id = context.relocate(key.package)?;
+                    let package = store.fetch(storage_id).await?;
+
+                    let def = package.data_def(&key.module, &key.name)?;
+                    if visit_fields {
+                        match &def.data {
+                            MoveData::Struct(fields) => {
+                                frontier.extend(fields.iter().map(|f| &f.1).cloned());
+                            }
+                            MoveData::Enum(variants) => {
+                                frontier.extend(
+                                    variants
+                                        .iter()
+                                        .flat_map(|v| v.signatures.iter().map(|(_, s)| s))
+                                        .cloned(),
+                                );
+                            }
+                        };
+                    }
+
+                    &ctx.datatypes.entry(key).or_insert(def).type_params
+                };
+
+                if type_params.len() != params_count {
+                    return Err(Error::TypeArityMismatch(type_params.len(), params_count));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 impl<'s> From<&'s StructTag> for DatatypeRef<'s, 's> {
