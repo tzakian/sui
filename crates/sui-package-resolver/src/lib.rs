@@ -314,10 +314,17 @@ struct ToVisit<'t> {
 /// Interface to abstract over access to a store of live packages.  Used to override the default
 /// store during testing.
 #[async_trait]
-pub trait PackageStore: Send + Sync + 'static {
+pub trait PackageStore: Send + Sync {
     /// Read package contents. Fails if `id` is not an object, not a package, or is malformed in
     /// some way.
     async fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>>;
+}
+
+/// Synchronous analogue of [`PackageStore`]. Used by [`SyncResolver`] when the backing storage
+/// layer is itself synchronous (e.g. the validator/authority `BackingPackageStore`). Has no
+/// `Send`/`Sync`/`'static` bounds so implementations can borrow freely.
+pub trait SyncPackageStore {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>>;
 }
 
 macro_rules! as_ref_impl {
@@ -341,6 +348,24 @@ impl<S: PackageStore> PackageStore for Arc<S> {
     }
 }
 
+impl<S: SyncPackageStore + ?Sized> SyncPackageStore for &S {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        (*self).fetch(id)
+    }
+}
+
+impl<S: SyncPackageStore + ?Sized> SyncPackageStore for Arc<S> {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        self.as_ref().fetch(id)
+    }
+}
+
+impl<S: SyncPackageStore + ?Sized> SyncPackageStore for Box<S> {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        self.as_ref().fetch(id)
+    }
+}
+
 /// Check $value does not exceed $limit in config, if the limit config exists, returning an error
 /// containing the max value and actual value otherwise.
 macro_rules! check_max_limit {
@@ -353,6 +378,356 @@ macro_rules! check_max_limit {
             }
         }
     };
+}
+
+// --- Trampoline -----------------------------------------------------------------------------
+//
+// The resolver's two fetch-interleaved helpers (formerly `add_type_tag` and `add_signature`) are
+// expressed as a trampoline so they can be driven by either a sync or an async store. `step`
+// advances one frontier entry at a time, returning a `Bounce` describing what to do next: stay,
+// push a new frame (what used to be a recursive `.await` call), return (frame drained), or
+// suspend awaiting a package fetch.
+
+/// One in-flight "call" in the trampoline: either the old `add_type_tag` ([`Frame::Tag`]) or the
+/// old `add_signature` ([`Frame::Sig`]).
+enum Frame<'t> {
+    Tag(TagFrame<'t>),
+    Sig(SigFrame),
+}
+
+/// The per-call state of what used to be `add_type_tag`. `pending` holds the frontier entry we
+/// suspended on, if any.
+struct TagFrame<'t> {
+    frontier: Vec<ToVisit<'t>>,
+    visit_fields: bool,
+    visit_phantoms: bool,
+    pending: Option<ToVisit<'t>>,
+}
+
+/// The per-call state of what used to be `add_signature`. `pending` holds the frontier entry we
+/// suspended on, if any.
+struct SigFrame {
+    frontier: Vec<OpenSignatureBody>,
+    context: Arc<Package>,
+    visit_fields: bool,
+    pending: Option<OpenSignatureBody>,
+}
+
+/// What a single step of the trampoline wants to do next.
+enum Bounce<'t> {
+    /// Stay in the current frame and pop another frontier entry.
+    More,
+    /// Push a new frame on top — replaces what used to be a recursive `.await` call.
+    Call(Frame<'t>),
+    /// Current frame's frontier is drained — pop it.
+    Return,
+    /// Current frame is blocked on a fetch. The caller must `feed` the package before stepping
+    /// again.
+    Fetch(AccountAddress),
+}
+
+/// A pause-resumable runner for the resolution context. Owns the [`ResolutionContext`] and the
+/// stack of in-flight frames. `step` advances the computation until a package is needed (returns
+/// its id) or the stack drains (returns `None`). `feed` delivers a fetched package so the next
+/// `step` can resume. Sync and async facades differ only in how they obtain packages between
+/// `step`/`feed` calls.
+struct Driver<'l, 't> {
+    ctx: ResolutionContext<'l>,
+    stack: Vec<Frame<'t>>,
+    cached: BTreeMap<AccountAddress, Arc<Package>>,
+}
+
+impl<'l, 't> Driver<'l, 't> {
+    fn new(limits: Option<&'l Limits>) -> Self {
+        Self {
+            ctx: ResolutionContext::new(limits),
+            stack: Vec::new(),
+            cached: BTreeMap::new(),
+        }
+    }
+
+    /// Push an initial frame mirroring an `add_type_tag(tag, ...)` call.
+    fn with_tag(mut self, tag: &'t mut TypeTag, visit_fields: bool, visit_phantoms: bool) -> Self {
+        self.stack.push(Frame::Tag(TagFrame {
+            frontier: vec![ToVisit { tag, depth: 0 }],
+            visit_fields,
+            visit_phantoms,
+            pending: None,
+        }));
+        self
+    }
+
+    /// Push an initial frame for a batch of `add_signature(sig, ..., context, visit_fields)` calls
+    /// that share `context` and `visit_fields`. Merging is safe because per-call `add_signature`
+    /// frontiers don't interact — they all populate the same `ctx.datatypes`.
+    fn with_sigs(
+        mut self,
+        sigs: Vec<OpenSignatureBody>,
+        context: Arc<Package>,
+        visit_fields: bool,
+    ) -> Self {
+        self.stack.push(Frame::Sig(SigFrame {
+            frontier: sigs,
+            context,
+            visit_fields,
+            pending: None,
+        }));
+        self
+    }
+
+    /// Advance the trampoline until it needs a package or the stack drains.
+    fn step(&mut self) -> Result<Option<AccountAddress>> {
+        loop {
+            let bounce = match self.stack.last_mut() {
+                None => return Ok(None),
+                Some(Frame::Tag(f)) => f.bounce(&mut self.ctx, &self.cached)?,
+                Some(Frame::Sig(f)) => f.bounce(&mut self.ctx, &self.cached)?,
+            };
+            match bounce {
+                Bounce::More => {}
+                Bounce::Call(frame) => self.stack.push(frame),
+                Bounce::Return => {
+                    self.stack.pop();
+                }
+                Bounce::Fetch(id) => return Ok(Some(id)),
+            }
+        }
+    }
+
+    /// Supply a fetched package so the suspended frame can resume on the next `step`.
+    fn feed(&mut self, id: AccountAddress, pkg: Arc<Package>) {
+        self.cached.insert(id, pkg);
+    }
+
+    /// Drive the trampoline to completion using an async store, returning the populated
+    /// resolution context.
+    async fn drive_async<S: PackageStore + ?Sized>(
+        mut self,
+        store: &S,
+    ) -> Result<ResolutionContext<'l>> {
+        while let Some(id) = self.step()? {
+            let pkg = store.fetch(id).await?;
+            self.feed(id, pkg);
+        }
+        Ok(self.into_context())
+    }
+
+    /// Drive the trampoline to completion using a sync store, returning the populated
+    /// resolution context.
+    fn drive_sync<S: SyncPackageStore + ?Sized>(
+        mut self,
+        store: &S,
+    ) -> Result<ResolutionContext<'l>> {
+        while let Some(id) = self.step()? {
+            let pkg = store.fetch(id)?;
+            self.feed(id, pkg);
+        }
+        Ok(self.into_context())
+    }
+
+    fn into_context(self) -> ResolutionContext<'l> {
+        debug_assert!(self.stack.is_empty(), "driver stack not drained");
+        self.ctx
+    }
+}
+
+impl<'t> TagFrame<'t> {
+    /// One step of what used to be `add_type_tag`'s `while let Some(...) = frontier.pop()` body.
+    /// Structurally identical to the async version, with the fetch-`.await` replaced by
+    /// suspending into [`Bounce::Fetch`] and the recursive `add_signature(...).await` replaced by
+    /// returning [`Bounce::Call`].
+    fn bounce(
+        &mut self,
+        ctx: &mut ResolutionContext<'_>,
+        cached: &BTreeMap<AccountAddress, Arc<Package>>,
+    ) -> Result<Bounce<'t>> {
+        use TypeTag as T;
+
+        let Some(ToVisit { tag, depth }) =
+            self.pending.take().or_else(|| self.frontier.pop())
+        else {
+            return Ok(Bounce::Return);
+        };
+
+        // Peek the work item before destructuring so we can put it back unchanged if we need to
+        // suspend for a fetch.
+        if let T::Struct(s) = &*tag {
+            let addr = s.address;
+            if !cached.contains_key(&addr) {
+                self.pending = Some(ToVisit { tag, depth });
+                return Ok(Bounce::Fetch(addr));
+            }
+        }
+
+        macro_rules! push_ty_param {
+            ($tag:expr) => {{
+                check_max_limit!(
+                    TypeParamNesting, ctx.limits;
+                    max_type_argument_depth > depth
+                );
+
+                self.frontier.push(ToVisit {
+                    tag: $tag,
+                    depth: depth + 1,
+                })
+            }};
+        }
+
+        match tag {
+            T::Address
+            | T::Bool
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::U128
+            | T::U256
+            | T::Signer => Ok(Bounce::More),
+
+            T::Vector(inner) => {
+                push_ty_param!(inner);
+                Ok(Bounce::More)
+            }
+
+            T::Struct(s) => {
+                // The peek above guarantees this address is cached.
+                let context = cached[&s.address].clone();
+                let def = context.data_def(s.module.as_str(), s.name.as_str())?;
+
+                // Normalize `address` to the runtime ID, because that's what `ctx.datatypes`
+                // keys on.
+                s.address = context.runtime_id;
+                let key = DatatypeRef::from(s.as_ref()).as_key();
+
+                if def.type_params.len() != s.type_params.len() {
+                    return Err(Error::TypeArityMismatch(
+                        def.type_params.len(),
+                        s.type_params.len(),
+                    ));
+                }
+
+                check_max_limit!(
+                    TooManyTypeParams, ctx.limits;
+                    max_type_argument_width >= s.type_params.len()
+                );
+
+                for (param, param_def) in s.type_params.iter_mut().zip_eq(def.type_params.iter())
+                {
+                    if !param_def.is_phantom || self.visit_phantoms {
+                        push_ty_param!(param);
+                    }
+                }
+
+                if ctx.datatypes.contains_key(&key) {
+                    return Ok(Bounce::More);
+                }
+
+                check_max_limit!(
+                    TooManyTypeNodes, ctx.limits;
+                    max_type_nodes > ctx.datatypes.len()
+                );
+
+                // Gather field/variant signatures before inserting so a Sig call on the same
+                // datatype discovered during field resolution finds the key already present and
+                // skips re-processing (equivalent to the async version's
+                // `.entry(key).or_insert`).
+                let sigs = def.field_signatures();
+                ctx.datatypes.insert(key, def);
+
+                if self.visit_fields && !sigs.is_empty() {
+                    Ok(Bounce::Call(Frame::Sig(SigFrame {
+                        frontier: sigs,
+                        context,
+                        visit_fields: self.visit_fields,
+                        pending: None,
+                    })))
+                } else {
+                    Ok(Bounce::More)
+                }
+            }
+        }
+    }
+}
+
+impl SigFrame {
+    /// One step of what used to be `add_signature`'s `while let Some(sig) = frontier.pop()` body.
+    fn bounce<'t>(
+        &mut self,
+        ctx: &mut ResolutionContext<'_>,
+        cached: &BTreeMap<AccountAddress, Arc<Package>>,
+    ) -> Result<Bounce<'t>> {
+        use OpenSignatureBody as O;
+
+        let Some(sig) = self.pending.take().or_else(|| self.frontier.pop()) else {
+            return Ok(Bounce::Return);
+        };
+
+        // Peek to decide whether we need to suspend for a fetch.
+        if let O::Datatype(key, _) = &sig
+            && !ctx.datatypes.contains_key(key)
+        {
+            let storage_id = self.context.relocate(key.package)?;
+            if !cached.contains_key(&storage_id) {
+                self.pending = Some(sig);
+                return Ok(Bounce::Fetch(storage_id));
+            }
+        }
+
+        match sig {
+            O::Address
+            | O::Bool
+            | O::U8
+            | O::U16
+            | O::U32
+            | O::U64
+            | O::U128
+            | O::U256
+            | O::TypeParameter(_) => Ok(Bounce::More),
+
+            O::Vector(inner) => {
+                self.frontier.push(*inner);
+                Ok(Bounce::More)
+            }
+
+            O::Datatype(key, params) => {
+                check_max_limit!(
+                    TooManyTypeParams, ctx.limits;
+                    max_type_argument_width >= params.len()
+                );
+
+                let params_count = params.len();
+                let data_count = ctx.datatypes.len();
+                self.frontier.extend(params);
+
+                let type_params_len = if let Some(def) = ctx.datatypes.get(&key) {
+                    def.type_params.len()
+                } else {
+                    check_max_limit!(
+                        TooManyTypeNodes, ctx.limits;
+                        max_type_nodes > data_count
+                    );
+
+                    // The peek above guarantees the storage id is cached.
+                    let storage_id = self.context.relocate(key.package)?;
+                    let package = cached[&storage_id].clone();
+
+                    let def = package.data_def(&key.module, &key.name)?;
+                    if self.visit_fields {
+                        self.frontier.extend(def.field_signatures());
+                    }
+
+                    let len = def.type_params.len();
+                    ctx.datatypes.entry(key).or_insert(def);
+                    len
+                };
+
+                if type_params_len != params_count {
+                    return Err(Error::TypeArityMismatch(type_params_len, params_count));
+                }
+                Ok(Bounce::More)
+            }
+        }
+    }
 }
 
 impl<S> Resolver<S> {
@@ -389,18 +764,12 @@ impl<S: PackageStore> Resolver<S> {
     /// `datatype`. In practice this means the input type `tag` can refer to types at or after
     /// their defining IDs.
     pub async fn canonical_type(&self, mut tag: TypeTag) -> Result<TypeTag> {
-        let mut context = ResolutionContext::new(self.limits.as_ref());
-
         // (1). Fetch all the information from this store that is necessary to relocate package IDs
         // in the type.
-        add_type_tag(
-            &mut context,
-            &mut tag,
-            &self.package_store,
-            /* visit_fields */ false,
-            /* visit_phantoms */ true,
-        )
-        .await?;
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ false, /* visit_phantoms */ true)
+            .drive_async(&self.package_store)
+            .await?;
 
         // (2). Use that information to relocate package IDs in the type.
         context.canonicalize_type(&mut tag)?;
@@ -411,18 +780,12 @@ impl<S: PackageStore> Resolver<S> {
     /// structs in terms of their defining ID (i.e. their package ID always points to the first
     /// package that introduced them).
     pub async fn type_layout(&self, mut tag: TypeTag) -> Result<MoveTypeLayout> {
-        let mut context = ResolutionContext::new(self.limits.as_ref());
-
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
-        add_type_tag(
-            &mut context,
-            &mut tag,
-            &self.package_store,
-            /* visit_fields */ true,
-            /* visit_phantoms */ true,
-        )
-        .await?;
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ true, /* visit_phantoms */ true)
+            .drive_async(&self.package_store)
+            .await?;
 
         // (2). Use that information to resolve the tag into a layout.
         let max_depth = self
@@ -455,18 +818,12 @@ impl<S: PackageStore> Resolver<S> {
     /// have the ability as well. Similar rules apply for `key` except that it requires its type
     /// parameters to have `store`.
     pub async fn abilities(&self, mut tag: TypeTag) -> Result<AbilitySet> {
-        let mut context = ResolutionContext::new(self.limits.as_ref());
-
         // (1). Fetch all the information from this store that is necessary to resolve types
         // referenced by this tag.
-        add_type_tag(
-            &mut context,
-            &mut tag,
-            &self.package_store,
-            /* visit_fields */ false,
-            /* visit_phantoms */ false,
-        )
-        .await?;
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ false, /* visit_phantoms */ false)
+            .drive_async(&self.package_store)
+            .await?;
 
         // (2). Use that information to calculate the type's abilities.
         context.resolve_abilities(&tag)
@@ -480,8 +837,6 @@ impl<S: PackageStore> Resolver<S> {
         module: &str,
         function: &str,
     ) -> Result<FunctionDef> {
-        let mut context = ResolutionContext::new(self.limits.as_ref());
-
         let package = self.package_store.fetch(pkg).await?;
         let Some(mut def) = package.module(module)?.function_def(function)? else {
             return Err(Error::FunctionNotFound(
@@ -499,14 +854,10 @@ impl<S: PackageStore> Resolver<S> {
             .chain(def.return_.iter())
             .map(|s| s.body.clone())
             .collect();
-        add_signature(
-            &mut context,
-            sigs,
-            &self.package_store,
-            package.as_ref(),
-            /* visit_fields */ false,
-        )
-        .await?;
+        let context = Driver::new(self.limits.as_ref())
+            .with_sigs(sigs, package, /* visit_fields */ false)
+            .drive_async(&self.package_store)
+            .await?;
 
         // (2). Use that information to relocate package IDs in the signature.
         for sig in def.parameters.iter_mut().chain(def.return_.iter_mut()) {
@@ -661,6 +1012,233 @@ impl<S: PackageStore> Resolver<S> {
     ) -> Option<CleverError> {
         let _bitset = ErrorBitset::from_u64(abort_code)?;
         let package = self.package_store.fetch(*module_id.address()).await.ok()?;
+        package.resolve_clever_error(module_id.name().as_str(), abort_code)
+    }
+}
+
+/// Synchronous sibling of [`Resolver`], driven by a [`SyncPackageStore`]. Shares the entire
+/// resolution core (the trampoline and the purely-sync [`ResolutionContext`] helpers) with the
+/// async [`Resolver`] — the only real difference is how packages are fetched between trampoline
+/// steps.
+#[derive(Debug)]
+pub struct SyncResolver<S> {
+    package_store: S,
+    limits: Option<Limits>,
+}
+
+impl<S> SyncResolver<S> {
+    pub fn new(package_store: S) -> Self {
+        Self {
+            package_store,
+            limits: None,
+        }
+    }
+
+    pub fn new_with_limits(package_store: S, limits: Limits) -> Self {
+        Self {
+            package_store,
+            limits: Some(limits),
+        }
+    }
+
+    pub fn package_store(&self) -> &S {
+        &self.package_store
+    }
+
+    pub fn package_store_mut(&mut self) -> &mut S {
+        &mut self.package_store
+    }
+}
+
+impl<S: SyncPackageStore> SyncResolver<S> {
+    /// Synchronous analogue of [`Resolver::canonical_type`].
+    pub fn canonical_type(&self, mut tag: TypeTag) -> Result<TypeTag> {
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ false, /* visit_phantoms */ true)
+            .drive_sync(&self.package_store)?;
+
+        context.canonicalize_type(&mut tag)?;
+        Ok(tag)
+    }
+
+    /// Synchronous analogue of [`Resolver::type_layout`].
+    pub fn type_layout(&self, mut tag: TypeTag) -> Result<MoveTypeLayout> {
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ true, /* visit_phantoms */ true)
+            .drive_sync(&self.package_store)?;
+
+        let max_depth = self
+            .limits
+            .as_ref()
+            .map_or(usize::MAX, |l| l.max_move_value_depth);
+
+        Ok(context.resolve_type_layout(&tag, max_depth)?.0)
+    }
+
+    /// Synchronous analogue of [`Resolver::datatype_layout`].
+    pub fn datatype_layout(&self, struct_tag: &StructTag) -> Result<A::MoveDatatypeLayout> {
+        let type_tag = TypeTag::Struct(Box::new(struct_tag.clone()));
+        let layout = self.type_layout(type_tag)?;
+        match layout {
+            MoveTypeLayout::Struct(s) => Ok(A::MoveDatatypeLayout::Struct(s)),
+            MoveTypeLayout::Enum(e) => Ok(A::MoveDatatypeLayout::Enum(e)),
+            _ => unreachable!("StructTag always resolves to a struct or enum layout"),
+        }
+    }
+
+    /// Synchronous analogue of [`Resolver::abilities`].
+    pub fn abilities(&self, mut tag: TypeTag) -> Result<AbilitySet> {
+        let context = Driver::new(self.limits.as_ref())
+            .with_tag(&mut tag, /* visit_fields */ false, /* visit_phantoms */ false)
+            .drive_sync(&self.package_store)?;
+
+        context.resolve_abilities(&tag)
+    }
+
+    /// Synchronous analogue of [`Resolver::function_signature`].
+    pub fn function_signature(
+        &self,
+        pkg: AccountAddress,
+        module: &str,
+        function: &str,
+    ) -> Result<FunctionDef> {
+        let package = self.package_store.fetch(pkg)?;
+        let Some(mut def) = package.module(module)?.function_def(function)? else {
+            return Err(Error::FunctionNotFound(
+                pkg,
+                module.to_string(),
+                function.to_string(),
+            ));
+        };
+
+        let sigs: Vec<OpenSignatureBody> = def
+            .parameters
+            .iter()
+            .chain(def.return_.iter())
+            .map(|s| s.body.clone())
+            .collect();
+        let context = Driver::new(self.limits.as_ref())
+            .with_sigs(sigs, package, /* visit_fields */ false)
+            .drive_sync(&self.package_store)?;
+
+        for sig in def.parameters.iter_mut().chain(def.return_.iter_mut()) {
+            context.relocate_signature(&mut sig.body)?;
+        }
+
+        Ok(def)
+    }
+
+    /// Synchronous analogue of [`Resolver::pure_input_layouts`].
+    pub fn pure_input_layouts(
+        &self,
+        tx: &ProgrammableTransaction,
+    ) -> Result<Vec<Option<MoveTypeLayout>>> {
+        let mut tags = vec![None; tx.inputs.len()];
+        let mut register_type = |arg: &Argument, tag: &TypeTag| {
+            let &Argument::Input(ix) = arg else {
+                return;
+            };
+
+            if !matches!(tx.inputs.get(ix as usize), Some(CallArg::Pure(_))) {
+                return;
+            }
+
+            let Some(type_) = tags.get_mut(ix as usize) else {
+                return;
+            };
+
+            match type_ {
+                None => *type_ = Some(Ok(tag.clone())),
+                Some(Err(())) => {}
+                Some(Ok(prev)) => {
+                    if prev != tag {
+                        *type_ = Some(Err(()));
+                    }
+                }
+            }
+        };
+
+        for cmd in &tx.commands {
+            match cmd {
+                Command::MoveCall(call) => {
+                    let params = self
+                        .function_signature(
+                            call.package.into(),
+                            call.module.as_str(),
+                            call.function.as_str(),
+                        )?
+                        .parameters;
+
+                    #[allow(clippy::disallowed_methods)]
+                    // Intentional zip: params includes implicit TxContext param not in arguments
+                    for (open_sig, arg) in params.iter().zip(call.arguments.iter()) {
+                        let sig = open_sig.instantiate(&call.type_arguments)?;
+                        register_type(arg, &sig.body);
+                    }
+                }
+
+                Command::TransferObjects(_, arg) => register_type(arg, &TypeTag::Address),
+
+                Command::SplitCoins(_, amounts) => {
+                    for amount in amounts {
+                        register_type(amount, &TypeTag::U64);
+                    }
+                }
+
+                Command::MakeMoveVec(Some(tag), elems) => {
+                    let tag = as_type_tag(tag)?;
+                    if is_primitive_type_tag(&tag) {
+                        for elem in elems {
+                            register_type(elem, &tag);
+                        }
+                    }
+                }
+
+                _ => { /* nop */ }
+            }
+        }
+
+        let unique_tags: BTreeSet<_> = tags
+            .iter()
+            .flat_map(|t| t.clone())
+            .flat_map(|t| t.ok())
+            .collect();
+
+        let mut layouts = BTreeMap::new();
+        for tag in unique_tags {
+            let layout = self.type_layout(tag.clone())?;
+            layouts.insert(tag, layout);
+        }
+
+        Ok(tags
+            .iter()
+            .map(|t| -> Option<_> {
+                let t = t.as_ref()?;
+                let t = t.as_ref().ok()?;
+                layouts.get(t).cloned()
+            })
+            .collect())
+    }
+
+    /// Synchronous analogue of [`Resolver::resolve_module_id`].
+    pub fn resolve_module_id(
+        &self,
+        module_id: ModuleId,
+        context: AccountAddress,
+    ) -> Result<ModuleId> {
+        let package = self.package_store.fetch(context)?;
+        let storage_id = package.relocate(*module_id.address())?;
+        Ok(ModuleId::new(storage_id, module_id.name().to_owned()))
+    }
+
+    /// Synchronous analogue of [`Resolver::resolve_clever_error`].
+    pub fn resolve_clever_error(
+        &self,
+        module_id: ModuleId,
+        abort_code: u64,
+    ) -> Option<CleverError> {
+        let _bitset = ErrorBitset::from_u64(abort_code)?;
+        let package = self.package_store.fetch(*module_id.address()).ok()?;
         package.resolve_clever_error(module_id.name().as_str(), abort_code)
     }
 }
@@ -1256,21 +1834,9 @@ impl<'l> ResolutionContext<'l> {
         }
     }
 
-    /// Gather definitions for types that contribute to the definition of `tag` into this resolution
-    /// context, fetching data from the `store` as necessary. Also updates package addresses in
-    /// `tag` to point to runtime IDs instead of storage IDs to ensure queries made using these
-    /// addresses during the subsequent resolution phase find the relevant type information in the
-    /// context.
-    ///
-    /// The `visit_fields` flag controls whether the traversal looks inside types at their fields
-    /// (which is necessary for layout resolution) or not (only explores the outer type and any type
-    /// parameters).
-    ///
-    /// The `visit_phantoms` flag controls whether the traversal recurses through phantom type
-    /// parameters (which is also necessary for type resolution) or not.
     /// Translate runtime IDs in a type `tag` into defining IDs using only the information
-    /// contained in this context. Requires that the necessary information was added to the context
-    /// through calls to `add_type_tag`.
+    /// contained in this context. Requires that the necessary information was added by running a
+    /// [`Driver`] started via [`Driver::with_tag`].
     fn canonicalize_type(&self, tag: &mut TypeTag) -> Result<()> {
         use TypeTag as T;
 
@@ -1605,180 +2171,6 @@ impl<'l> ResolutionContext<'l> {
 
         Ok(())
     }
-}
-
-/// Gather definitions for types that contribute to the definition of `tag` into `ctx`, fetching
-/// data from the `store` as necessary. Also updates package addresses in `tag` to point to runtime
-/// IDs instead of storage IDs to ensure queries made using these addresses during the subsequent
-/// resolution phase find the relevant type information in the context.
-///
-/// The `visit_fields` flag controls whether the traversal looks inside types at their fields
-/// (which is necessary for layout resolution) or not (only explores the outer type and any type
-/// parameters).
-///
-/// The `visit_phantoms` flag controls whether the traversal recurses through phantom type
-/// parameters (which is also necessary for type resolution) or not.
-async fn add_type_tag<S: PackageStore + ?Sized>(
-    ctx: &mut ResolutionContext<'_>,
-    tag: &mut TypeTag,
-    store: &S,
-    visit_fields: bool,
-    visit_phantoms: bool,
-) -> Result<()> {
-    use TypeTag as T;
-
-    let mut frontier = vec![ToVisit { tag, depth: 0 }];
-    while let Some(ToVisit { tag, depth }) = frontier.pop() {
-        macro_rules! push_ty_param {
-            ($tag:expr) => {{
-                check_max_limit!(
-                    TypeParamNesting, ctx.limits;
-                    max_type_argument_depth > depth
-                );
-
-                frontier.push(ToVisit { tag: $tag, depth: depth + 1 })
-            }}
-        }
-
-        match tag {
-            T::Address
-            | T::Bool
-            | T::U8
-            | T::U16
-            | T::U32
-            | T::U64
-            | T::U128
-            | T::U256
-            | T::Signer => {
-                // Nothing further to add to context
-            }
-
-            T::Vector(tag) => push_ty_param!(tag),
-
-            T::Struct(s) => {
-                let context = store.fetch(s.address).await?;
-                let def = context
-                    .clone()
-                    .data_def(s.module.as_str(), s.name.as_str())?;
-
-                // Normalize `address` (the ID of a package that contains the definition of this
-                // struct) to be a runtime ID, because that's what the resolution context uses
-                // for keys.  Take care to do this before generating the key that is used to
-                // query and/or write into `ctx.datatypes`.
-                s.address = context.runtime_id;
-                let key = DatatypeRef::from(s.as_ref()).as_key();
-
-                if def.type_params.len() != s.type_params.len() {
-                    return Err(Error::TypeArityMismatch(
-                        def.type_params.len(),
-                        s.type_params.len(),
-                    ));
-                }
-
-                check_max_limit!(
-                    TooManyTypeParams, ctx.limits;
-                    max_type_argument_width >= s.type_params.len()
-                );
-
-                for (param, def) in s.type_params.iter_mut().zip_eq(def.type_params.iter()) {
-                    if !def.is_phantom || visit_phantoms {
-                        push_ty_param!(param);
-                    }
-                }
-
-                if ctx.datatypes.contains_key(&key) {
-                    continue;
-                }
-
-                check_max_limit!(
-                    TooManyTypeNodes, ctx.limits;
-                    max_type_nodes > ctx.datatypes.len()
-                );
-
-                // Gather field signatures before moving `def` into the map so we don't clone
-                // its data twice. Inserting now (rather than after the visit) is safe because
-                // `add_signature` uses `.entry(key).or_insert` for recursive references, so
-                // discovering this datatype mid-visit is a no-op.
-                let sigs = def.field_signatures();
-                ctx.datatypes.insert(key, def);
-
-                if visit_fields {
-                    add_signature(ctx, sigs, store, &context, visit_fields).await?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Like `add_type_tag` but for type signatures. Seeds an internal frontier with `sigs` and walks
-/// every datatype reachable from it, fetching packages via `store` as needed. `context` supplies
-/// the linkage table used to translate runtime IDs into storage IDs.
-async fn add_signature<T: PackageStore + ?Sized>(
-    ctx: &mut ResolutionContext<'_>,
-    sigs: Vec<OpenSignatureBody>,
-    store: &T,
-    context: &Package,
-    visit_fields: bool,
-) -> Result<()> {
-    use OpenSignatureBody as O;
-
-    let mut frontier = sigs;
-    while let Some(sig) = frontier.pop() {
-        match sig {
-            O::Address
-            | O::Bool
-            | O::U8
-            | O::U16
-            | O::U32
-            | O::U64
-            | O::U128
-            | O::U256
-            | O::TypeParameter(_) => {
-                // Nothing further to add to context
-            }
-
-            O::Vector(sig) => frontier.push(*sig),
-
-            O::Datatype(key, params) => {
-                check_max_limit!(
-                    TooManyTypeParams, ctx.limits;
-                    max_type_argument_width >= params.len()
-                );
-
-                let params_count = params.len();
-                let data_count = ctx.datatypes.len();
-                frontier.extend(params);
-
-                let type_params = if let Some(def) = ctx.datatypes.get(&key) {
-                    &def.type_params
-                } else {
-                    check_max_limit!(
-                        TooManyTypeNodes, ctx.limits;
-                        max_type_nodes > data_count
-                    );
-
-                    // Need to resolve the datatype, so fetch the package that contains it.
-                    let storage_id = context.relocate(key.package)?;
-                    let package = store.fetch(storage_id).await?;
-
-                    let def = package.data_def(&key.module, &key.name)?;
-                    if visit_fields {
-                        frontier.extend(def.field_signatures());
-                    }
-
-                    &ctx.datatypes.entry(key).or_insert(def).type_params
-                };
-
-                if type_params.len() != params_count {
-                    return Err(Error::TypeArityMismatch(type_params.len(), params_count));
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 impl<'s> From<&'s StructTag> for DatatypeRef<'s, 's> {

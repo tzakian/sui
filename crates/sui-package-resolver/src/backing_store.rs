@@ -3,16 +3,15 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use move_core_types::account_address::AccountAddress;
 use sui_types::base_types::ObjectID;
 use sui_types::storage::BackingPackageStore;
 
 use crate::error::Error;
-use crate::{Package, PackageStore, Result};
+use crate::{Package, Result, SyncPackageStore};
 
-/// Adapts a sync [`BackingPackageStore`] into an async [`PackageStore`] for use with
-/// [`crate::Resolver`]. This bridges the validator/authority storage layer (which uses
+/// Adapts a [`BackingPackageStore`] into a [`SyncPackageStore`] for use with
+/// [`crate::SyncResolver`]. This bridges the validator/authority storage layer (which uses
 /// `BackingPackageStore` backed by RocksDB) into the `sui-package-resolver` world.
 pub struct BackingPackageStoreAdapter<S> {
     backing: S,
@@ -24,12 +23,8 @@ impl<S> BackingPackageStoreAdapter<S> {
     }
 }
 
-#[async_trait]
-impl<S> PackageStore for BackingPackageStoreAdapter<S>
-where
-    S: BackingPackageStore + Send + Sync + 'static,
-{
-    async fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+impl<S: BackingPackageStore> SyncPackageStore for BackingPackageStoreAdapter<S> {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
         let object_id = ObjectID::from(id);
         let package_obj = self
             .backing
@@ -43,8 +38,8 @@ where
     }
 }
 
-/// A [`PackageStore`] that checks a primary store first, falling back to a secondary store if the
-/// primary does not contain the requested package. This is the async equivalent of
+/// A [`SyncPackageStore`] that checks a primary store first, falling back to a secondary store
+/// if the primary does not contain the requested package. Synchronous equivalent of
 /// [`sui_types::inner_temporary_store::PackageStoreWithFallback`].
 pub struct FallbackPackageStore<P, F> {
     primary: P,
@@ -57,16 +52,15 @@ impl<P, F> FallbackPackageStore<P, F> {
     }
 }
 
-#[async_trait]
-impl<P, F> PackageStore for FallbackPackageStore<P, F>
+impl<P, F> SyncPackageStore for FallbackPackageStore<P, F>
 where
-    P: PackageStore,
-    F: PackageStore,
+    P: SyncPackageStore,
+    F: SyncPackageStore,
 {
-    async fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
-        match self.primary.fetch(id).await {
+    fn fetch(&self, id: AccountAddress) -> Result<Arc<Package>> {
+        match self.primary.fetch(id) {
             Ok(package) => Ok(package),
-            Err(_) => self.fallback.fetch(id).await,
+            Err(_) => self.fallback.fetch(id),
         }
     }
 }
