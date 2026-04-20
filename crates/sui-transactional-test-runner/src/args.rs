@@ -339,6 +339,7 @@ pub enum SuiSubcommand<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> {
     RunGraphql(RunGraphqlCommand),
     RunJsonRpc(RunJsonRpcCommand),
     Bench(RunCommand<ExtraValueArgs>, ExtraRunArgs),
+    BenchProgrammable(ProgrammableTransactionCommand),
 }
 
 impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::FromArgMatches
@@ -401,6 +402,9 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::FromArgMatches
                 RunCommand::from_arg_matches(matches)?,
                 ExtraRunArgs::from_arg_matches(matches)?,
             ),
+            Some(("bench-programmable", matches)) => SuiSubcommand::BenchProgrammable(
+                ProgrammableTransactionCommand::from_arg_matches(matches)?,
+            ),
             _ => {
                 return Err(clap::Error::raw(
                     clap::error::ErrorKind::InvalidSubcommand,
@@ -443,6 +447,7 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::CommandFactory
             .subcommand(
                 RunCommand::<ExtraValueArgs>::augment_args(ExtraRunArgs::command()).name("bench"),
             )
+            .subcommand(ProgrammableTransactionCommand::command().name("bench-programmable"))
     }
 
     fn command_for_update() -> clap::Command {
