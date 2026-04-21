@@ -1067,6 +1067,10 @@ struct FeatureFlags {
     // If true, return early on type mismatch in receive_object.
     #[serde(skip_serializing_if = "is_false")]
     early_return_receive_object_mismatched_type: bool,
+
+    // If true, enable caching in ptb execution.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_ptb_tx_cache: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2789,6 +2793,10 @@ impl ProtocolConfig {
 
     pub fn include_special_package_amendments_as_option(&self) -> &Option<Arc<Amendments>> {
         &self.include_special_package_amendments
+    }
+
+    pub fn enable_ptb_tx_cache(&self) -> bool {
+        self.feature_flags.enable_ptb_tx_cache
     }
 }
 
@@ -4863,6 +4871,7 @@ impl ProtocolConfig {
                     cfg.gasless_max_tx_size_bytes = Some(16 * 1024);
                     cfg.gasless_max_tps = Some(300);
                     cfg.gasless_max_computation_units = Some(5_000);
+                    cfg.feature_flags.enable_ptb_tx_cache = true;
                 }
                 // Use this template when making changes:
                 //
