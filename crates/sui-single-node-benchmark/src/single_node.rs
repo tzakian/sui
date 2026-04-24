@@ -38,14 +38,25 @@ pub struct SingleValidator {
 }
 
 impl SingleValidator {
-    pub(crate) async fn new(genesis_objects: &[Object], component: Component) -> Self {
-        let validator = TestAuthorityBuilder::new()
+    pub(crate) async fn new(
+        genesis_objects: &[Object],
+        component: Component,
+        enable_accumulators: bool,
+    ) -> Self {
+        let mut builder = TestAuthorityBuilder::new()
             .disable_indexer()
             .with_starting_objects(genesis_objects)
             // This is needed to properly run checkpoint executor.
-            .insert_genesis_checkpoint()
-            .build()
-            .await;
+            .insert_genesis_checkpoint();
+        if enable_accumulators {
+            let mut protocol_config =
+                sui_protocol_config::ProtocolConfig::get_for_max_version_UNSAFE();
+            // `enable_address_balance_gas_payments_for_testing` subsumes
+            // `enable_accumulators`.
+            protocol_config.enable_address_balance_gas_payments_for_testing();
+            builder = builder.with_protocol_config(protocol_config);
+        }
+        let validator = builder.build().await;
         let epoch_store = validator.epoch_store_for_testing().clone();
         let consensus_mode = match component {
             Component::ValidatorWithFakeConsensus => ConsensusMode::DirectSequencing,

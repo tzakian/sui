@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::command::Component;
+use crate::command::{Component, WorkloadKind};
 use crate::mock_account::{Account, batch_create_account_and_gas};
 use crate::mock_storage::InMemoryObjectStore;
 use crate::single_node::SingleValidator;
@@ -15,10 +15,13 @@ use std::ops::Deref;
 use std::sync::Arc;
 use sui_config::node::RunWithRange;
 use sui_core::authority::shared_object_version_manager::{AssignedTxAndVersions, AssignedVersions};
-use sui_test_transaction_builder::PublishData;
+use sui_test_transaction_builder::{PublishData, TestTransactionBuilder};
+use sui_types::SUI_FRAMEWORK_PACKAGE_ID;
 use sui_types::base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress};
+use sui_types::digests::ChainIdentifier;
 use sui_types::effects::{TransactionEffects, TransactionEffectsAPI};
-use sui_types::transaction::Transaction;
+use sui_types::gas_coin::GAS;
+use sui_types::transaction::{Argument, DEFAULT_VALIDATOR_GAS_PRICE, Transaction};
 use tracing::{info, warn};
 
 pub struct BenchmarkContext {
@@ -53,7 +56,13 @@ impl BenchmarkContext {
         let (_, admin_account) = user_accounts.pop_last().unwrap();
 
         info!("Initializing validator");
-        let validator = SingleValidator::new(&genesis_gas_objects, benchmark_component).await;
+        let enable_accumulators = matches!(workload.workload_kind, WorkloadKind::SendFunds { .. });
+        let validator = SingleValidator::new(
+            &genesis_gas_objects,
+            benchmark_component,
+            enable_accumulators,
+        )
+        .await;
 
         Self {
             validator,
@@ -136,6 +145,56 @@ impl BenchmarkContext {
         self.refresh_gas_objects(new_gas_objects);
         info!("Finished preparing root object with dynamic fields");
         root_objects
+    }
+
+    /// Seed each user account's SUI address balance by executing, for each
+    /// account, a PTB equivalent to the first programmable block in
+    /// `send_funds_bench.move`:
+    ///
+    ///     0: SplitCoins(Gas, [Input(seed_amount)])
+    ///     1: sui::coin::into_balance<SUI>(Result(0))
+    ///     2: sui::balance::send_funds<SUI>(Result(1), @sender)
+    ///
+    /// Uses each account's first gas object for payment, which is also the
+    /// source of the funds being split off into the address balance.
+    pub(crate) async fn seed_sender_address_balances(&mut self, seed_amount: u64) {
+        info!("Seeding each sender's SUI address balance");
+        let accounts: Vec<Account> = self.user_accounts.values().cloned().collect();
+        let transactions: Vec<Transaction> = accounts
+            .iter()
+            .map(|account| build_seed_address_balance_tx(account, seed_amount))
+            .collect();
+        let results = self.execute_raw_transactions(transactions).await;
+
+        let cache_commit = self.validator().get_validator().get_cache_commit().clone();
+        let mut new_gas_objects = HashMap::new();
+        for effects in results {
+            let batch = cache_commit
+                .build_db_batch(effects.executed_epoch(), &[*effects.transaction_digest()]);
+            cache_commit.commit_transaction_outputs(
+                effects.executed_epoch(),
+                batch,
+                &[*effects.transaction_digest()],
+            );
+            let gas_object = effects.gas_object().unwrap().0;
+            new_gas_objects.insert(gas_object.0, gas_object);
+        }
+        self.refresh_gas_objects(new_gas_objects);
+        info!("Finished seeding address balances");
+    }
+
+    pub(crate) fn chain_identifier(&self) -> ChainIdentifier {
+        self.validator
+            .get_validator()
+            .epoch_store_for_testing()
+            .get_chain_identifier()
+    }
+
+    pub(crate) fn current_epoch(&self) -> u64 {
+        self.validator
+            .get_validator()
+            .epoch_store_for_testing()
+            .epoch()
     }
 
     pub(crate) async fn prepare_shared_objects(
@@ -484,4 +543,50 @@ impl BenchmarkContext {
             account.gas_objects = Arc::new(refreshed_gas_objects);
         }
     }
+}
+
+/// Build a PTB that splits `seed_amount` off the gas coin, turns it into a
+/// `Balance<SUI>`, and `send_funds` it to the sender's own address balance.
+fn build_seed_address_balance_tx(account: &Account, seed_amount: u64) -> Transaction {
+    let mut tx_builder = TestTransactionBuilder::new(
+        account.sender,
+        account.gas_objects[0],
+        DEFAULT_VALIDATOR_GAS_PRICE,
+    );
+    {
+        let builder = tx_builder.ptb_builder_mut();
+        let amount_arg = builder.pure(seed_amount).unwrap();
+        let recipient_arg = builder.pure(account.sender).unwrap();
+        // 0: SplitCoins(Gas, [amount])
+        let split = builder.command(sui_types::transaction::Command::SplitCoins(
+            Argument::GasCoin,
+            vec![amount_arg],
+        ));
+        // SplitCoins returns a vector of coins; index 0 is the single split coin.
+        let split_coin = Argument::NestedResult(
+            if let Argument::Result(i) = split {
+                i
+            } else {
+                unreachable!()
+            },
+            0,
+        );
+        // 1: sui::coin::into_balance<SUI>(split_coin)
+        let balance = builder.programmable_move_call(
+            SUI_FRAMEWORK_PACKAGE_ID,
+            move_core_types::identifier::Identifier::new("coin").unwrap(),
+            move_core_types::identifier::Identifier::new("into_balance").unwrap(),
+            vec![GAS::type_tag()],
+            vec![split_coin],
+        );
+        // 2: sui::balance::send_funds<SUI>(balance, sender)
+        builder.programmable_move_call(
+            SUI_FRAMEWORK_PACKAGE_ID,
+            move_core_types::identifier::Identifier::new("balance").unwrap(),
+            move_core_types::identifier::Identifier::new("send_funds").unwrap(),
+            vec![GAS::type_tag()],
+            vec![balance, recipient_arg],
+        );
+    }
+    tx_builder.build_and_sign(account.keypair.as_ref())
 }

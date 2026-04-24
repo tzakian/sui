@@ -135,6 +135,36 @@ pub enum WorkloadKind {
         )]
         manifest_file: PathBuf,
     },
+    /// Withdraw from the sender's SUI address balance and send_funds to fresh
+    /// recipient addresses. Mirrors the `send_funds_bench.move` benchmark in
+    /// sui-adapter-transactional-tests.
+    SendFunds {
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Number of redeem_funds + send_funds pairs per transaction (fan-out)."
+        )]
+        num_fanouts: u64,
+        #[arg(
+            long,
+            default_value_t = 100,
+            help = "Amount (MIST) withdrawn per redeem_funds call."
+        )]
+        send_amount: u64,
+        #[arg(
+            long,
+            default_value_t = 20_000_000_000,
+            help = "Amount (MIST) seeded to each sender's SUI address balance before the benchmark."
+        )]
+        seed_amount: u64,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Pay gas from a gas coin instead of the sender's address balance. \
+                Mirrors gas_coin_send_funds.move when set; default (false) mirrors send_funds_bench.move."
+        )]
+        gas_coin_payment: bool,
+    },
 }
 
 impl WorkloadKind {
@@ -143,6 +173,18 @@ impl WorkloadKind {
             // Each transaction will always have 1 gas object, plus the number of owned objects that will be transferred.
             WorkloadKind::PTB { num_transfers, .. } => *num_transfers + 1,
             WorkloadKind::Publish { .. } => 1,
+            // One gas object for the seeding transaction; the benchmark tx itself
+            // uses address-balance-gas unless `gas_coin_payment` is set, in which
+            // case it needs a second gas object.
+            WorkloadKind::SendFunds {
+                gas_coin_payment, ..
+            } => {
+                if *gas_coin_payment {
+                    2
+                } else {
+                    1
+                }
+            }
         }
     }
 }

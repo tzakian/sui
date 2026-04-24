@@ -20,6 +20,20 @@ of the execution engine:
 - `--num-dynamic-fields`: this specifies number of dynamic fields read by each transaction. Default to 0.
 - `--computation`: this specifies computation intensity. An increase by 1 means 100 more loop iterations in Fibonacci computation. Default to 0.
 
+### Send-funds benchmark workload
+Mirrors the `send_funds_bench.move` (and `gas_coin_send_funds.move`) benchmarks in `sui-adapter-transactional-tests`.
+Each transaction withdraws from the sender's SUI address balance and `send_funds` to fresh recipient addresses,
+with accumulators and address-balance-gas-payments enabled on the protocol config:
+```
+cargo run --release --bin sui-single-node-benchmark -- send-funds --num-fanouts 4
+```
+Options:
+- `--num-fanouts`: number of `redeem_funds` + `send_funds` pairs per transaction (default 1).
+- `--send-amount`: MIST withdrawn per `redeem_funds` call (default 100).
+- `--seed-amount`: MIST seeded to each sender's SUI address balance during setup (default 20_000_000_000).
+- `--gas-coin-payment`: pay gas from a gas coin instead of the sender's address balance
+  (default false = matches `send_funds_bench.move`; true matches `gas_coin_send_funds.move`).
+
 ### Publish benchmark workloads
 WIP (please refer to smoke_tests to see how its setup)
 

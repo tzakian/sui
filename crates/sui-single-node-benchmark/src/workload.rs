@@ -3,10 +3,14 @@
 
 use crate::benchmark_context::BenchmarkContext;
 use crate::command::WorkloadKind;
-use crate::tx_generator::{MoveTxGenerator, PackagePublishTxGenerator, TxGenerator};
+use crate::tx_generator::{
+    MoveTxGenerator, PackagePublishTxGenerator, SendFundsTxGenerator, TxGenerator,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use sui_test_transaction_builder::PublishData;
+use sui_types::base_types::SuiAddress;
+use sui_types::crypto::get_account_key_pair;
 
 #[derive(Clone)]
 pub struct Workload {
@@ -69,6 +73,30 @@ impl Workload {
             WorkloadKind::Publish {
                 manifest_file: manifest_path,
             } => Arc::new(PackagePublishTxGenerator::new(ctx, manifest_path.clone()).await),
+            WorkloadKind::SendFunds {
+                num_fanouts,
+                send_amount,
+                seed_amount,
+                gas_coin_payment,
+            } => {
+                ctx.seed_sender_address_balances(*seed_amount).await;
+                let recipients: Vec<SuiAddress> = (0..*num_fanouts)
+                    .map(|_| {
+                        let (addr, _kp) = get_account_key_pair();
+                        addr
+                    })
+                    .collect();
+                let chain_identifier = ctx.chain_identifier();
+                let current_epoch = ctx.current_epoch();
+                Arc::new(SendFundsTxGenerator::new(
+                    *num_fanouts,
+                    *send_amount,
+                    recipients,
+                    *gas_coin_payment,
+                    chain_identifier,
+                    current_epoch,
+                ))
+            }
         }
     }
 }
