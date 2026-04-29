@@ -14,13 +14,15 @@ use crate::{
     execution_value::ExecutionState,
     gas_charger::GasCharger,
     static_programmable_transactions::{
-        env::{Env, cache::PerTxCache},
+        env::{
+            Env,
+            cache::{PerTxCache, RuntimeCache},
+        },
         linkage::analysis::LinkageAnalyzer,
         metering::translation_meter,
     },
 };
 use move_trace_format::format::MoveTraceBuilder;
-use move_vm_runtime::runtime::MoveRuntime;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
@@ -40,7 +42,7 @@ pub mod typing;
 pub fn execute<Mode: ExecutionMode>(
     protocol_config: &ProtocolConfig,
     metrics: Arc<ExecutionMetrics>,
-    vm: &MoveRuntime,
+    runtime_cache: &Arc<RuntimeCache>,
     state_view: &mut dyn ExecutionState,
     package_store: &dyn BackingPackageStore,
     tx_context: Rc<RefCell<TxContext>>,
@@ -51,10 +53,11 @@ pub fn execute<Mode: ExecutionMode>(
     trace_builder_opt: &mut Option<MoveTraceBuilder>,
 ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
     let gas_payment = gas_charger.gas_payment_amount();
+    let vm = &runtime_cache.runtime;
     let package_store = CachedPackageStore::new(vm, TransactionPackageStore::new(package_store));
     let linkage_analysis =
         LinkageAnalyzer::new::<Mode>(protocol_config).map_err(|e| (e, vec![]))?;
-    let per_tx_cache = PerTxCache::new(protocol_config);
+    let per_tx_cache = PerTxCache::new(protocol_config, Some(runtime_cache.as_ref()));
     let ptb_type_linkage = linkage_analysis
         .compute_input_type_resolution_linkage(&txn, &package_store, state_view, &per_tx_cache)
         .and_then(|linkage| linkage.linkage_context())
@@ -94,12 +97,20 @@ pub fn execute<Mode: ExecutionMode>(
     };
     let txn = typing::translate_and_verify::<Mode>(&mut translation_meter, &env, txn)
         .map_err(|e| (e, vec![]))?;
-    execution::interpreter::execute::<Mode>(
+    let result = execution::interpreter::execute::<Mode>(
         &mut env,
         metrics,
         tx_context,
         gas_charger,
         txn,
         trace_builder_opt,
-    )
+    );
+
+    // Persist accepted per-tx cache entries into the cross-tx LFU. Best-effort: errors here
+    // would only mean some entries weren't carried forward, so log and move on.
+    if let Err(e) = per_tx_cache.flush_to_runtime_cache() {
+        tracing::warn!("failed to flush per-tx cache into runtime cache: {:?}", e);
+    }
+
+    result
 }

@@ -30,7 +30,7 @@ use move_vm_runtime::{
     execution::{self as vm_runtime, vm::MoveVM},
     runtime::MoveRuntime,
 };
-use std::{rc::Rc, sync::LazyLock};
+use std::sync::{Arc, LazyLock};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     Identifier, SUI_FRAMEWORK_PACKAGE_ID, TypeTag,
@@ -46,7 +46,7 @@ use sui_types::{
     type_input::TypeInput,
 };
 
-pub(crate) mod cache;
+pub mod cache;
 
 static GAS_COIN_TYPE: LazyLock<StructTag> = LazyLock::new(GasCoin::type_);
 static UPGRADE_TICKET_TYPE: LazyLock<StructTag> = LazyLock::new(UpgradeTicket::type_);
@@ -132,7 +132,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
     }
 
     /// Resolve an adapter `Type` to its `TypeTag`, consulting (and populating) the per-tx cache.
-    fn tag_from_type(&self, ty: &Type) -> Result<Rc<TypeTag>, ExecutionError> {
+    fn tag_from_type(&self, ty: &Type) -> Result<Arc<TypeTag>, ExecutionError> {
         if let Some(rc) = self.per_tx_cache.lookup_tag(ty)? {
             return Ok(rc);
         }
@@ -174,7 +174,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
         module: &IdentStr,
         function: &IdentStr,
         type_arguments: Vec<Type>,
-    ) -> Result<Rc<LoadedFunction>, ExecutionError> {
+    ) -> Result<Arc<LoadedFunction>, ExecutionError> {
         self.load_function(
             SUI_FRAMEWORK_PACKAGE_ID,
             module.to_string(),
@@ -189,7 +189,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
         module: String,
         function: String,
         type_arguments: Vec<Type>,
-    ) -> Result<Rc<LoadedFunction>, ExecutionError> {
+    ) -> Result<Arc<LoadedFunction>, ExecutionError> {
         let module = to_identifier(module)?;
         let name = to_identifier(function)?;
 
@@ -265,7 +265,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
             parameters,
             return_,
         };
-        let loaded = Rc::new(LoadedFunction {
+        let loaded = Arc::new(LoadedFunction {
             version_mid,
             original_mid,
             name,
@@ -350,7 +350,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
             AbilitySet::singleton(Ability::Key).union(AbilitySet::singleton(Ability::Store));
         let (a, m, n) = RESOLVED_COIN_STRUCT;
         let module = ModuleId::new(*a, m.to_owned());
-        Ok(Type::Datatype(Rc::new(Datatype {
+        Ok(Type::Datatype(Arc::new(Datatype {
             abilities: COIN_ABILITIES,
             module,
             name: n.to_owned(),
@@ -362,7 +362,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
         const BALANCE_ABILITIES: AbilitySet = AbilitySet::singleton(Ability::Store);
         let (a, m, n) = RESOLVED_BALANCE_STRUCT;
         let module = ModuleId::new(*a, m.to_owned());
-        Ok(Type::Datatype(Rc::new(Datatype {
+        Ok(Type::Datatype(Arc::new(Datatype {
             abilities: BALANCE_ABILITIES,
             module,
             name: n.to_owned(),
@@ -374,7 +374,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
         const WITHDRAWAL_ABILITIES: AbilitySet = AbilitySet::singleton(Ability::Drop);
         let (a, m, n) = RESOLVED_WITHDRAWAL_STRUCT;
         let module = ModuleId::new(*a, m.to_owned());
-        Ok(Type::Datatype(Rc::new(Datatype {
+        Ok(Type::Datatype(Arc::new(Datatype {
             abilities: WITHDRAWAL_ABILITIES,
             module,
             name: n.to_owned(),
@@ -391,7 +391,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
         .map_err(|e| {
             ExecutionError::new_with_source(ExecutionErrorKind::VMInvariantViolation, e.to_string())
         })?;
-        Ok(Type::Vector(Rc::new(L::Vector {
+        Ok(Type::Vector(Arc::new(L::Vector {
             abilities,
             element_type,
         })))
@@ -529,11 +529,11 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
 
             VRT::Type::Reference(ref_ty) => {
                 let inner_ty = self.adapter_type_from_vm_type(vm, ref_ty)?;
-                Type::Reference(false, Rc::new(inner_ty))
+                Type::Reference(false, Arc::new(inner_ty))
             }
             VRT::Type::MutableReference(ref_ty) => {
                 let inner_ty = self.adapter_type_from_vm_type(vm, ref_ty)?;
-                Type::Reference(true, Rc::new(inner_ty))
+                Type::Reference(true, Arc::new(inner_ty))
             }
 
             VRT::Type::Vector(inner) => {
@@ -553,7 +553,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
                     name: data_type_info.type_name,
                     type_arguments: vec![],
                 };
-                Type::Datatype(Rc::new(datatype))
+                Type::Datatype(Arc::new(datatype))
             }
             ty @ VRT::Type::DatatypeInstantiation(inst) => {
                 let (_, type_arguments) = &**inst;
@@ -572,7 +572,7 @@ impl<'pc, 'vm, 'state, 'linkage, 'extensions> Env<'pc, 'vm, 'state, 'linkage, 'e
                     .map(|t| self.adapter_type_from_vm_type(vm, t))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                Type::Datatype(Rc::new(Datatype {
+                Type::Datatype(Arc::new(Datatype {
                     abilities,
                     module,
                     name,

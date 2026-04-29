@@ -10,7 +10,7 @@ use crate::{
 use indexmap::{IndexMap, IndexSet};
 use move_core_types::{account_address::AccountAddress, u256::U256};
 use move_vm_runtime::execution::values::VectorSpecialization;
-use std::{cell::OnceCell, rc::Rc};
+use std::{cell::OnceCell, sync::Arc};
 use sui_types::base_types::{ObjectID, ObjectRef};
 
 //**************************************************************************************************
@@ -147,7 +147,7 @@ pub type LoadedFunction = L::LoadedFunction;
 
 #[derive(Debug)]
 pub struct MoveCall {
-    pub function: Rc<LoadedFunction>,
+    pub function: Arc<LoadedFunction>,
     pub arguments: Vec<Argument>,
 }
 

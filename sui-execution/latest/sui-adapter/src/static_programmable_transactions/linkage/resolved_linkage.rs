@@ -9,15 +9,15 @@ use crate::{
     },
 };
 use move_vm_runtime::shared::linkage_context::LinkageContext;
-use std::{borrow::Borrow, collections::BTreeMap, rc::Rc};
+use std::{borrow::Borrow, collections::BTreeMap, sync::Arc};
 use sui_types::{base_types::ObjectID, error::ExecutionError};
 
 #[derive(Clone, Debug)]
-pub struct ExecutableLinkage(pub Rc<ResolvedLinkage>);
+pub struct ExecutableLinkage(pub Arc<ResolvedLinkage>);
 
 impl ExecutableLinkage {
     pub fn new(resolved_linkage: ResolvedLinkage) -> Self {
-        Self(Rc::new(resolved_linkage))
+        Self(Arc::new(resolved_linkage))
     }
 
     /// Given a list of object IDs, generate a `ResolvedLinkage` for them.

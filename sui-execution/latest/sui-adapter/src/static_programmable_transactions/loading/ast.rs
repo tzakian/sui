@@ -17,7 +17,7 @@ use move_core_types::{
     language_storage::{ModuleId, StructTag},
     u256::U256,
 };
-use std::rc::Rc;
+use std::sync::Arc;
 use sui_types::{
     Identifier, TypeTag,
     base_types::{ObjectID, ObjectRef, RESOLVED_TX_CONTEXT, SequenceNumber, TxContextKind},
@@ -99,9 +99,9 @@ pub enum Type {
     U256,
     Address,
     Signer,
-    Vector(Rc<Vector>),
-    Datatype(Rc<Datatype>),
-    Reference(/* is mut */ bool, Rc<Type>),
+    Vector(Arc<Vector>),
+    Datatype(Arc<Datatype>),
+    Reference(/* is mut */ bool, Arc<Type>),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -164,7 +164,7 @@ pub struct LoadedFunction {
 
 #[derive(Debug)]
 pub struct MoveCall {
-    pub function: Rc<LoadedFunction>,
+    pub function: Arc<LoadedFunction>,
     pub arguments: Vec<Argument>,
 }
 

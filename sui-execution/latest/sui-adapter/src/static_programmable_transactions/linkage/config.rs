@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     data_store::PackageStore,
@@ -41,7 +41,7 @@ pub struct ResolutionConfig_ {
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolutionConfig(Rc<ResolutionConfig_>);
+pub struct ResolutionConfig(Arc<ResolutionConfig_>);
 
 /// Configuration for the linkage analysis.
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub struct LinkageConfig {
 
 impl ResolutionConfig {
     pub fn new(linkage_config: LinkageConfig, binary_config: BinaryConfig) -> Self {
-        Self(Rc::new(ResolutionConfig_ {
+        Self(Arc::new(ResolutionConfig_ {
             linkage_config,
             binary_config,
         }))

@@ -956,7 +956,7 @@ impl<'env, 'pc, 'vm, 'state, 'linkage, 'gas, 'extension>
 
     pub fn vm_move_call(
         &mut self,
-        function: Rc<T::LoadedFunction>,
+        function: Arc<T::LoadedFunction>,
         args: Vec<CtxValue>,
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> Result<Vec<CtxValue>, ExecutionError> {

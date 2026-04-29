@@ -12,7 +12,7 @@ mod checked {
     use crate::gas_charger::{PaymentKind, PaymentMethod};
     use move_binary_format::CompiledModule;
     use move_trace_format::format::MoveTraceBuilder;
-    use move_vm_runtime::runtime::MoveRuntime;
+    use crate::static_programmable_transactions::env::cache::RuntimeCache;
     use mysten_common::debug_fatal;
     use std::collections::BTreeMap;
     use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
@@ -135,7 +135,7 @@ mod checked {
         rewritten_inputs: Option<Vec<bool>>,
         transaction_signer: SuiAddress,
         transaction_digest: TransactionDigest,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         epoch_id: &EpochId,
         epoch_timestamp_ms: u64,
         protocol_config: &ProtocolConfig,
@@ -212,7 +212,7 @@ mod checked {
             rewritten_inputs,
             &mut gas_charger,
             tx_ctx,
-            move_vm,
+            runtime_cache,
             protocol_config,
             metrics.clone(),
             enable_expensive_checks,
@@ -299,7 +299,7 @@ mod checked {
         );
 
         metrics.vm_telemetry_metrics.try_update(|vm_metrics| {
-            let t = move_vm.get_telemetry_report();
+            let t = runtime_cache.runtime.get_telemetry_report();
             vm_metrics
                 .move_vm_package_cache_count
                 .set(t.package_cache_count as i64);
@@ -368,7 +368,7 @@ mod checked {
         store: &dyn BackingStore,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         tx_context: Rc<RefCell<TxContext>>,
         input_objects: CheckedInputObjects,
         pt: ProgrammableTransaction,
@@ -386,7 +386,7 @@ mod checked {
         SPT::execute::<execution_mode::Genesis>(
             protocol_config,
             metrics,
-            move_vm,
+            runtime_cache,
             &mut temporary_store,
             store.as_backing_package_store(),
             tx_context,
@@ -408,7 +408,7 @@ mod checked {
         rewritten_inputs: Option<Vec<bool>>,
         gas_charger: &mut GasCharger,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
         enable_expensive_checks: bool,
@@ -457,7 +457,7 @@ mod checked {
                             transaction_kind,
                             rewritten_inputs,
                             tx_ctx,
-                            move_vm,
+                            runtime_cache,
                             gas_charger,
                             protocol_config,
                             metrics.clone(),
@@ -519,7 +519,7 @@ mod checked {
             temporary_store,
             gas_charger,
             digest,
-            move_vm,
+            runtime_cache,
             protocol_config.simple_conservation_checks(),
             enable_expensive_checks,
             &cost_summary,
@@ -538,7 +538,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         gas_charger: &mut GasCharger,
         tx_digest: TransactionDigest,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         simple_conservation_checks: bool,
         enable_expensive_checks: bool,
         cost_summary: &GasCostSummary,
@@ -555,7 +555,7 @@ mod checked {
                         if enable_expensive_checks {
                             // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
                             let mut layout_resolver = TypeLayoutResolver::new(
-                                move_vm,
+                                &runtime_cache.runtime,
                                 temporary_store.protocol_config(),
                                 Box::new(&*temporary_store),
                             );
@@ -583,7 +583,7 @@ mod checked {
                             if enable_expensive_checks {
                                 // ensure that this transaction did not create or destroy SUI, try to recover if the check fails
                                 let mut layout_resolver = TypeLayoutResolver::new(
-                                    move_vm,
+                                    &runtime_cache.runtime,
                                     temporary_store.protocol_config(),
                                     Box::new(&*temporary_store),
                                 );
@@ -735,7 +735,7 @@ mod checked {
         transaction_kind: TransactionKind,
         rewritten_inputs: Option<Vec<bool>>,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -750,7 +750,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -785,7 +785,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -800,7 +800,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -815,7 +815,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -830,7 +830,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -842,7 +842,7 @@ mod checked {
             TransactionKind::ProgrammableTransaction(pt) => SPT::execute::<Mode>(
                 protocol_config,
                 metrics,
-                move_vm,
+                runtime_cache,
                 temporary_store,
                 store.as_backing_package_store(),
                 tx_ctx,
@@ -857,7 +857,7 @@ mod checked {
                 SPT::execute::<execution_mode::System<Mode::Error>>(
                     protocol_config,
                     metrics,
-                    move_vm,
+                    runtime_cache,
                     temporary_store,
                     store.as_backing_package_store(),
                     tx_ctx,
@@ -883,7 +883,7 @@ mod checked {
                                 temporary_store,
                                 store,
                                 tx_ctx,
-                                move_vm,
+                                runtime_cache,
                                 gas_charger,
                                 protocol_config,
                                 metrics,
@@ -971,7 +971,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -986,7 +986,7 @@ mod checked {
                     temporary_store,
                     store,
                     tx_ctx,
-                    move_vm,
+                    runtime_cache,
                     gas_charger,
                     protocol_config,
                     metrics,
@@ -1141,7 +1141,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -1163,7 +1163,7 @@ mod checked {
         let result = SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics.clone(),
-            move_vm,
+            runtime_cache,
             temporary_store,
             store.as_backing_package_store(),
             tx_ctx.clone(),
@@ -1190,17 +1190,20 @@ mod checked {
             temporary_store.advance_epoch_safe_mode(&params, protocol_config);
         }
 
-        let new_vm = new_move_runtime(
-            all_natives(/* silent */ true, protocol_config),
-            protocol_config,
-        )
-        .expect("Failed to create new MoveRuntime");
+        let new_vm = Arc::new(
+            new_move_runtime(
+                all_natives(/* silent */ true, protocol_config),
+                protocol_config,
+            )
+            .expect("Failed to create new MoveRuntime"),
+        );
+        let new_runtime_cache = Arc::new(RuntimeCache::new(new_vm));
         process_system_packages(
             change_epoch,
             temporary_store,
             store,
             tx_ctx,
-            &new_vm,
+            &new_runtime_cache,
             gas_charger,
             protocol_config,
             metrics,
@@ -1214,7 +1217,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &MoveRuntime,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -1241,7 +1244,7 @@ mod checked {
                 SPT::execute::<execution_mode::System>(
                     protocol_config,
                     metrics.clone(),
-                    move_vm,
+                    runtime_cache,
                     temporary_store,
                     store.as_backing_package_store(),
                     tx_ctx.clone(),
@@ -1288,7 +1291,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -1315,7 +1318,7 @@ mod checked {
         SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
-            move_vm,
+            runtime_cache,
             temporary_store,
             store.as_backing_package_store(),
             tx_ctx,
@@ -1433,7 +1436,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -1464,7 +1467,7 @@ mod checked {
         SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
-            move_vm,
+            runtime_cache,
             temporary_store,
             store.as_backing_package_store(),
             tx_ctx,
@@ -1505,7 +1508,7 @@ mod checked {
         temporary_store: &mut TemporaryStore<'_>,
         store: &dyn BackingStore,
         tx_ctx: Rc<RefCell<TxContext>>,
-        move_vm: &Arc<MoveRuntime>,
+        runtime_cache: &Arc<RuntimeCache>,
         gas_charger: &mut GasCharger,
         protocol_config: &ProtocolConfig,
         metrics: Arc<ExecutionMetrics>,
@@ -1537,7 +1540,7 @@ mod checked {
         SPT::execute::<execution_mode::System>(
             protocol_config,
             metrics,
-            move_vm,
+            runtime_cache,
             temporary_store,
             store.as_backing_package_store(),
             tx_ctx,

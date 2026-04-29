@@ -15,7 +15,7 @@ use crate::{
 use indexmap::{IndexMap, IndexSet};
 use move_binary_format::file_format::{Ability, AbilitySet};
 use move_core_types::account_address::AccountAddress;
-use std::rc::Rc;
+use std::sync::Arc;
 use sui_types::{
     balance::RESOLVED_BALANCE_STRUCT,
     base_types::{ObjectRef, TxContextKind},
@@ -588,7 +588,7 @@ fn move_call_arguments(
                     // what do we do here?
                     let idx = checked_as!(param_idx, u16)?;
                     let arg__ = T::Argument__::Borrow(is_mut, T::Location::TxContext);
-                    let ty = Type::Reference(is_mut, Rc::new(env.tx_context_type()?));
+                    let ty = Type::Reference(is_mut, Arc::new(env.tx_context_type()?));
                     sp(idx, (arg__, ty))
                 }
             })
@@ -898,7 +898,7 @@ fn coin_mut_ref_argument_(
             check_coin_type(ty)?;
             (
                 T::Argument__::Borrow(/* mut */ true, location),
-                Type::Reference(true, Rc::new(ty.clone())),
+                Type::Reference(true, Arc::new(ty.clone())),
             )
         }
     })
@@ -1022,7 +1022,7 @@ fn convert_withdrawal_to_coin(
     let withdrawal_arg_ = T::Argument__::new_move(location);
     let withdrawal_arg = sp(idx, (withdrawal_arg_, withdrawal_ty));
     let ctx_arg_ = T::Argument__::Borrow(true, T::Location::TxContext);
-    let ctx_ty = Type::Reference(true, Rc::new(env.tx_context_type()?));
+    let ctx_ty = Type::Reference(true, Arc::new(env.tx_context_type()?));
     let ctx_arg = sp(idx, (ctx_arg_, ctx_ty));
     let conversion_command__ = T::Command__::MoveCall(Box::new(T::MoveCall {
         function: env.load_framework_function(

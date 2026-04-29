@@ -25,11 +25,11 @@ use sui_types::{
 };
 
 use move_bytecode_verifier_meter::Meter;
-use move_vm_runtime_latest::runtime::MoveRuntime;
 use sui_adapter_latest::adapter::{new_move_runtime, run_metered_move_bytecode_verifier};
 use sui_adapter_latest::execution_engine::{
     execute_genesis_state_update, execute_transaction_to_effects,
 };
+use sui_adapter_latest::static_programmable_transactions::env::cache::RuntimeCache;
 use sui_adapter_latest::type_layout_resolver::TypeLayoutResolver;
 use sui_move_natives_latest::all_natives;
 use sui_types::storage::BackingStore;
@@ -39,7 +39,7 @@ use crate::executor;
 use crate::verifier;
 use sui_adapter_latest::execution_mode;
 
-pub(crate) struct Executor(Arc<MoveRuntime>);
+pub(crate) struct Executor(Arc<RuntimeCache>);
 
 pub(crate) struct Verifier<'m> {
     config: VerifierConfig,
@@ -48,10 +48,11 @@ pub(crate) struct Verifier<'m> {
 
 impl Executor {
     pub(crate) fn new(protocol_config: &ProtocolConfig, silent: bool) -> Result<Self, SuiError> {
-        Ok(Executor(Arc::new(new_move_runtime(
+        let runtime = Arc::new(new_move_runtime(
             all_natives(silent, protocol_config),
             protocol_config,
-        )?)))
+        )?);
+        Ok(Executor(Arc::new(RuntimeCache::new(runtime))))
     }
 }
 
@@ -257,7 +258,11 @@ impl executor::Executor for Executor {
         protocol_config: &'vm ProtocolConfig,
         store: Box<dyn TypeLayoutStore + 'store>,
     ) -> Box<dyn LayoutResolver + 'r> {
-        Box::new(TypeLayoutResolver::new(&self.0, protocol_config, store))
+        Box::new(TypeLayoutResolver::new(
+            &self.0.runtime,
+            protocol_config,
+            store,
+        ))
     }
 }
 

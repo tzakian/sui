@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use mysten_common::ZipDebugEqIteratorExt;
 
@@ -205,7 +205,7 @@ fn command<Mode: ExecutionMode>(
                 env,
                 context,
                 coin,
-                &T::Type::Reference(true, Rc::new(ty_coin.clone())),
+                &T::Type::Reference(true, Arc::new(ty_coin.clone())),
             )?;
             for amount in amounts {
                 argument(env, context, amount, &T::Type::U64)?;
@@ -234,7 +234,7 @@ fn command<Mode: ExecutionMode>(
                 env,
                 context,
                 target,
-                &T::Type::Reference(true, Rc::new(ty_coin.clone())),
+                &T::Type::Reference(true, Arc::new(ty_coin.clone())),
             )?;
             for coin in coins {
                 argument(env, context, coin, ty_coin)?;
