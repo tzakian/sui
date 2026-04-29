@@ -7,8 +7,8 @@ use anyhow::ensure;
 use fastcrypto::hash::Blake2b256;
 use fastcrypto::hash::HashFunction;
 use move_core_types::account_address::AccountAddress;
-use move_core_types::annotated_value::MoveDatatypeLayout;
 use move_core_types::annotated_value::MoveValue;
+use move_core_types::compressed::annotated::MoveDatatypeLayout;
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::identifier::Identifier;
@@ -132,7 +132,7 @@ impl Event {
         contents: &[u8],
         layout: MoveDatatypeLayout,
     ) -> SuiResult<MoveValue> {
-        BoundedVisitor::deserialize_value(contents, &layout.into_layout()).map_err(|e| {
+        BoundedVisitor::deserialize_value(contents, layout.into_layout()).map_err(|e| {
             SuiErrorKind::ObjectSerializationError {
                 error: e.to_string(),
             }

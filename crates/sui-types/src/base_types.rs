@@ -59,6 +59,8 @@ use move_binary_format::file_format::SignatureToken;
 use move_bytecode_utils::resolve_struct;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value as A;
+use move_core_types::compressed::LayoutHandle;
+use move_core_types::compressed::annotated as CA;
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::language_storage::ModuleId;
@@ -80,6 +82,7 @@ use std::cmp::max;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use sui_protocol_config::ProtocolConfig;
 
 #[cfg(test)]
@@ -1138,6 +1141,113 @@ pub const URL_STRUCT_NAME: &IdentStr = ident_str!("Url");
 pub const VEC_MAP_MODULE_NAME: &IdentStr = ident_str!("vec_map");
 pub const VEC_MAP_STRUCT_NAME: &IdentStr = ident_str!("VecMap");
 pub const VEC_MAP_ENTRY_STRUCT_NAME: &IdentStr = ident_str!("Entry");
+
+static ASCII_STR_LAYOUT_BUILDER: OnceLock<(CA::MoveTypeLayoutBuilder, LayoutHandle)> =
+    OnceLock::new();
+static MOVE_ASCII_STR_COMPRESSED_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
+static MOVE_UTF8_STR_COMPRESSED_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
+static URL_COMPRESSED_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
+static TYPE_NAME_COMPRESSED_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
+
+fn compressed_move_ascii_str_layout_builder() -> &'static (CA::MoveTypeLayoutBuilder, LayoutHandle)
+{
+    ASCII_STR_LAYOUT_BUILDER.get_or_init(|| {
+        let mut builder = CA::MoveTypeLayoutBuilder::new();
+        let tag = StructTag {
+            address: MOVE_STDLIB_ADDRESS,
+            module: STD_ASCII_MODULE_NAME.to_owned(),
+            name: STD_ASCII_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        };
+        let byte = builder.u8();
+        let inner = builder.vector(byte).unwrap();
+        let struct_handle = builder
+            .struct_layout(tag, vec![(ident_str!("bytes").into(), inner)])
+            .unwrap();
+        (builder, struct_handle)
+    })
+}
+
+pub fn compressed_move_ascii_str_layout() -> &'static CA::MoveStructLayout {
+    MOVE_ASCII_STR_COMPRESSED_LAYOUT.get_or_init(|| {
+        let (builder, struct_handle) = compressed_move_ascii_str_layout_builder().clone();
+        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
+        else {
+            panic!("Expected struct layout");
+        };
+        *struct_layout
+    })
+}
+
+pub fn compressed_move_utf8_str_layout() -> &'static CA::MoveStructLayout {
+    MOVE_UTF8_STR_COMPRESSED_LAYOUT.get_or_init(|| {
+        let mut builder = CA::MoveTypeLayoutBuilder::new();
+        let tag = StructTag {
+            address: MOVE_STDLIB_ADDRESS,
+            module: STD_UTF8_MODULE_NAME.to_owned(),
+            name: STD_UTF8_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        };
+        let byte = builder.u8();
+        let inner = builder.vector(byte).unwrap();
+        let struct_handle = builder
+            .struct_layout(tag, vec![(ident_str!("bytes").into(), inner)])
+            .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
+        else {
+            panic!("Expected struct layout");
+        };
+        *struct_layout
+    })
+}
+
+pub fn compressed_url_layout() -> &'static CA::MoveStructLayout {
+    URL_COMPRESSED_LAYOUT.get_or_init(|| {
+        let tag = StructTag {
+            address: SUI_FRAMEWORK_ADDRESS,
+            module: URL_MODULE_NAME.to_owned(),
+            name: URL_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        };
+        let (mut builder, ascii_str_layout_handle) =
+            compressed_move_ascii_str_layout_builder().clone();
+        let struct_handle = builder
+            .struct_layout(
+                tag,
+                vec![(ident_str!("url").into(), ascii_str_layout_handle)],
+            )
+            .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
+        else {
+            panic!("Expected struct layout");
+        };
+        *struct_layout
+    })
+}
+
+pub fn compressed_type_name_layout() -> &'static CA::MoveStructLayout {
+    TYPE_NAME_COMPRESSED_LAYOUT.get_or_init(|| {
+        let tag = StructTag {
+            address: MOVE_STDLIB_ADDRESS,
+            module: STD_TYPE_NAME_MODULE_NAME.to_owned(),
+            name: STD_TYPE_NAME_STRUCT_NAME.to_owned(),
+            type_params: vec![],
+        };
+        let (mut builder, ascii_str_layout_handle) =
+            compressed_move_ascii_str_layout_builder().clone();
+        let struct_handle = builder
+            .struct_layout(
+                tag,
+                vec![(ident_str!("name").into(), ascii_str_layout_handle)],
+            )
+            .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
+        else {
+            panic!("Expected struct layout");
+        };
+        *struct_layout
+    })
+}
 
 pub fn move_ascii_str_layout() -> A::MoveStructLayout {
     A::MoveStructLayout {

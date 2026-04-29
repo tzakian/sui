@@ -1,9 +1,13 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::OnceLock;
+
 use crate::MoveTypeTagTrait;
 use crate::{SUI_FRAMEWORK_ADDRESS, base_types::ObjectID};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::compressed::LayoutHandle;
+use move_core_types::compressed::annotated as CA;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::{
     annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout},
@@ -20,6 +24,9 @@ pub const UID_STRUCT_NAME: &IdentStr = ident_str!("UID");
 pub const ID_STRUCT_NAME: &IdentStr = ident_str!("ID");
 pub const RESOLVED_SUI_ID: (&AccountAddress, &IdentStr, &IdentStr) =
     (&SUI_FRAMEWORK_ADDRESS, OBJECT_MODULE_NAME, ID_STRUCT_NAME);
+
+static COMPRESSED_ID_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
+static COMPRESSED_UID_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::new();
 
 /// Rust version of the Move sui::object::Info type
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, Eq, PartialEq)]
@@ -67,6 +74,28 @@ impl UID {
             )],
         }
     }
+
+    pub fn compressed_layout() -> &'static CA::MoveStructLayout {
+        COMPRESSED_UID_LAYOUT.get_or_init(|| {
+            let mut builder = CA::MoveTypeLayoutBuilder::new();
+            let uid_layout = Self::layout_for_builder(&mut builder).unwrap();
+            let CA::MoveLayoutView::Struct(struct_layout) = builder.build(uid_layout).as_view()
+            else {
+                panic!("Expected struct layout");
+            };
+            *struct_layout
+        })
+    }
+
+    pub fn layout_for_builder(
+        builder: &mut CA::MoveTypeLayoutBuilder,
+    ) -> anyhow::Result<LayoutHandle> {
+        let id_layout = ID::layout_for_builder(builder)?;
+        builder.struct_layout(
+            Self::type_(),
+            vec![(ident_str!("id").to_owned(), id_layout)],
+        )
+    }
 }
 
 impl ID {
@@ -91,6 +120,28 @@ impl ID {
                 MoveTypeLayout::Address,
             )],
         }
+    }
+
+    pub fn compressed_layout() -> &'static CA::MoveStructLayout {
+        COMPRESSED_ID_LAYOUT.get_or_init(|| {
+            let mut builder = CA::MoveTypeLayoutBuilder::new();
+            let id_layout = Self::layout_for_builder(&mut builder).unwrap();
+            let CA::MoveLayoutView::Struct(struct_layout) = builder.build(id_layout).as_view()
+            else {
+                panic!("Expected struct layout");
+            };
+            *struct_layout
+        })
+    }
+
+    pub fn layout_for_builder(
+        builder: &mut CA::MoveTypeLayoutBuilder,
+    ) -> anyhow::Result<LayoutHandle> {
+        let address_layout = builder.address();
+        builder.struct_layout(
+            Self::type_(),
+            vec![(ident_str!("bytes").to_owned(), address_layout)],
+        )
     }
 }
 
