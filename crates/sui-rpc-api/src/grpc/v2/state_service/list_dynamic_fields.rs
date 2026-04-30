@@ -227,7 +227,8 @@ fn load_dynamic_field(
         }
     };
 
-    let field = DFV::FieldVisitor::deserialize(move_object.contents(), &layout)?;
+    let layout: move_core_types::compressed::annotated::MoveTypeLayout = (&layout).try_into()?;
+    let field = DFV::FieldVisitor::deserialize(move_object.contents(), layout)?;
 
     if read_mask.contains(DynamicField::KIND_FIELD) {
         let kind = match field.kind {
@@ -240,7 +241,7 @@ fn load_dynamic_field(
     if read_mask.contains(DynamicField::NAME_FIELD) {
         message.name = Some(
             Bcs::default()
-                .with_name(sui_types::TypeTag::from(field.name_layout).to_canonical_string(true))
+                .with_name(sui_types::TypeTag::from(&field.name_layout).to_canonical_string(true))
                 .with_value(field.name_bytes.to_vec()),
         );
     }
@@ -248,7 +249,7 @@ fn load_dynamic_field(
     if read_mask.contains(DynamicField::VALUE_FIELD) {
         message.value = Some(
             Bcs::default()
-                .with_name(sui_types::TypeTag::from(field.value_layout).to_canonical_string(true))
+                .with_name(sui_types::TypeTag::from(&field.value_layout).to_canonical_string(true))
                 .with_value(field.value_bytes.to_vec()),
         );
     }

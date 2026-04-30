@@ -226,7 +226,12 @@ impl sui_display::v2::Store for DisplayStore<'_> {
     async fn latest(
         &self,
         id: move_core_types::account_address::AccountAddress,
-    ) -> anyhow::Result<Option<(move_core_types::annotated_value::MoveTypeLayout, Vec<u8>)>> {
+    ) -> anyhow::Result<
+        Option<(
+            move_core_types::compressed::annotated::MoveTypeLayout,
+            Vec<u8>,
+        )>,
+    > {
         let Some(object) = self.state.inner().get_object(&id.into()) else {
             return Ok(None);
         };
@@ -240,6 +245,8 @@ impl sui_display::v2::Store for DisplayStore<'_> {
         let Some(layout) = self.state.inner().get_struct_layout(&object_type)? else {
             return Ok(None);
         };
+        let layout: move_core_types::compressed::annotated::MoveTypeLayout =
+            (&layout).try_into()?;
 
         Ok(Some((layout, move_object.contents().to_vec())))
     }
