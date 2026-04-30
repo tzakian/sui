@@ -468,9 +468,10 @@ impl TryFrom<(ObjectRead, SuiObjectDataOptions)> for SuiObjectResponse {
             ObjectRead::Exists(object_ref, o, layout) => {
                 let compressed_layout = layout
                     .map(|layout| {
-                        let mut builder = CA::MoveTypeLayoutBuilder::new();
-                        let handle = builder.from_tree_struct_layout(&layout)?;
-                        let CA::MoveLayoutView::Struct(s) = builder.build(handle).as_view() else {
+                        let built = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(
+                            |b| b.from_tree_struct_layout(&layout),
+                        )?;
+                        let CA::MoveLayoutView::Struct(s) = built.as_view() else {
                             return Err(anyhow!("Expected struct layout"));
                         };
                         Ok(*s)
@@ -880,10 +881,11 @@ impl SuiParsedData {
                     Data::Move(m) => {
                         let layout = layout
                             .map(|layout| {
-                                let mut builder = CA::MoveTypeLayoutBuilder::new();
-                                let handle = builder.from_tree_struct_layout(&layout)?;
-                                let CA::MoveLayoutView::Struct(s) = builder.build(handle).as_view()
-                                else {
+                                let built =
+                                    CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(
+                                        |b| b.from_tree_struct_layout(&layout),
+                                    )?;
+                                let CA::MoveLayoutView::Struct(s) = built.as_view() else {
                                     return Err(anyhow!("Expected struct layout for Move object"));
                                 };
                                 Ok(*s)
