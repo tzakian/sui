@@ -594,17 +594,15 @@ impl Value<'_> {
             Value::U128(_) => Some(L::u128()),
             Value::U256(_) => Some(L::u256()),
 
-            Value::Bytes(_) => {
-                let mut builder = CA::MoveTypeLayoutBuilder::new();
-                let inner = builder.u8();
-                let handle = builder.vector(inner).ok()?;
-                Some(builder.build(handle))
-            }
-            Value::String(_) => {
-                let mut builder = CA::MoveTypeLayoutBuilder::new();
-                let handle = move_utf8_str_layout_for_builder(&mut builder).ok()?;
-                Some(builder.build(handle))
-            }
+            Value::Bytes(_) => CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+                let inner = b.u8();
+                Ok(b.vector(inner)?)
+            })
+            .ok(),
+            Value::String(_) => CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+                move_utf8_str_layout_for_builder(b)
+            })
+            .ok(),
 
             // Compound literals: cannot compute layout
             Value::Enum(_) | Value::Struct(_) | Value::Vector(_) => None,
