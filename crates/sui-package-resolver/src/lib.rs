@@ -419,11 +419,9 @@ impl<S: PackageStore> Resolver<S> {
             .as_ref()
             .map_or(usize::MAX, |l| l.max_move_value_depth);
 
-        let mut builder = CA::MoveTypeLayoutBuilder::new();
-        let root_handle = context
-            .resolve_type_layout(&mut builder, &tag, max_depth)?
-            .0;
-        Ok(builder.build(root_handle))
+        CA::MoveTypeLayoutBuilder::with_builder(|b| {
+            Ok::<_, Error>(context.resolve_type_layout(b, &tag, max_depth)?.0)
+        })
     }
 
     /// Return the abilities of a concrete type, based on the abilities in its type definition, and
