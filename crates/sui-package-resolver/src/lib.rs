@@ -31,7 +31,6 @@ use move_command_line_common::error_bitset::ErrorBitset;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::compressed::LayoutHandle;
 use move_core_types::compressed::annotated as CA;
-use move_core_types::compressed::annotated::MoveTypeLayout;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::language_storage::StructTag;
 use move_core_types::language_storage::TypeTag;
@@ -400,7 +399,7 @@ impl<S: PackageStore> Resolver<S> {
     /// Return the type layout corresponding to the given type tag.  The layout always refers to
     /// structs in terms of their defining ID (i.e. their package ID always points to the first
     /// package that introduced them).
-    pub async fn type_layout(&self, mut tag: TypeTag) -> Result<MoveTypeLayout> {
+    pub async fn type_layout(&self, mut tag: TypeTag) -> Result<CA::MoveTypeLayout> {
         let mut context = ResolutionContext::new(self.limits.as_ref());
 
         // (1). Fetch all the information from this store that is necessary to resolve types
@@ -502,7 +501,7 @@ impl<S: PackageStore> Resolver<S> {
     pub async fn pure_input_layouts(
         &self,
         tx: &ProgrammableTransaction,
-    ) -> Result<Vec<Option<MoveTypeLayout>>> {
+    ) -> Result<Vec<Option<CA::MoveTypeLayout>>> {
         let mut tags = vec![None; tx.inputs.len()];
         let mut register_type = |arg: &Argument, tag: &TypeTag| {
             let &Argument::Input(ix) = arg else {
