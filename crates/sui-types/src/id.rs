@@ -77,10 +77,11 @@ impl UID {
 
     pub fn compressed_layout() -> &'static CA::MoveStructLayout {
         COMPRESSED_UID_LAYOUT.get_or_init(|| {
-            let mut builder = CA::MoveTypeLayoutBuilder::new();
-            let uid_layout = Self::layout_for_builder(&mut builder).unwrap();
-            let CA::MoveLayoutView::Struct(struct_layout) = builder.build(uid_layout).as_view()
-            else {
+            let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+                Self::layout_for_builder(b)
+            })
+            .unwrap();
+            let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
                 panic!("Expected struct layout");
             };
             *struct_layout
@@ -124,10 +125,11 @@ impl ID {
 
     pub fn compressed_layout() -> &'static CA::MoveStructLayout {
         COMPRESSED_ID_LAYOUT.get_or_init(|| {
-            let mut builder = CA::MoveTypeLayoutBuilder::new();
-            let id_layout = Self::layout_for_builder(&mut builder).unwrap();
-            let CA::MoveLayoutView::Struct(struct_layout) = builder.build(id_layout).as_view()
-            else {
+            let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+                Self::layout_for_builder(b)
+            })
+            .unwrap();
+            let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
                 panic!("Expected struct layout");
             };
             *struct_layout

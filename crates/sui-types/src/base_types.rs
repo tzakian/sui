@@ -1149,10 +1149,11 @@ static TYPE_NAME_COMPRESSED_LAYOUT: OnceLock<CA::MoveStructLayout> = OnceLock::n
 
 pub fn compressed_move_ascii_str_layout() -> &'static CA::MoveStructLayout {
     MOVE_ASCII_STR_COMPRESSED_LAYOUT.get_or_init(|| {
-        let mut builder = CA::MoveTypeLayoutBuilder::new();
-        let struct_handle = move_ascii_str_layout_for_builder(&mut builder).unwrap();
-        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
-        else {
+        let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+            move_ascii_str_layout_for_builder(b)
+        })
+        .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
             panic!("Expected struct layout");
         };
         *struct_layout
@@ -1161,10 +1162,11 @@ pub fn compressed_move_ascii_str_layout() -> &'static CA::MoveStructLayout {
 
 pub fn compressed_move_utf8_str_layout() -> &'static CA::MoveStructLayout {
     MOVE_UTF8_STR_COMPRESSED_LAYOUT.get_or_init(|| {
-        let mut builder = CA::MoveTypeLayoutBuilder::new();
-        let struct_handle = move_utf8_str_layout_for_builder(&mut builder).unwrap();
-        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
-        else {
+        let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+            move_utf8_str_layout_for_builder(b)
+        })
+        .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
             panic!("Expected struct layout");
         };
         *struct_layout
@@ -1173,10 +1175,11 @@ pub fn compressed_move_utf8_str_layout() -> &'static CA::MoveStructLayout {
 
 pub fn compressed_url_layout() -> &'static CA::MoveStructLayout {
     URL_COMPRESSED_LAYOUT.get_or_init(|| {
-        let mut builder = CA::MoveTypeLayoutBuilder::new();
-        let struct_handle = url_layout_for_builder(&mut builder).unwrap();
-        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
-        else {
+        let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+            url_layout_for_builder(b)
+        })
+        .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
             panic!("Expected struct layout");
         };
         *struct_layout
@@ -1185,10 +1188,11 @@ pub fn compressed_url_layout() -> &'static CA::MoveStructLayout {
 
 pub fn compressed_type_name_layout() -> &'static CA::MoveStructLayout {
     TYPE_NAME_COMPRESSED_LAYOUT.get_or_init(|| {
-        let mut builder = CA::MoveTypeLayoutBuilder::new();
-        let struct_handle = type_name_layout_for_builder(&mut builder).unwrap();
-        let CA::MoveLayoutView::Struct(struct_layout) = builder.build(struct_handle).as_view()
-        else {
+        let layout = CA::MoveTypeLayoutBuilder::with_builder::<_, anyhow::Error>(|b| {
+            type_name_layout_for_builder(b)
+        })
+        .unwrap();
+        let CA::MoveLayoutView::Struct(struct_layout) = layout.as_view() else {
             panic!("Expected struct layout");
         };
         *struct_layout
