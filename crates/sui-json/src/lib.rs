@@ -570,9 +570,10 @@ pub fn primitive_type(
     type_args: &[TypeTag],
     param: &SignatureToken,
 ) -> Option<CA::MoveTypeLayout> {
-    let mut builder = CA::MoveTypeLayoutBuilder::new();
-    let handle = primitive_type_(&mut builder, view, type_args, param)?;
-    Some(builder.build(handle))
+    CA::MoveTypeLayoutBuilder::with_builder::<_, ()>(|b| {
+        primitive_type_(b, view, type_args, param).ok_or(())
+    })
+    .ok()
 }
 
 fn primitive_type_(
