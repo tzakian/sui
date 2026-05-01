@@ -316,6 +316,18 @@ impl std::fmt::Display for VerboseObjectOutput {
                     if resp.object.is_package() {
                         writeln!(f, "  -- object: <Move Package>")?;
                     } else if let Some(layout) = &resp.layout {
+                        let built =
+                            move_core_types::compressed::annotated::MoveTypeLayoutBuilder::with_builder::<
+                                _,
+                                anyhow::Error,
+                            >(|b| b.from_tree_struct_layout(layout))
+                            .unwrap();
+                        let move_core_types::compressed::annotated::MoveLayoutView::Struct(
+                            compressed,
+                        ) = built.as_view()
+                        else {
+                            unreachable!("from_tree_struct_layout always produces a struct");
+                        };
                         writeln!(
                             f,
                             "  -- object: Move Object: {}",
@@ -323,7 +335,7 @@ impl std::fmt::Display for VerboseObjectOutput {
                                 .data
                                 .try_as_move()
                                 .unwrap()
-                                .to_move_struct(layout)
+                                .to_move_struct(*compressed)
                                 .unwrap()
                         )?;
                     }

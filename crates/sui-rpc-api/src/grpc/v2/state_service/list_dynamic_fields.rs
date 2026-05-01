@@ -227,7 +227,6 @@ fn load_dynamic_field(
         }
     };
 
-    let layout: move_core_types::compressed::annotated::MoveTypeLayout = (&layout).try_into()?;
     let field = DFV::FieldVisitor::deserialize(move_object.contents(), layout)?;
 
     if read_mask.contains(DynamicField::KIND_FIELD) {

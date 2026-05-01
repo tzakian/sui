@@ -26,8 +26,17 @@ fn test_move_value_to_sui_coin() {
 
     let move_object = MoveObject::new_gas_coin(SequenceNumber::new(), id, value);
     let layout = GasCoin::layout();
+    let built = move_core_types::compressed::annotated::MoveTypeLayoutBuilder::with_builder::<
+        _,
+        anyhow::Error,
+    >(|b| b.from_tree_struct_layout(&layout))
+    .unwrap();
+    let move_core_types::compressed::annotated::MoveLayoutView::Struct(layout) = built.as_view()
+    else {
+        unreachable!()
+    };
 
-    let move_struct = move_object.to_move_struct(&layout).unwrap();
+    let move_struct = move_object.to_move_struct(*layout).unwrap();
     let sui_struct = SuiMoveStruct::from(move_struct);
     let gas_coin = GasCoin::try_from(&sui_struct).unwrap();
     assert_eq!(coin.value(), gas_coin.value());

@@ -245,8 +245,6 @@ impl sui_display::v2::Store for DisplayStore<'_> {
         let Some(layout) = self.state.inner().get_struct_layout(&object_type)? else {
             return Ok(None);
         };
-        let layout: move_core_types::compressed::annotated::MoveTypeLayout =
-            (&layout).try_into()?;
 
         Ok(Some((layout, move_object.contents().to_vec())))
     }

@@ -933,10 +933,8 @@ macro_rules! call_arg {
         }
         impl SuiJsonArg for u64 {
             fn to_sui_json(&self) -> anyhow::Result<SuiJsonValue> {
-                SuiJsonValue::from_bcs_bytes(
-                    Some(&sui_json::MoveTypeLayout::U64),
-                    &bcs::to_bytes(self)?,
-                )
+                let layout = move_core_types::compressed::annotated::MoveTypeLayout::u64();
+                SuiJsonValue::from_bcs_bytes(Some(&layout), &bcs::to_bytes(self)?)
             }
         }
         impl SuiJsonArg for Vec<u8> {

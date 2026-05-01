@@ -33,8 +33,18 @@ fn test_to_json_value() {
         ],
     };
     let event_bytes = bcs::to_bytes(&move_event).unwrap();
+    let tree_layout = TestEvent::layout();
+    let built = move_core_types::compressed::annotated::MoveTypeLayoutBuilder::with_builder::<
+        _,
+        anyhow::Error,
+    >(|b| b.from_tree_struct_layout(&tree_layout))
+    .unwrap();
+    let move_core_types::compressed::annotated::MoveLayoutView::Struct(layout) = built.as_view()
+    else {
+        unreachable!()
+    };
     let sui_move_struct: SuiMoveStruct =
-        BoundedVisitor::deserialize_struct(&event_bytes, &TestEvent::layout())
+        BoundedVisitor::deserialize_struct(&event_bytes, *layout)
             .unwrap()
             .into();
     let json_value = sui_move_struct.to_json_value();
