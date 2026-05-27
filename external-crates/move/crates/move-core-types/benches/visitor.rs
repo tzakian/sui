@@ -46,12 +46,15 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use move_core_types::{
     annotated_value::MoveValue as AnnotatedMoveValue,
     annotated_visitor::NullTraversal as AnnotatedOwnedNullTraversal,
-    annotated_visitor_ref::{
-        NullTraversal as AnnotatedRefNullTraversal, visit_value as annotated_ref_visit_value,
-    },
     annotated_visitor_exp::{
         NullTraversal as AnnotatedExpNullTraversal,
         visit_deserialize as annotated_exp_visit_deserialize,
+    },
+    annotated_visitor_gat::{
+        NullTraversal as AnnotatedGatNullTraversal, visit_value as annotated_gat_visit_value,
+    },
+    annotated_visitor_ref::{
+        NullTraversal as AnnotatedRefNullTraversal, visit_value as annotated_ref_visit_value,
     },
     annotated_visitor_unpacked::{
         NullTraversal as AnnotatedUnpackedNullTraversal,
@@ -59,6 +62,9 @@ use move_core_types::{
     },
     compressed::annotated::{
         ExpMoveTypeLayout, ExpMoveTypeLayoutRef, MoveLayoutViewRef, MoveTypeLayout,
+    },
+    compressed::gat::annotated::{
+        MoveLayoutView as GatView, MoveTypeLayout as GatLayout, TypeLayout as GatTypeLayout,
     },
     compressed::runtime::{
         LayoutHandle as RtLayoutHandle, MoveTypeLayout as RtMoveTypeLayout,
@@ -71,7 +77,7 @@ use move_core_types::{
     },
 };
 
-use crate::common::{SHAPE_NAMES, annotated_layout};
+use crate::common::{SHAPE_NAMES, annotated_layout, gat_arc_layout};
 
 // ---------------------------------------------------------------------------
 // Runtime (untyped) layout shapes — same structures as `common::annotated_layout`
@@ -237,6 +243,11 @@ fn run_annotated_exp(bytes: &[u8], layout: &ExpMoveTypeLayout) {
     annotated_exp_visit_deserialize(bytes, layout, &mut AnnotatedExpNullTraversal).unwrap()
 }
 
+fn run_annotated_gat<T: GatTypeLayout>(bytes: &[u8], layout: &GatLayout<T>) {
+    let mut cursor = Cursor::new(bytes);
+    annotated_gat_visit_value(&mut cursor, layout.as_ref(), &mut AnnotatedGatNullTraversal).unwrap();
+}
+
 fn run_runtime_owned(bytes: &[u8], layout: &RtMoveTypeLayout) {
     RuntimeMoveValue::visit_deserialize(bytes, layout.clone(), &mut RuntimeOwnedNullTraversal)
         .unwrap()
@@ -387,6 +398,54 @@ fn run_exp_walk(bytes: &[u8], layout: &ExpMoveTypeLayout) {
     walk_exp_view(&mut c, layout.as_layout_ref()).unwrap()
 }
 
+/// Walk BCS bytes guided by a backend-abstracted (PR #26798) layout view.
+fn walk_gat_view<T: GatTypeLayout>(
+    c: &mut Cursor<&[u8]>,
+    view: GatView<'_, T>,
+) -> Result<(), WalkError> {
+    match view {
+        GatView::Bool => match read_one(c)? {
+            0 | 1 => Ok(()),
+            b => Err(WalkError::UnexpectedByte(b)),
+        },
+        GatView::U8 => read_n::<1>(c),
+        GatView::U16 => read_n::<2>(c),
+        GatView::U32 => read_n::<4>(c),
+        GatView::U64 => read_n::<8>(c),
+        GatView::U128 => read_n::<16>(c),
+        GatView::U256 => read_n::<32>(c),
+        GatView::Address => read_n::<32>(c),
+        GatView::Signer => read_n::<32>(c),
+        GatView::Vector(inner) => {
+            let n = read_leb128(c)?;
+            for _ in 0..n {
+                walk_gat_view(c, inner.as_view())?;
+            }
+            Ok(())
+        }
+        GatView::Struct(s) => {
+            for (_, sub) in s.fields() {
+                walk_gat_view(c, sub.as_view())?;
+            }
+            Ok(())
+        }
+        GatView::Enum(e) => {
+            let tag = read_one(c)? as u16;
+            let v = e.variant_by_tag(tag).ok_or(WalkError::BadTag(tag))?;
+            let fs = v.fields().ok_or(WalkError::UnknownVariant)?;
+            for (_, sub) in fs.fields() {
+                walk_gat_view(c, sub.as_view())?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn run_gat_walk<T: GatTypeLayout>(bytes: &[u8], layout: &GatLayout<T>) {
+    let mut c = Cursor::new(bytes);
+    walk_gat_view(&mut c, layout.as_view()).unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Bench drivers
 // ---------------------------------------------------------------------------
@@ -397,6 +456,7 @@ fn bench_annotated(c: &mut Criterion) {
         let layout = annotated_layout(name);
         let bytes = bytes_for(name);
         let exp = ExpMoveTypeLayout::try_from(&layout.inflate().unwrap()).unwrap();
+        let gat = gat_arc_layout(name);
 
         // Sanity-check before timing: every variant should successfully
         // walk the buffer without panicking.
@@ -406,6 +466,8 @@ fn bench_annotated(c: &mut Criterion) {
         run_annotated_exp(&bytes, &exp);
         run_annotated_walk(&bytes, &layout);
         run_exp_walk(&bytes, &exp);
+        run_annotated_gat(&bytes, &gat);
+        run_gat_walk(&bytes, &gat);
 
         group.bench_function(format!("{name}/owned"), |b| {
             b.iter(|| run_annotated_owned(black_box(&bytes), black_box(&layout)))
@@ -424,6 +486,12 @@ fn bench_annotated(c: &mut Criterion) {
         });
         group.bench_function(format!("{name}/exp_walk"), |b| {
             b.iter(|| run_exp_walk(black_box(&bytes), black_box(&exp)))
+        });
+        group.bench_function(format!("{name}/gat"), |b| {
+            b.iter(|| run_annotated_gat(black_box(&bytes), black_box(&gat)))
+        });
+        group.bench_function(format!("{name}/gat_walk"), |b| {
+            b.iter(|| run_gat_walk(black_box(&bytes), black_box(&gat)))
         });
     }
     group.finish();

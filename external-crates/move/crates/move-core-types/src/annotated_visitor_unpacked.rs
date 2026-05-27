@@ -31,6 +31,7 @@ use crate::{
         },
     },
     identifier::{IdentStr, Identifier},
+    language_storage::StructTag,
     u256::U256,
 };
 
@@ -59,18 +60,9 @@ pub trait Visitor<'b> {
         d: &ValueDriver<'b>,
         v: AccountAddress,
     ) -> Result<Self::Value, Self::Error>;
-    fn visit_vector(
-        &mut self,
-        d: &mut VecDriver<'_, 'b>,
-    ) -> Result<Self::Value, Self::Error>;
-    fn visit_struct(
-        &mut self,
-        d: &mut StructDriver<'_, 'b>,
-    ) -> Result<Self::Value, Self::Error>;
-    fn visit_variant(
-        &mut self,
-        d: &mut VariantDriver<'_, 'b>,
-    ) -> Result<Self::Value, Self::Error>;
+    fn visit_vector(&mut self, d: &mut VecDriver<'_, 'b>) -> Result<Self::Value, Self::Error>;
+    fn visit_struct(&mut self, d: &mut StructDriver<'_, 'b>) -> Result<Self::Value, Self::Error>;
+    fn visit_variant(&mut self, d: &mut VariantDriver<'_, 'b>) -> Result<Self::Value, Self::Error>;
 }
 
 pub trait Traversal<'b> {
@@ -198,6 +190,9 @@ pub struct VecDriver<'p, 'b> {
 
 pub struct StructDriver<'p, 'b> {
     inner: &'p mut ValueDriver<'b>,
+    /// Cached pointer to the struct's `StructTag`. Same `Arc<[MoveTypeNode]>`
+    /// as `fields_ptr` — see safety notes on [`Self::fields`].
+    type_ptr: *const StructTag,
     /// Cached pointer to the field slice in the pool. The pool sits behind
     /// an `Arc` held by `inner`; the slice is immutable and stays valid for
     /// the lifetime of `&self`. Caching it skips the per-iteration
@@ -262,7 +257,6 @@ impl<'b> ValueDriver<'b> {
     fn read_leb128(&mut self) -> Result<u64, Error> {
         leb128::read::unsigned(&mut self.cursor).map_err(|_| Error::UnexpectedEof)
     }
-
 }
 
 // --- VecDriver ---
@@ -340,6 +334,22 @@ impl<'p, 'b> StructDriver<'p, 'b> {
         // mutates `inner.cursor` / `inner.layout`, which live in disjoint
         // fields of `ValueDriver`.
         unsafe { &*self.fields_ptr }
+    }
+
+    /// `StructTag` of the struct currently being visited. Resolved through
+    /// a single pointer deref into the (immutable, `Arc`-held) pool.
+    pub fn struct_type(&self) -> &StructTag {
+        // SAFETY: see [`Self::fields`] — `type_ptr` points at the
+        // `Arc<StructTag>` payload owned by the same pool node.
+        unsafe { &*self.type_ptr }
+    }
+
+    /// Materialize an owned [`MoveTypeLayout`] for the current struct.
+    /// Costs one `Arc` refcount bump on the pool. Provided for visitors
+    /// that need to inspect the struct via the high-level view API
+    /// instead of [`Self::struct_type`].
+    pub fn layout(&self) -> Result<MoveTypeLayout, Error> {
+        self.inner.layout()
     }
 
     /// `(name, layout_ref)` for the next field, or `None` if exhausted.
@@ -542,12 +552,14 @@ fn visit_struct<'b, V: Visitor<'b> + ?Sized>(
     // Resolve the field slice once. The borrow ends here; we keep only the
     // raw pointer, which `StructDriver::fields` derefs under the documented
     // safety contract.
-    let fields_ptr: *const [AnnotatedFieldEntry] = match &driver.pool[struct_idx] {
-        MoveTypeNode::Struct(s) => &*s.fields,
-        _ => unreachable!("visit_struct called with non-struct node"),
-    };
+    let (type_ptr, fields_ptr): (*const StructTag, *const [AnnotatedFieldEntry]) =
+        match &driver.pool[struct_idx] {
+            MoveTypeNode::Struct(s) => (&*s.type_, &*s.fields),
+            _ => unreachable!("visit_struct called with non-struct node"),
+        };
     let mut sd = StructDriver {
         inner: driver,
+        type_ptr,
         fields_ptr,
         off: 0,
     };

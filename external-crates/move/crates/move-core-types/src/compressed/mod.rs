@@ -31,6 +31,13 @@
 pub mod annotated;
 pub mod runtime;
 
+/// Vendored copy of PR #26798 (`tzakian/gat-compressed-type-layouts`): the
+/// backend-abstracted compressed layout (generic `TypeLayout`/`BackendBuilder`
+/// over `ArcPool`/`BoxPool` node tables). Kept self-contained under its own
+/// namespace so it can be benchmarked as a fourth layout variant alongside
+/// `owned`/`ref`/`exp` without colliding with their type names.
+pub mod gat;
+
 // =============================================================================
 // Shared types used by both runtime and annotated compressed layouts
 // =============================================================================

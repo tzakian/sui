@@ -24,6 +24,7 @@ use crate::{
         },
     },
     identifier::{IdentStr, Identifier},
+    language_storage::StructTag,
     u256::U256,
 };
 
@@ -177,6 +178,9 @@ pub struct VecDriver<'p, 'b> {
 
 pub struct StructDriver<'p, 'b> {
     inner: &'p mut ValueDriver<'b>,
+    /// Cached pointer to the struct's `StructTag` in the pool. Same lifetime
+    /// and aliasing rules as `fields_ptr`.
+    type_ptr: *const StructTag,
     /// Cached pointer to the contiguous `pool.fields[range]` slice for this
     /// struct. The pool sits behind an `Arc` held by `inner` and is immutable
     /// for the lifetime of `&self`.
@@ -316,6 +320,18 @@ impl<'p, 'b> StructDriver<'p, 'b> {
         // the layout pool. Recursion goes through `&mut inner` and only
         // mutates disjoint `cursor`/`layout` fields of `ValueDriver`.
         unsafe { &*self.fields_ptr }
+    }
+
+    /// `StructTag` of the struct currently being visited.
+    pub fn struct_type(&self) -> &StructTag {
+        // SAFETY: see [`Self::fields`].
+        unsafe { &*self.type_ptr }
+    }
+
+    /// Materialize an owned [`ExpMoveTypeLayout`] for the current struct.
+    /// Costs one `Arc` refcount bump.
+    pub fn layout(&self) -> Result<ExpMoveTypeLayout, Error> {
+        self.inner.layout()
     }
 
     pub fn peek_field(&self) -> Option<(&Identifier, ExpLayoutRef)> {
@@ -496,13 +512,17 @@ fn visit_struct<'b, V: Visitor<'b> + ?Sized>(
     struct_idx: u16,
     visitor: &mut V,
 ) -> Result<V::Value, V::Error> {
-    let fields_ptr: *const [ExpMoveFieldLayout] = {
+    let (type_ptr, fields_ptr): (*const StructTag, *const [ExpMoveFieldLayout]) = {
         let entry = &driver.pool.structs[struct_idx as usize];
         let r = &entry.fields;
-        &driver.pool.fields[r.start as usize..r.end as usize]
+        (
+            &entry.type_ as *const _,
+            &driver.pool.fields[r.start as usize..r.end as usize] as *const _,
+        )
     };
     let mut sd = StructDriver {
         inner: driver,
+        type_ptr,
         fields_ptr,
         off: 0,
     };
@@ -541,8 +561,7 @@ fn visit_variant<'b, V: Visitor<'b> + ?Sized>(
             Some(r) => r,
             None => return Err(Error::NoValueLayout.into()),
         };
-        let fslice =
-            &driver.pool.fields[fields_range.start as usize..fields_range.end as usize];
+        let fslice = &driver.pool.fields[fields_range.start as usize..fields_range.end as usize];
         (variant as *const _, fslice as *const _)
     };
 

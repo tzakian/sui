@@ -121,6 +121,7 @@ pub enum MoveDatatypeLayoutRef<'a> {
 
 impl MoveTypeLayout {
     /// Borrow this layout without bumping the pool's `Arc` refcount.
+    #[inline]
     pub fn as_layout_ref(&self) -> MoveTypeLayoutRef<'_> {
         MoveTypeLayoutRef {
             pool: &self.pool,
@@ -129,6 +130,7 @@ impl MoveTypeLayout {
     }
 
     /// Borrow this layout and immediately resolve into a [`MoveLayoutViewRef`].
+    #[inline]
     pub fn as_view_ref(&self) -> MoveLayoutViewRef<'_> {
         self.as_layout_ref().as_view()
     }
@@ -138,11 +140,13 @@ impl MoveTypeLayout {
 
 impl<'a> MoveTypeLayoutRef<'a> {
     /// Number of compound nodes in the borrowed pool.
+    #[inline]
     pub fn node_count(&self) -> usize {
         self.pool.len()
     }
 
     /// Resolve the root reference into a [`MoveLayoutViewRef`].
+    #[inline]
     pub fn as_view(&self) -> MoveLayoutViewRef<'a> {
         resolve_ref_borrowed(self.pool, self.root)
     }
@@ -151,10 +155,12 @@ impl<'a> MoveTypeLayoutRef<'a> {
 // --- MoveStructLayoutRef ---
 
 impl<'a> MoveStructLayoutRef<'a> {
+    #[inline]
     pub fn type_(&self) -> &'a StructTag {
         self.type_
     }
 
+    #[inline]
     pub fn fields_layout(&self) -> MoveFieldsLayoutRef<'a> {
         MoveFieldsLayoutRef {
             pool: self.pool,
@@ -162,10 +168,12 @@ impl<'a> MoveStructLayoutRef<'a> {
         }
     }
 
+    #[inline]
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
 
+    #[inline]
     pub fn field(&self, i: u16) -> Option<(&'a Identifier, MoveTypeLayoutRef<'a>)> {
         let pool = self.pool;
         self.fields.get(i as usize).map(move |entry| {
@@ -179,6 +187,7 @@ impl<'a> MoveStructLayoutRef<'a> {
         })
     }
 
+    #[inline]
     pub fn fields(&self) -> impl ExactSizeIterator<Item = (&'a Identifier, MoveTypeLayoutRef<'a>)> {
         let pool = self.pool;
         self.fields.iter().map(move |entry| {
@@ -196,20 +205,24 @@ impl<'a> MoveStructLayoutRef<'a> {
 // --- MoveEnumLayoutRef ---
 
 impl<'a> MoveEnumLayoutRef<'a> {
+    #[inline]
     pub fn type_(&self) -> &'a StructTag {
         self.type_
     }
 
+    #[inline]
     pub fn variant_count(&self) -> usize {
         self.variants.len()
     }
 
+    #[inline]
     pub fn variant(&self, i: VariantTag) -> Option<VariantLayoutRef<'a>> {
         self.variants
             .get(i as usize)
             .map(|entry| variant_entry_to_ref(self.pool, entry))
     }
 
+    #[inline]
     pub fn variant_by_tag(&self, tag: VariantTag) -> Option<VariantLayoutRef<'a>> {
         self.variants
             .iter()
@@ -217,6 +230,7 @@ impl<'a> MoveEnumLayoutRef<'a> {
             .map(|entry| variant_entry_to_ref(self.pool, entry))
     }
 
+    #[inline]
     pub fn variants(&self) -> impl ExactSizeIterator<Item = VariantLayoutRef<'a>> {
         let pool = self.pool;
         self.variants
@@ -228,10 +242,12 @@ impl<'a> MoveEnumLayoutRef<'a> {
 // --- MoveFieldsLayoutRef ---
 
 impl<'a> MoveFieldsLayoutRef<'a> {
+    #[inline]
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
 
+    #[inline]
     pub fn field(&self, i: u16) -> Option<(&'a Identifier, MoveTypeLayoutRef<'a>)> {
         let pool = self.pool;
         self.fields.get(i as usize).map(move |entry| {
@@ -245,6 +261,7 @@ impl<'a> MoveFieldsLayoutRef<'a> {
         })
     }
 
+    #[inline]
     pub fn field_by_name(&self, name: &str) -> Option<MoveTypeLayoutRef<'a>> {
         let pool = self.pool;
         self.fields
@@ -256,6 +273,7 @@ impl<'a> MoveFieldsLayoutRef<'a> {
             })
     }
 
+    #[inline]
     pub fn fields(&self) -> impl ExactSizeIterator<Item = (&'a Identifier, MoveTypeLayoutRef<'a>)> {
         let pool = self.pool;
         self.fields.iter().map(move |entry| {
@@ -273,6 +291,7 @@ impl<'a> MoveFieldsLayoutRef<'a> {
 // --- VariantLayoutRef ---
 
 impl<'a> VariantLayoutRef<'a> {
+    #[inline]
     pub fn name(&self) -> &'a Identifier {
         match self {
             VariantLayoutRef::Known { name, .. } => name,
@@ -280,6 +299,7 @@ impl<'a> VariantLayoutRef<'a> {
         }
     }
 
+    #[inline]
     pub fn tag(&self) -> VariantTag {
         match self {
             VariantLayoutRef::Known { tag, .. } => *tag,
@@ -287,6 +307,7 @@ impl<'a> VariantLayoutRef<'a> {
         }
     }
 
+    #[inline]
     pub fn fields(&self) -> Option<MoveFieldsLayoutRef<'a>> {
         match self {
             VariantLayoutRef::Known { fields, .. } => Some(*fields),
@@ -298,6 +319,7 @@ impl<'a> VariantLayoutRef<'a> {
 // --- MoveDatatypeLayoutRef ---
 
 impl<'a> MoveDatatypeLayoutRef<'a> {
+    #[inline]
     pub fn as_struct(&self) -> Option<MoveStructLayoutRef<'a>> {
         match self {
             MoveDatatypeLayoutRef::Struct(s) => Some(*s),
@@ -305,6 +327,7 @@ impl<'a> MoveDatatypeLayoutRef<'a> {
         }
     }
 
+    #[inline]
     pub fn as_enum(&self) -> Option<MoveEnumLayoutRef<'a>> {
         match self {
             MoveDatatypeLayoutRef::Enum(e) => Some(*e),
@@ -315,6 +338,7 @@ impl<'a> MoveDatatypeLayoutRef<'a> {
 
 // --- helpers ---
 
+#[inline]
 fn leaf_to_layout_view_ref<'a>(leaf: LeafType) -> MoveLayoutViewRef<'a> {
     match leaf {
         LeafType::Bool => MoveLayoutViewRef::Bool,
@@ -329,6 +353,7 @@ fn leaf_to_layout_view_ref<'a>(leaf: LeafType) -> MoveLayoutViewRef<'a> {
     }
 }
 
+#[inline]
 fn variant_entry_to_ref<'a>(
     pool: &'a [MoveTypeNode],
     entry: &'a AnnotatedVariantEntry,
@@ -348,6 +373,7 @@ fn variant_entry_to_ref<'a>(
 
 /// Borrowed analogue of `resolve_ref` in [`super::layout`]. Panics on
 /// out-of-bounds index.
+#[inline]
 fn resolve_ref_borrowed<'a>(pool: &'a [MoveTypeNode], r: LayoutRef) -> MoveLayoutViewRef<'a> {
     match r.resolve() {
         ResolvedRef::Leaf(leaf) => leaf_to_layout_view_ref(leaf),

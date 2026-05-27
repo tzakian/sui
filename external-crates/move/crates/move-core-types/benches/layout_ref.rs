@@ -34,8 +34,11 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use move_core_types::compressed::annotated::{
     ExpMoveTypeLayout, ExpMoveTypeLayoutRef, MoveLayoutViewRef, MoveTypeLayout,
 };
+use move_core_types::compressed::gat::annotated::{
+    MoveLayoutView as GatView, MoveTypeLayout as GatLayout, TypeLayout as GatTypeLayout,
+};
 
-use crate::common::{SHAPE_NAMES, annotated_layout};
+use crate::common::{SHAPE_NAMES, annotated_layout, gat_arc_layout, gat_box_layout};
 
 // ---------------------------------------------------------------------------
 // Shape preparation
@@ -189,6 +192,48 @@ fn traverse_exp(layout: &ExpMoveTypeLayout) -> usize {
     go(layout.as_layout_ref())
 }
 
+// `gat` — backend-abstracted layout (PR #26798), traversed in borrowed form
+// through the generic `TypeLayout` backend. Monomorphizes per backend, so the
+// `AnnotatedArcPool` instantiation is the apples-to-apples peer of `ref`.
+fn traverse_gat<T: GatTypeLayout>(layout: &GatLayout<T>) -> usize {
+    fn go<T: GatTypeLayout>(v: GatView<'_, T>) -> usize {
+        match v {
+            GatView::Bool
+            | GatView::U8
+            | GatView::U16
+            | GatView::U32
+            | GatView::U64
+            | GatView::U128
+            | GatView::U256
+            | GatView::Address
+            | GatView::Signer => 1,
+            GatView::Vector(inner) => 1 + go(inner.as_view()),
+            GatView::Struct(s) => {
+                let mut acc = s.type_().name.as_str().len();
+                for (name, sub) in s.fields() {
+                    acc += name.as_str().len();
+                    acc += go(sub.as_view());
+                }
+                acc
+            }
+            GatView::Enum(e) => {
+                let mut acc = e.type_().name.as_str().len();
+                for vl in e.variants() {
+                    acc += vl.name().as_str().len();
+                    if let Some(fs) = vl.fields() {
+                        for (name, sub) in fs.fields() {
+                            acc += name.as_str().len();
+                            acc += go(sub.as_view());
+                        }
+                    }
+                }
+                acc
+            }
+        }
+    }
+    go(layout.as_view())
+}
+
 // ---------------------------------------------------------------------------
 // W2 — random-access lookup
 // ---------------------------------------------------------------------------
@@ -287,6 +332,28 @@ fn lookup_exp(layout: &ExpMoveTypeLayout, path: &str) -> usize {
     hit
 }
 
+fn lookup_gat<T: GatTypeLayout>(layout: &GatLayout<T>, path: &str) -> usize {
+    if path.is_empty() {
+        return matches!(layout.as_view(), GatView::Bool) as usize;
+    }
+    let mut current = layout.as_ref();
+    let mut hit = 0usize;
+    for seg in path.split('.') {
+        match current.as_view() {
+            GatView::Struct(s) => {
+                if let Some(next) = s.fields_layout().field_by_name(seg) {
+                    current = next;
+                    hit += 1;
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    hit
+}
+
 // ---------------------------------------------------------------------------
 // Bench drivers
 // ---------------------------------------------------------------------------
@@ -306,6 +373,10 @@ fn bench_traversal(c: &mut Criterion) {
         group.bench_function(format!("{name}/exp"), |b| {
             b.iter(|| black_box(traverse_exp(black_box(exp_layout))))
         });
+        let gat = gat_arc_layout(name);
+        group.bench_function(format!("{name}/gat"), |b| {
+            b.iter(|| black_box(traverse_gat(black_box(&gat))))
+        });
     }
     group.finish();
 }
@@ -315,6 +386,7 @@ fn bench_lookup(c: &mut Criterion) {
     let exp = shapes_exp();
     for ((name, layout), (_, exp_layout)) in shapes().into_iter().zip(exp.iter()) {
         let paths = lookup_paths_for(name);
+        let gat = gat_arc_layout(name);
         group.bench_function(format!("{name}/owned"), |b| {
             b.iter(|| {
                 let mut acc = 0usize;
@@ -348,6 +420,17 @@ fn bench_lookup(c: &mut Criterion) {
                 black_box(acc)
             })
         });
+        group.bench_function(format!("{name}/gat"), |b| {
+            b.iter(|| {
+                let mut acc = 0usize;
+                for _ in 0..100 {
+                    for p in &paths {
+                        acc += lookup_gat(black_box(&gat), black_box(p));
+                    }
+                }
+                black_box(acc)
+            })
+        });
     }
     group.finish();
 }
@@ -376,6 +459,19 @@ fn bench_clone(c: &mut Criterion) {
                 let r = black_box(exp_layout).as_layout_ref();
                 black_box(r)
             })
+        });
+        // gat: `ArcPool` clone is a refcount bump; `BoxPool` clone deep-copies
+        // the node slice; `as_ref` is a Copy borrow regardless of backend.
+        let gat_arc = gat_arc_layout(name);
+        let gat_box = gat_box_layout(name);
+        group.bench_function(format!("{name}/gat_arc"), |b| {
+            b.iter(|| black_box(black_box(&gat_arc).clone()))
+        });
+        group.bench_function(format!("{name}/gat_box"), |b| {
+            b.iter(|| black_box(black_box(&gat_box).clone()))
+        });
+        group.bench_function(format!("{name}/gat_ref"), |b| {
+            b.iter(|| black_box(black_box(&gat_arc).as_ref()))
         });
     }
     group.finish();

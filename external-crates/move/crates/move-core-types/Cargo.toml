@@ -50,3 +50,15 @@ harness = false
 [[bench]]
 name = "visitor"
 harness = false
+
+[[bench]]
+name = "find"
+harness = false
+
+[[bench]]
+name = "find_by_layout"
+harness = false
+
+[[bench]]
+name = "option_visit"
+harness = false
