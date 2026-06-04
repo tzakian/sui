@@ -14,6 +14,12 @@
 //! - [`SourceCriterion::MutRef`]: any command whose return type is `&mut _`.
 //! - [`SourceCriterion::AnyValue`]: every command is a source. Result is the weakly connected
 //!   components of the any-value flow graph.
+//!
+//! Transaction inputs and the gas coin are *also* roots, independent of the criterion. Only
+//! command results (`Argument::Result` / `NestedResult`) form command→command edges; every
+//! `Argument::Input` and the `GasCoin` is instead a node whose forward edges reach every command
+//! that consumes it, so all consumers of a given input (or of the gas coin) join one component
+//! and share a linkage (the input value carries a single identity as it flows across commands).
 
 use crate::{
     data_store::PackageStore,
@@ -23,7 +29,7 @@ use crate::{
             resolution::{ResolutionTable, VersionConstraint, add_package},
             resolved_linkage::{ExecutableLinkage, ResolvedLinkage},
         },
-        loading::ast::{Command, LoadedFunction, Transaction, Type},
+        loading::ast::{Command, InputArg, Inputs, LoadedFunction, Transaction, Type},
     },
 };
 use move_binary_format::file_format::Visibility;
@@ -60,10 +66,24 @@ pub fn refine_per_component_linkage<E: ExecutionErrorTrait>(
     if n == 0 {
         return Ok(());
     }
+    // Flow-graph node space: commands occupy nodes `0..n`; transaction input `k` occupies node
+    // `n + k`; and the gas coin occupies node `n + m` (where `m = txn.inputs.len()`). Inputs and
+    // the gas coin participate as roots/edges below (see `add_input_flow`); any input node never
+    // used as an argument stays an isolated singleton and is harmless.
     let predecessors = build_predecessors::<E>(&txn.commands)?;
-    let sources = identify_sources(criterion, &txn.commands);
-    let mut uf: UnionFind<usize> = UnionFind::new(n);
-    compute_components::<E>(&predecessors, &sources, &mut uf)?;
+    let mut successors = transpose_to_successors(&predecessors);
+    let mut sources = identify_sources(criterion, &txn.commands);
+    let input_sources = add_input_flow::<E>(&txn.commands, &txn.inputs, n, &mut successors)?;
+    sources.extend(input_sources);
+    // node space = `n` commands + `m` input nodes + 1 gas-coin node.
+    let Some(node_count) = n
+        .checked_add(txn.inputs.len())
+        .and_then(|x| x.checked_add(1))
+    else {
+        invariant_violation!("flow-graph node count overflow");
+    };
+    let mut uf: UnionFind<usize> = UnionFind::new(node_count);
+    compute_components::<E>(&successors, &sources, &mut uf)?;
     let per_root_linkage =
         unify_per_component_linkages::<E>(&txn.commands, &mut uf, linkage_analysis, package_store)?;
     write_back_linkages::<E>(&mut txn.commands, &mut uf, &per_root_linkage)?;
@@ -72,7 +92,8 @@ pub fn refine_per_component_linkage<E: ExecutionErrorTrait>(
 
 /// For each command index `i`, list the command indices whose results feed `i`. Derived from
 /// `Argument::Result(a)` and `Argument::NestedResult(a, _)` in `i`'s arguments. `Input`/`GasCoin`
-/// arguments do not contribute edges between commands.
+/// arguments do not contribute *command→command* edges here; object-bearing inputs are layered in
+/// separately by [`add_input_flow`].
 fn build_predecessors<E: ExecutionErrorTrait>(
     commands: &[Command],
 ) -> Result<BTreeMap<usize, Vec<usize>>, E> {
@@ -125,23 +146,86 @@ fn is_source_under(criterion: SourceCriterion, result_type: &[Type]) -> bool {
     }
 }
 
-/// Forward closure: for each source, iterative BFS down the any-value DAG, unioning every
-/// reached command with the source (with a mark-and-skip optimization `expanded` set).
-fn compute_components<E: ExecutionErrorTrait>(
+/// Transpose the predecessor DAG into forward edges. Only nodes that are predecessors of something
+/// get an entry; nodes with no successors are absent and handled by the lookup in
+/// [`compute_components`].
+fn transpose_to_successors(
     predecessors: &BTreeMap<usize, Vec<usize>>,
-    sources: &[usize],
-    uf: &mut UnionFind<usize>,
-) -> Result<(), E> {
-    // Transpose the predecessor DAG once to get forward edges. Only nodes that
-    // are predecessors of something get an entry. Nodes with no successors are absent and
-    // handled by the lookup below.
+) -> BTreeMap<usize, Vec<usize>> {
     let mut successors: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (&i, preds_i) in predecessors.iter() {
         for &a in preds_i {
             successors.entry(a).or_default().push(i);
         }
     }
+    successors
+}
 
+/// Layer transaction inputs and the gas coin into the flow graph. For every command `i` that takes
+/// `Argument::Input(k)` (where input `k` is contributing) or `Argument::GasCoin`, add a forward
+/// edge from that input's node to `i` so the input node reaches all of its consumers. Inputs use
+/// node `n + k`; the gas coin uses node `n + m` (`m = inputs.len()`). Returns the (deduplicated)
+/// list of input node ids to seed as sources.
+fn add_input_flow<E: ExecutionErrorTrait>(
+    commands: &[Command],
+    inputs: &Inputs,
+    n: usize,
+    successors: &mut BTreeMap<usize, Vec<usize>>,
+) -> Result<Vec<usize>, E> {
+    // The gas coin is an implicit object input; like an object input it flows with a single
+    // identity, so it gets its own source node just past the explicit inputs.
+    let Some(gas_node) = n.checked_add(inputs.len()) else {
+        invariant_violation!("gas-coin flow node index overflow");
+    };
+    let mut input_sources: BTreeSet<usize> = BTreeSet::new();
+    for (i, cmd) in commands.iter().enumerate() {
+        for (arg_idx, arg) in cmd.arguments().enumerate() {
+            let input_node = match arg {
+                Argument::GasCoin => gas_node,
+                Argument::Input(raw_k) => {
+                    let k = checked_as!(*raw_k, usize)?;
+                    // `get` doubles as the bounds check, avoiding a panicking index.
+                    let Some((input_arg, _)) = inputs.get(k) else {
+                        return Err(command_argument_error(
+                            CommandArgumentError::IndexOutOfBounds { idx: *raw_k },
+                            arg_idx,
+                        )
+                        .with_command_index(i)
+                        .into());
+                    };
+                    if !is_contributing_input(input_arg) {
+                        continue;
+                    }
+                    let Some(node) = n.checked_add(k) else {
+                        invariant_violation!("input flow node index overflow");
+                    };
+                    node
+                }
+                Argument::Result(_) | Argument::NestedResult(_, _) => continue,
+            };
+            successors.entry(input_node).or_default().push(i);
+            input_sources.insert(input_node);
+        }
+    }
+    Ok(input_sources.into_iter().collect())
+}
+
+fn is_contributing_input(input: &InputArg) -> bool {
+    match input {
+        InputArg::Object(_)
+        | InputArg::Pure(_)
+        | InputArg::Receiving(_)
+        | InputArg::FundsWithdrawal(_) => true,
+    }
+}
+
+/// Forward closure: for each source, iterative BFS down the any-value flow graph, unioning every
+/// reached node with the source (with a mark-and-skip optimization `expanded` set).
+fn compute_components<E: ExecutionErrorTrait>(
+    successors: &BTreeMap<usize, Vec<usize>>,
+    sources: &[usize],
+    uf: &mut UnionFind<usize>,
+) -> Result<(), E> {
     // A node is in `expanded` once some source's BFS has walked its successors. Subsequent
     // visits union but do not re-expand.
     let mut expanded: BTreeSet<usize> = BTreeSet::new();

@@ -8,7 +8,9 @@ use crate::{
     static_programmable_transactions::{
         linkage::{
             config::{LinkageConfig, ResolutionConfig},
-            resolution::{ResolutionTable, VersionConstraint, add_and_unify, add_package, get_package},
+            resolution::{
+                ResolutionTable, VersionConstraint, add_and_unify, add_package, get_package,
+            },
             resolved_linkage::{ExecutableLinkage, ResolvedLinkage},
         },
         loading::ast::Type,
