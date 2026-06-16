@@ -15,7 +15,7 @@ use crate::{
             values::{Local, Locals, Value},
         },
         linkage::resolved_linkage::{ExecutableLinkage, ResolvedLinkage},
-        loading::ast::Datatype,
+        loading::ast::{Datatype, PackagePayload},
         typing::ast::{self as T, Type},
     },
 };
@@ -1023,33 +1023,37 @@ where
     // Publish and Upgrade
     //
 
-    // is_upgrade is used for gas charging. Assumed to be a new publish if false.
-    pub fn deserialize_modules(
+    pub fn get_modules(
         &mut self,
-        module_bytes: &[Vec<u8>],
+        package_payload: PackagePayload,
+        dep_ids: &[ObjectID],
         is_upgrade: bool,
-    ) -> Result<Vec<CompiledModule>, Mode::Error> {
-        assert_invariant!(
-            !module_bytes.is_empty(),
-            "empty package is checked in transaction input checker"
-        );
-        let total_bytes = module_bytes.iter().map(|v| v.len()).sum();
-        if is_upgrade {
-            self.gas_charger.charge_upgrade_package(total_bytes)?
-        } else {
-            self.gas_charger.charge_publish_package(total_bytes)?
-        }
+    ) -> Result<(Vec<CompiledModule>, [u8; 32]), Mode::Error> {
+        Ok(match package_payload {
+            PackagePayload::Deserialized {
+                modules,
+                computed_digest,
+                ..
+            } => (modules, computed_digest),
+            PackagePayload::Serialized(module_bytes) => {
+                // This assertion is also checked in the call to `deserialize_modules`, but we
+                // want to check it here first to keep existing behavior.
+                assert_invariant!(
+                    !module_bytes.is_empty(),
+                    "empty package is checked in transaction input checker"
+                );
+                let total_bytes = module_bytes.iter().map(|v| v.len()).sum();
+                if is_upgrade {
+                    self.gas_charger.charge_upgrade_package(total_bytes)?
+                } else {
+                    self.gas_charger.charge_publish_package(total_bytes)?
+                }
 
-        let binary_config = self.env.protocol_config.binary_config(None);
-        let modules = module_bytes
-            .iter()
-            .map(|b| {
-                CompiledModule::deserialize_with_config(b, &binary_config)
-                    .map_err(|e| e.finish(Location::Undefined))
-            })
-            .collect::<VMResult<Vec<CompiledModule>>>()
-            .map_err(|e| self.env.convert_vm_error(e))?;
-        Ok(modules)
+                let (modules, _, computed_digest) =
+                    self.env.deserialize_modules(&module_bytes, dep_ids)?;
+                (modules, computed_digest)
+            }
+        })
     }
 
     fn fetch_package(&mut self, dependency_id: &ObjectID) -> Result<Rc<MovePackage>, Mode::Error> {

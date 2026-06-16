@@ -6,6 +6,7 @@ pub mod component_based_linkage;
 pub mod config;
 pub mod resolution;
 pub mod resolved_linkage;
+pub mod single_linkage;
 
 use crate::{
     data_store::PackageStore,
@@ -22,11 +23,17 @@ pub fn refine_linkage<Mode: ExecutionMode>(
     package_store: &dyn PackageStore,
     protocol_config: &ProtocolConfig,
 ) -> Result<loading::Transaction, Mode::Error> {
-    if !protocol_config.enable_component_based_linkage() {
-        return Ok(txn);
-    }
+    // if !protocol_config.enable_simplified_linkage() {
+    //     return Ok(txn);
+    // }
 
-    component_based_linkage::refine_per_component_linkage::<Mode::Error>(
+    // component_based_linkage::refine_per_component_linkage::<Mode::Error>(
+    //     &mut txn,
+    //     linkage_analysis,
+    //     package_store,
+    // )?;
+
+    single_linkage::refine_to_single_linkage::<Mode::Error>(
         &mut txn,
         linkage_analysis,
         package_store,

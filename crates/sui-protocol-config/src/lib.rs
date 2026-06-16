@@ -1133,7 +1133,7 @@ struct FeatureFlags {
 
     // If true enable component-based linkage
     #[serde(skip_serializing_if = "is_false")]
-    enable_component_based_linkage: bool,
+    enable_simplified_linkage: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -2881,8 +2881,8 @@ impl ProtocolConfig {
         self.feature_flags.early_exit_on_iffw
     }
 
-    pub fn enable_component_based_linkage(&self) -> bool {
-        self.feature_flags.enable_component_based_linkage
+    pub fn enable_simplified_linkage(&self) -> bool {
+        self.feature_flags.enable_simplified_linkage
     }
 }
 
@@ -5014,7 +5014,7 @@ impl ProtocolConfig {
                     cfg.feature_flags.always_advance_dkg_to_resolution = true;
                     // TODO: Place this in the correct protocol version once we have a better idea
                     // on rollout date.
-                    cfg.feature_flags.enable_component_based_linkage = true;
+                    cfg.feature_flags.enable_simplified_linkage = true;
                 }
                 // Use this template when making changes:
                 //
