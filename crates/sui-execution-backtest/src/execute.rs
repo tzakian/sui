@@ -55,7 +55,11 @@ pub(crate) struct CheckpointStats {
     /// randomness unavailable) and which therefore "succeed" in single-tx replay. Excluded from
     /// `divergences` since they're not reproducible.
     pub(crate) cancellation_excluded: u64,
-    /// Serialized NDJSON lines, one per divergent transaction.
+    /// Txns whose recomputed execution failed with `InvalidLinkage`, regardless of on-chain status
+    /// (so this includes on-chain *failures* that re-fail on linkage, which are not divergences).
+    pub(crate) invalid_linkage_any: u64,
+    /// Serialized NDJSON lines: divergences plus non-diverging InvalidLinkage cases (tagged by
+    /// `kind`).
     pub(crate) records: Vec<String>,
 }
 
@@ -74,6 +78,7 @@ impl CheckpointStats {
             executed,
             divergences,
             cancellation_excluded,
+            invalid_linkage_any,
             mut records,
         } = other;
         self.checked += checked;
@@ -85,6 +90,7 @@ impl CheckpointStats {
         self.executed += executed;
         self.divergences += divergences;
         self.cancellation_excluded += cancellation_excluded;
+        self.invalid_linkage_any += invalid_linkage_any;
         self.records.append(&mut records);
     }
 }
@@ -250,12 +256,23 @@ pub(crate) fn execute_one_transaction(
     let (recomputed_ok, result) = run_execution(ctx, store, prepared_tx);
 
     stats.executed += 1;
+    let recomputed_error = result.as_ref().err().map(|e| e.to_string());
+    // InvalidLinkage regardless of on-chain status (includes on-chain failures that re-fail on
+    // linkage — these are *not* divergences but are wanted for the "(any status) -> InvalidLinkage"
+    // tally and signature breakdown).
+    let is_invalid_linkage = result
+        .as_ref()
+        .err()
+        .is_some_and(|e| matches!(e.kind(), ExecutionErrorKind::InvalidLinkage));
+    if is_invalid_linkage {
+        stats.invalid_linkage_any += 1;
+    }
+
     // Divergence: the recomputed success/failure status disagrees with what happened on chain. This
     // captures any execution-behavior change (e.g. a transaction that succeeded on chain now
     // erroring, or vice versa); the recomputed error, if any, is recorded for triage.
     if recomputed_ok != on_chain.is_success {
         stats.divergences += 1;
-        let recomputed_error = result.as_ref().err().map(|e| e.to_string());
         log_divergence(
             executed,
             objects,
@@ -264,6 +281,22 @@ pub(crate) fn execute_one_transaction(
             &recomputed_error,
         );
         let record = serde_json::json!({
+            "kind": "divergence",
+            "is_invalid_linkage": is_invalid_linkage,
+            "digest": digest.to_string(),
+            "checkpoint": prepared.cp,
+            "epoch": ctx.epoch,
+            "original_status": on_chain.status_label,
+            "original_failure": on_chain.failure,
+            "recomputed_error": recomputed_error,
+        });
+        stats.records.push(record.to_string());
+    } else if is_invalid_linkage {
+        // On-chain failure that also re-fails with InvalidLinkage: same status, so not a divergence,
+        // but recorded so the (any status) -> InvalidLinkage population has full provenance.
+        let record = serde_json::json!({
+            "kind": "invalid_linkage_nondiverging",
+            "is_invalid_linkage": true,
             "digest": digest.to_string(),
             "checkpoint": prepared.cp,
             "epoch": ctx.epoch,

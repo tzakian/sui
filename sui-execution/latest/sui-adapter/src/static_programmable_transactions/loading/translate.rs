@@ -278,7 +278,7 @@ fn command<Mode: ExecutionMode>(
             let resolved_linkage = env
                 .linkage_analysis
                 .compute_publication_linkage::<Mode::Error>(&dep_ids, env.linkable_store)?;
-            let payload = if env.protocol_config.enable_simplified_linkage() {
+            let payload = if true || env.protocol_config.enable_simplified_linkage() {
                 let (modules, total_bytes, computed_digest) =
                     env.deserialize_modules(&items, &dep_ids)?;
                 PackagePayload::Deserialized {
@@ -295,7 +295,7 @@ fn command<Mode: ExecutionMode>(
             let resolved_linkage = env
                 .linkage_analysis
                 .compute_publication_linkage::<Mode::Error>(&dep_ids, env.linkable_store)?;
-            let payload = if env.protocol_config.enable_simplified_linkage() {
+            let payload = if true || env.protocol_config.enable_simplified_linkage() {
                 let (modules, total_bytes, computed_digest) =
                     env.deserialize_modules(&items, &dep_ids)?;
                 PackagePayload::Deserialized {

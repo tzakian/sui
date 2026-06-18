@@ -88,6 +88,12 @@ struct Args {
     #[clap(long)]
     max_checkpoints_per_epoch: Option<u64>,
 
+    /// Skip this many checkpoints from the start of the first epoch. Combine with
+    /// `--max-checkpoints-per-epoch` to process an arbitrary checkpoint window of a single epoch
+    /// (e.g. for splitting one large epoch across several bounded runs).
+    #[clap(long, default_value_t = 0)]
+    checkpoint_skip: u64,
+
     /// Which on-chain transaction statuses to re-execute. `success` keeps the strict baseline (only
     /// txns that succeeded on-chain, so any divergence is a clear regression); `failed` runs only
     /// failed txns; `all` runs both and tags each divergence record with its `original_status`/
@@ -189,6 +195,7 @@ async fn main() -> Result<()> {
         args.max_checkpoints_per_epoch,
         first_bounds,
         &execution_metrics,
+        args.checkpoint_skip,
     )
     .await?;
 
@@ -284,6 +291,7 @@ fn log_summary(totals: &CheckpointStats, checkpoints_done: u64, elapsed: f64) {
         total_gas_from_balance = totals.gas_from_balance,
         total_executed = totals.executed,
         total_cancellation_excluded = totals.cancellation_excluded,
+        total_invalid_linkage_any = totals.invalid_linkage_any,
         checkpoints_done,
         elapsed_s = format!("{:.0}", elapsed),
         tx_per_s = format!("{:.0}", totals.checked as f64 / elapsed),

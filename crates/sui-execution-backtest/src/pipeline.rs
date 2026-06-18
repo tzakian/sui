@@ -98,6 +98,9 @@ pub(crate) async fn resolve_epoch_work(
     max_checkpoints_per_epoch: Option<u64>,
     first_bounds: EpochBounds,
     execution_metrics: &Arc<ExecutionMetrics>,
+    // Skip this many checkpoints from the start of the *first* epoch (for resuming/windowing a large
+    // epoch across multiple bounded runs). Applied before `max_checkpoints_per_epoch`.
+    checkpoint_skip: u64,
 ) -> Result<Vec<(u64, Arc<EpochCtx>)>> {
     let start_epoch = *epochs.start();
     let mut work: Vec<(u64, Arc<EpochCtx>)> = Vec::new();
@@ -136,27 +139,28 @@ pub(crate) async fn resolve_epoch_work(
             reference_gas_price: bounds.reference_gas_price,
         });
 
+        // Window start: skip applies only to the first epoch; clamp into the epoch's range.
+        let skip = if epoch == start_epoch { checkpoint_skip } else { 0 };
+        let first = bounds
+            .first_checkpoint
+            .saturating_add(skip)
+            .min(bounds.last_checkpoint);
         let last = match max_checkpoints_per_epoch {
-            Some(cap) => bounds.last_checkpoint.min(
-                bounds
-                    .first_checkpoint
-                    .saturating_add(cap)
-                    .saturating_sub(1),
-            ),
+            Some(cap) => bounds
+                .last_checkpoint
+                .min(first.saturating_add(cap).saturating_sub(1)),
             None => bounds.last_checkpoint,
         };
-        let count = last
-            .saturating_sub(bounds.first_checkpoint)
-            .saturating_add(1);
+        let count = last.saturating_sub(first).saturating_add(1);
         info!(
             epoch,
-            first_checkpoint = bounds.first_checkpoint,
+            first_checkpoint = first,
             last_checkpoint = last,
             checkpoints = count,
             protocol_version = bounds.protocol_version,
             "queued epoch"
         );
-        for cp in bounds.first_checkpoint..=last {
+        for cp in first..=last {
             work.push((cp, ctx.clone()));
         }
     }
