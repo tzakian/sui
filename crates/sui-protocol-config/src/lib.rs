@@ -357,6 +357,7 @@ const MAINNET_USDB: &str =
 // Version 127: Enable always_advance_dkg_to_resolution.
 //              Update gas prices for range proofs and ristretto group operations.
 //              Enable Ristretto255 group operations and bulletproofs verification on testnet.
+//              Enable init functions for newly introduced modules during package upgrade.
 //              Enable timestamp_based_epoch_close on mainnet.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -939,6 +940,10 @@ struct FeatureFlags {
     // Check for `init` for new modules to a package on upgrade.
     #[serde(skip_serializing_if = "is_false")]
     check_for_init_during_upgrade: bool,
+
+    // If true, run `init` for newly introduced modules during package upgrade.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_init_on_upgrade: bool,
 
     // Check shared object transfer restrictions per command.
     #[serde(skip_serializing_if = "is_false")]
@@ -2655,6 +2660,10 @@ impl ProtocolConfig {
 
     pub fn check_for_init_during_upgrade(&self) -> bool {
         self.feature_flags.check_for_init_during_upgrade
+    }
+
+    pub fn enable_init_on_upgrade(&self) -> bool {
+        self.feature_flags.enable_init_on_upgrade
     }
 
     pub fn per_command_shared_object_transfer_rules(&self) -> bool {
@@ -5015,6 +5024,7 @@ impl ProtocolConfig {
                 }
                 127 => {
                     cfg.feature_flags.always_advance_dkg_to_resolution = true;
+                    cfg.feature_flags.enable_init_on_upgrade = true;
 
                     cfg.verify_bulletproofs_ristretto255_base_cost = Some(23866);
                     cfg.verify_bulletproofs_ristretto255_cost_per_bit_and_commitment = Some(1324);
