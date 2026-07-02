@@ -30,6 +30,7 @@ use itertools::Itertools;
 use move_binary_format::CompiledModule;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use move_core_types::resolver::SerializedPackage;
+use sui_macros::fail_point_bool;
 pub use object_store_trait::ObjectStore;
 pub use read_store::BalanceInfo;
 pub use read_store::BalanceIterator;
@@ -409,6 +410,31 @@ pub fn get_module_by_id<S: BackingPackageStore>(
 ) -> anyhow::Result<Option<CompiledModule>, SuiError> {
     Ok(get_module(store, id)?
         .map(|bytes| CompiledModule::deserialize_with_defaults(&bytes).unwrap()))
+}
+
+// Returns the serialized packages for the given package IDs, or None if any of the package IDs are
+// not found.
+pub fn get_packages(
+    store: impl BackingPackageStore,
+    package_ids: &[ObjectID],
+) -> Option<Vec<SerializedPackage>> {
+    package_ids
+        .iter()
+        .map(|id| get_package(&store, id))
+        .collect::<SuiResult<Vec<Option<_>>>>()
+        .ok()?
+        .into_iter()
+        .collect()
+}
+
+// Returns the serialized pinned system packages ([`crate::PINNED_SYSTEM_PACKAGE_IDS`]) from `store`,
+// in load order, or None if any is not found.
+pub fn get_pinned_system_packages(store: impl BackingPackageStore) -> Option<Vec<SerializedPackage>> {
+    // Test hook: force the load to fail so callers exercise their missing-packages fallback.
+    if fail_point_bool!("skip_system_packages_loading") {
+        return None;
+    }
+    get_packages(store, crate::PINNED_SYSTEM_PACKAGE_IDS)
 }
 
 /// A `BackingPackageStore` that resolves packages from a backing store, but also includes any

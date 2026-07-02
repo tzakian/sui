@@ -145,6 +145,15 @@ built_in_ids! {
     SUI_ADDRESS_ALIAS_STATE_ADDRESS / SUI_ADDRESS_ALIAS_STATE_OBJECT_ID = 0xa;
 }
 
+// NB: Order of these package IDs is important, as it is used to determine the order of package
+// loading.
+// TODO: protocol config this? Seems kinda heavyweight to do that though.
+pub const PINNED_SYSTEM_PACKAGE_IDS: &[ObjectID] = &[
+    MOVE_STDLIB_PACKAGE_ID,
+    SUI_FRAMEWORK_PACKAGE_ID,
+    SUI_SYSTEM_PACKAGE_ID,
+];
+
 pub const SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION: SequenceNumber = OBJECT_START_VERSION;
 pub const SUI_CLOCK_OBJECT_SHARED_VERSION: SequenceNumber = OBJECT_START_VERSION;
 

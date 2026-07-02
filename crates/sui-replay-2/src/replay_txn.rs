@@ -12,7 +12,7 @@
 
 use crate::{
     artifacts::{Artifact, ArtifactManager, MoveCallInfo, ReplayCacheSummary},
-    execution::{ReplayExecutor, execute_transaction_to_effects},
+    execution::{ReplayExecutor, execute_transaction_to_effects, load_system_packages},
     tracing::save_trace_output,
 };
 use anyhow::{Context, Error, Result, anyhow, bail};
@@ -70,13 +70,16 @@ impl ExecutorProvider {
         &mut self,
         epoch: u64,
         epoch_store: &dyn EpochStore,
+        object_store: &dyn ObjectStore,
+        checkpoint: u64,
     ) -> anyhow::Result<ReplayExecutor> {
         let protocol_config = epoch_store
             .protocol_config(epoch)?
             .ok_or_else(|| anyhow!("Protocol config missing for epoch {}", epoch))?;
 
         if !self.cache_enabled {
-            return ReplayExecutor::new(protocol_config);
+            let system_packages = load_system_packages(object_store, checkpoint);
+            return ReplayExecutor::new(protocol_config, system_packages);
         }
 
         let protocol_version = protocol_config.version.as_u64();
@@ -85,7 +88,10 @@ impl ExecutorProvider {
             return Ok(executor.clone());
         }
 
-        let executor = ReplayExecutor::new(protocol_config)?;
+        // Core system packages only change on a protocol-version bump, so the packages loaded at
+        // this checkpoint are valid for every transaction sharing this cached protocol version.
+        let system_packages = load_system_packages(object_store, checkpoint);
+        let executor = ReplayExecutor::new(protocol_config, system_packages)?;
         self.cache.insert(protocol_version, executor.clone());
         Ok(executor)
     }
@@ -311,7 +317,7 @@ impl ReplayTransaction {
         //
         // get or create the executor for this epoch
         let epoch = effects.executed_epoch();
-        let executor = executor_provider.get_or_create(epoch, epoch_store)?;
+        let executor = executor_provider.get_or_create(epoch, epoch_store, object_store, checkpoint)?;
 
         debug!(op = "load_tx", phase = "end", tx_digest = %tx_digest, "load transaction");
 

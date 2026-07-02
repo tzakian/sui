@@ -44,7 +44,7 @@ use sui_types::execution_params::{
 };
 use sui_types::in_memory_storage::InMemoryStorage;
 use sui_types::message_envelope::Message;
-use sui_types::storage::{PackageObject, get_module, get_package};
+use sui_types::storage::{PackageObject, get_pinned_system_packages, get_module, get_package};
 use sui_types::transaction::GasData;
 use sui_types::transaction::TransactionKind::ProgrammableTransaction;
 use sui_types::{
@@ -976,7 +976,8 @@ impl LocalExec {
         )
         .unwrap();
         let (kind, signer, gas_data) = executable.transaction_data().execution_parts();
-        let executor = sui_execution::executor(&protocol_config, true).unwrap();
+        let system_packages = get_pinned_system_packages(&store).unwrap_or_default();
+        let executor = sui_execution::executor(&protocol_config, true, system_packages).unwrap();
         let early_execution_error = get_early_execution_error(
             executable.digest(),
             &input_objects,
@@ -2229,7 +2230,8 @@ pub fn get_executor(
         .unwrap_or(protocol_config.clone());
 
     let silent = true;
-    sui_execution::executor(&protocol_config, silent)
+    // No package store in scope here; pass empty (runtime falls back to virtual dispatch).
+    sui_execution::executor(&protocol_config, silent, vec![])
         .expect("Creating an executor should not fail here")
 }
 

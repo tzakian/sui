@@ -1331,9 +1331,12 @@ mod checked {
             temporary_store.advance_epoch_safe_mode(&params, protocol_config);
         }
 
+        // This runtime only processes the incoming system-package publish/upgrade, so it pins
+        // nothing: the pre-upgrade bytecode in the store is about to be replaced.
         let new_vm = new_move_runtime(
             all_natives(/* silent */ true, protocol_config),
             protocol_config,
+            vec![],
         )
         .expect("Failed to create new MoveRuntime");
         process_system_packages(

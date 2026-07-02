@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use move_binary_format::CompiledModule;
+use move_core_types::resolver::SerializedPackage;
 use move_trace_format::format::MoveTraceBuilder;
 use move_vm_config::verifier::{MeterConfig, VerifierConfig};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -48,7 +49,12 @@ pub(crate) struct Verifier<'m> {
 }
 
 impl Executor {
-    pub(crate) fn new(protocol_config: &ProtocolConfig, silent: bool) -> Result<Self, SuiError> {
+    pub(crate) fn new(
+        protocol_config: &ProtocolConfig,
+        silent: bool,
+        // This execution version predates pinned system packages; the old `MoveVM` ignores them.
+        _system_packages: Vec<SerializedPackage>,
+    ) -> Result<Self, SuiError> {
         Ok(Executor(Arc::new(new_move_vm(
             all_natives(silent, protocol_config),
             protocol_config,

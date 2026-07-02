@@ -160,11 +160,13 @@ use sui_types::object::{MoveObject, OBJECT_START_VERSION, Owner, PastObjectRead}
 use sui_types::signature::GenericSignature;
 use sui_types::storage::{
     BackingPackageStore, BackingStore, ObjectKey, ObjectOrTombstone, ObjectStore, WriteKind,
+    get_pinned_system_packages,
 };
 use sui_types::sui_system_state::SuiSystemStateTrait;
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait;
 use sui_types::sui_system_state::{SuiSystemState, get_sui_system_state};
 use sui_types::supported_protocol_versions::{ProtocolConfig, SupportedProtocolVersions};
+use sui_types::{TypeTag, is_system_package};
 use sui_types::{
     SUI_SYSTEM_ADDRESS,
     base_types::*,
@@ -174,7 +176,6 @@ use sui_types::{
     object::{Object, ObjectRead},
     transaction::*,
 };
-use sui_types::{TypeTag, is_system_package};
 use typed_store::TypedStoreError;
 use typed_store::rocks::StagedBatch;
 
@@ -2475,9 +2476,17 @@ impl AuthorityState {
         };
 
         // TODO see if we can spin up a VM once and reuse it
+        let system_packages = get_pinned_system_packages(self.get_backing_package_store())
+            .unwrap_or_else(|| {
+                error!(
+                    "Failed to load pinned system packages for dev-inspect, using empty package set"
+                );
+                Vec::new()
+            });
         let executor = sui_execution::executor(
             protocol_config,
             true, // silent
+            system_packages,
         )
         .expect("Creating an executor should not fail here");
 

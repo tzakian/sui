@@ -63,7 +63,7 @@ use sui_types::messages_consensus::{
 };
 use sui_types::node_role::{FullNodeSyncMode, NodeRole};
 use sui_types::signature::GenericSignature;
-use sui_types::storage::{BackingPackageStore, InputKey, ObjectStore};
+use sui_types::storage::{BackingPackageStore, InputKey, ObjectStore, get_pinned_system_packages};
 use sui_types::sui_system_state::epoch_start_sui_system_state::{
     EpochStartSystemState, EpochStartSystemStateTrait,
 };
@@ -3562,7 +3562,14 @@ impl ExecutionComponents {
         _expensive_safety_check_config: &ExpensiveSafetyCheckConfig,
     ) -> Self {
         let silent = true;
-        let executor = sui_execution::executor(protocol_config, silent)
+        // Pin the current on-chain pinned system packages into the runtime so it can inline their
+        // well-known function pointers. If any is missing from the store, fall back to an empty
+        // set (virtual dispatch) rather than failing epoch startup.
+        let system_packages = get_pinned_system_packages(&store).unwrap_or_else(|| {
+            error!("pinned system packages unavailable at epoch startup; runtime pinning disabled");
+            Vec::new()
+        });
+        let executor = sui_execution::executor(protocol_config, silent, system_packages)
             .expect("Creating an executor should not fail here");
 
         let module_cache = Arc::new(SyncModuleCache::new(ResolverWrapper::new(

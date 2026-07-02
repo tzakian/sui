@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use move_core_types::resolver::SerializedPackage;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{error::SuiResult, metrics::BytecodeVerifierMetrics};
 
@@ -23,6 +24,7 @@ mod tests;
 pub fn executor(
     protocol_config: &ProtocolConfig,
     silent: bool,
+    system_packages: Vec<SerializedPackage>,
 ) -> SuiResult<Arc<dyn Executor + Send + Sync>> {
     let version = protocol_config.execution_version_as_option().unwrap_or(0);
     Ok(match version {

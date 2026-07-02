@@ -13,7 +13,10 @@
 
 use crate::replay_txn::ReplayTransaction;
 use anyhow::{Context, Error, anyhow};
-use move_core_types::{language_storage::ModuleId, resolver::ModuleResolver};
+use move_core_types::{
+    language_storage::ModuleId,
+    resolver::{ModuleResolver, SerializedPackage},
+};
 use move_trace_format::format::MoveTraceBuilder;
 use std::{
     cell::RefCell,
@@ -23,6 +26,7 @@ use std::{
 use sui_data_store::{EpochStore, ObjectKey, ObjectStore, VersionQuery};
 use sui_execution::Executor;
 use sui_types::{
+    PINNED_SYSTEM_PACKAGE_IDS,
     base_types::{ObjectID, ObjectRef, SequenceNumber, VersionNumber},
     committee::EpochId,
     digests::TransactionDigest,
@@ -37,7 +41,7 @@ use sui_types::{
     supported_protocol_versions::ProtocolConfig,
     transaction::{CheckedInputObjects, TransactionData, TransactionDataAPI},
 };
-use tracing::{debug, debug_span, trace};
+use tracing::{debug, debug_span, trace, warn};
 
 // Executor for the replay. Created and used by `ReplayTransaction`.
 #[derive(Clone)]
@@ -190,9 +194,12 @@ pub fn execute_transaction_to_effects(
 }
 
 impl ReplayExecutor {
-    pub fn new(protocol_config: ProtocolConfig) -> Result<Self, Error> {
+    pub fn new(
+        protocol_config: ProtocolConfig,
+        system_packages: Vec<SerializedPackage>,
+    ) -> Result<Self, Error> {
         let silent = true; // disable Move debug API
-        let executor = sui_execution::executor(&protocol_config, silent)
+        let executor = sui_execution::executor(&protocol_config, silent, system_packages)
             .context("Filed to create executor. ProtocolConfig inconsistency?")?;
 
         let registry = prometheus::Registry::new();
@@ -204,6 +211,61 @@ impl ReplayExecutor {
             execution_metrics,
         })
     }
+}
+
+/// Load the pinned system packages (move-stdlib, sui-framework, sui-system) at the versions live
+/// at `checkpoint`, to be pinned into the runtime. Uses the same `AtCheckpoint` anchor as
+/// `ReplayStore::get_package_object`, so the pinned bytecode matches what execution resolves.
+/// On any missing/malformed package, logs and returns an empty set — the runtime then falls
+/// back to virtual dispatch rather than failing replay.
+pub fn load_system_packages(store: &dyn ObjectStore, checkpoint: u64) -> Vec<SerializedPackage> {
+    let keys: Vec<_> = PINNED_SYSTEM_PACKAGE_IDS
+        .iter()
+        .map(|id| ObjectKey {
+            object_id: *id,
+            version_query: VersionQuery::AtCheckpoint(checkpoint),
+        })
+        .collect();
+    let objects = match store.get_objects(&keys) {
+        Ok(objects) => objects,
+        Err(e) => {
+            warn!(
+                "failed to load system packages at checkpoint {checkpoint}: {e}; skipping runtime pinning"
+            );
+            return vec![];
+        }
+    };
+    let mut packages = Vec::with_capacity(PINNED_SYSTEM_PACKAGE_IDS.len());
+    for (idx, object) in objects.into_iter().enumerate() {
+        let id = &PINNED_SYSTEM_PACKAGE_IDS[idx];
+        let Some((object, _)) = object else {
+            warn!(
+                "system package {id} missing at checkpoint {checkpoint}; skipping runtime pinning"
+            );
+            return vec![];
+        };
+        if object.id() != *id {
+            warn!(
+                "system package {id} at checkpoint {checkpoint} has unexpected id {}; skipping runtime pinning",
+                object.id()
+            );
+            return vec![];
+        }
+        let Some(package) = object.data.try_as_package() else {
+            warn!(
+                "object {id} at checkpoint {checkpoint} is not a package; skipping runtime pinning"
+            );
+            return vec![];
+        };
+        match package.into_serialized_move_package() {
+            Ok(serialized) => packages.push(serialized),
+            Err(e) => {
+                warn!("failed to serialize system package {id}: {e}; skipping runtime pinning");
+                return vec![];
+            }
+        }
+    }
+    packages
 }
 
 //

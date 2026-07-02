@@ -17,6 +17,7 @@ use sui_types::{
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
     metrics::{BytecodeVerifierMetrics, ExecutionMetrics},
+    storage::{BackingPackageStore, get_pinned_system_packages},
     sui_system_state::{
         SuiSystemState, SuiSystemStateTrait,
         epoch_start_sui_system_state::{EpochStartSystemState, EpochStartSystemStateTrait},
@@ -40,23 +41,30 @@ pub struct EpochState {
 }
 
 impl EpochState {
-    pub fn new(system_state: SuiSystemState, chain_identifier: ChainIdentifier) -> Self {
+    pub fn new<S: BackingPackageStore>(
+        system_state: SuiSystemState,
+        chain_identifier: ChainIdentifier,
+        store: S,
+    ) -> Self {
         let protocol_config =
             ProtocolConfig::get_for_version(system_state.protocol_version().into(), Chain::Unknown);
-        Self::new_with_protocol_config(system_state, protocol_config, chain_identifier)
+        Self::new_with_protocol_config(system_state, protocol_config, chain_identifier, store)
     }
 
-    pub fn new_with_protocol_config(
+    pub fn new_with_protocol_config<S: BackingPackageStore>(
         system_state: SuiSystemState,
         protocol_config: ProtocolConfig,
         chain_identifier: ChainIdentifier,
+        store: S,
     ) -> Self {
         let epoch_start_state = system_state.into_epoch_start_state();
         let committee = epoch_start_state.get_sui_committee();
         let registry = prometheus::Registry::new();
         let execution_metrics = Arc::new(ExecutionMetrics::new(&registry));
         let bytecode_verifier_metrics = Arc::new(BytecodeVerifierMetrics::new(&registry));
-        let executor = sui_execution::executor(&protocol_config, true).unwrap();
+        let system_packages =
+            get_pinned_system_packages(store).expect("Failed to load system packages");
+        let executor = sui_execution::executor(&protocol_config, true, system_packages).unwrap();
 
         Self {
             epoch_start_state,

@@ -277,6 +277,18 @@ macro_rules! fail_point_arg {
     };
 }
 
+/// Evaluate a failpoint to a `bool` at the callsite: `true` if it is registered and its
+/// registration callback (see `register_fail_point_if`) returns `true`, otherwise `false`.
+/// Unlike `fail_point_if!`, this returns the value so callers can branch on it directly (e.g.
+/// force a code path to take its fallback in a test). Always `false` when failpoints are disabled.
+#[cfg(any(msim, fail_points))]
+#[macro_export]
+macro_rules! fail_point_bool {
+    ($tag: expr) => {
+        $crate::handle_fail_point_if($tag)
+    };
+}
+
 #[cfg(not(any(msim, fail_points)))]
 #[macro_export]
 macro_rules! fail_point {
@@ -299,6 +311,14 @@ macro_rules! fail_point_if {
 #[macro_export]
 macro_rules! fail_point_arg {
     ($tag: expr, $callback: expr) => {};
+}
+
+#[cfg(not(any(msim, fail_points)))]
+#[macro_export]
+macro_rules! fail_point_bool {
+    ($tag: expr) => {
+        false
+    };
 }
 
 /// Use to write INFO level logs only when REPLAY_LOG

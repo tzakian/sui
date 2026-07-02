@@ -68,7 +68,9 @@ impl<R: Reader + Send + Sync> RpcStoreReader<R> {
             return Ok(None);
         };
 
-        let executor = sui_execution::executor(&protocol_config, /* silent */ true)
+        // Executor only used for type loading -- no use in passing system
+        // packages for direct calls here.
+        let executor = sui_execution::executor(&protocol_config, /* silent */ true, vec![])
             .map_err(StorageError::custom)?;
 
         let backing = PackageStoreOverObjects {

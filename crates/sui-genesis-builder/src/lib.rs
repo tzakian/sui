@@ -37,7 +37,6 @@ use sui_types::governance::StakedSui;
 use sui_types::id::UID;
 use sui_types::in_memory_storage::InMemoryStorage;
 use sui_types::inner_temporary_store::InnerTemporaryStore;
-use sui_types::is_system_package;
 use sui_types::message_envelope::Message;
 use sui_types::messages_checkpoint::{
     CertifiedCheckpointSummary, CheckpointContents, CheckpointSummary,
@@ -49,6 +48,7 @@ use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::sui_system_state::{SuiSystemState, SuiSystemStateTrait, get_sui_system_state};
 use sui_types::transaction::{CallArg, CheckedInputObjects, Transaction};
 use sui_types::{BRIDGE_ADDRESS, SUI_BRIDGE_OBJECT_ID, SUI_FRAMEWORK_ADDRESS, SUI_SYSTEM_ADDRESS};
+use sui_types::{PINNED_SYSTEM_PACKAGE_IDS, is_system_package};
 use tracing::trace;
 use validator_info::{GenesisValidatorInfo, GenesisValidatorMetadata, ValidatorInfo};
 
@@ -879,6 +879,19 @@ fn create_genesis_transaction(
     TransactionEvents,
     Vec<Object>,
 ) {
+    let system_packages = PINNED_SYSTEM_PACKAGE_IDS
+        .iter()
+        .map(|id| {
+            objects.iter().find(|o| o.id() == *id).map(|o| {
+                o.data
+                    .try_as_package()
+                    .unwrap()
+                    .into_serialized_move_package()
+                    .unwrap()
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap();
     let genesis_transaction = {
         let genesis_objects = objects
             .into_iter()
@@ -911,7 +924,7 @@ fn create_genesis_transaction(
     let (effects, events, objects) = {
         let silent = true;
 
-        let executor = sui_execution::executor(protocol_config, silent)
+        let executor = sui_execution::executor(protocol_config, silent, system_packages)
             .expect("Creating an executor should not fail here");
 
         let expensive_checks = false;
@@ -971,8 +984,21 @@ fn create_genesis_objects(
         Chain::Unknown,
     );
 
+    let core_system_packages = PINNED_SYSTEM_PACKAGE_IDS
+        .iter()
+        .map(|id| {
+            system_packages
+                .iter()
+                .find(|p| p.id == *id)
+                .expect("System package must be present")
+                .genesis_move_package()
+                .into_serialized_move_package()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+
     let silent = true;
-    let executor = sui_execution::executor(&protocol_config, silent)
+    let executor = sui_execution::executor(&protocol_config, silent, core_system_packages)
         .expect("Creating an executor should not fail here");
 
     for system_package in system_packages.into_iter() {

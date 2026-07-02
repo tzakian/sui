@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use move_core_types::resolver::SerializedPackage;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{error::SuiResult, metrics::BytecodeVerifierMetrics};
 
@@ -26,18 +27,23 @@ mod tests;
 pub fn executor(
     protocol_config: &ProtocolConfig,
     silent: bool,
+    system_packages: Vec<SerializedPackage>,
 ) -> SuiResult<Arc<dyn Executor + Send + Sync>> {
     let version = protocol_config.execution_version_as_option().unwrap_or(0);
     Ok(match version {
-        0 => Arc::new(v0::Executor::new(protocol_config, silent)?),
+        0 => Arc::new(v0::Executor::new(protocol_config, silent, system_packages)?),
 
-        1 => Arc::new(v1::Executor::new(protocol_config, silent)?),
+        1 => Arc::new(v1::Executor::new(protocol_config, silent, system_packages)?),
 
-        2 => Arc::new(v2::Executor::new(protocol_config, silent)?),
+        2 => Arc::new(v2::Executor::new(protocol_config, silent, system_packages)?),
 
-        3 => Arc::new(v3::Executor::new(protocol_config, silent)?),
+        3 => Arc::new(v3::Executor::new(protocol_config, silent, system_packages)?),
 
-        4 => Arc::new(latest::Executor::new(protocol_config, silent)?),
+        4 => Arc::new(latest::Executor::new(
+            protocol_config,
+            silent,
+            system_packages,
+        )?),
 
         v => panic!("Unsupported execution version {v}"),
     })
