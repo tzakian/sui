@@ -40,6 +40,44 @@ async fn basic_reconfig_end_to_end_test() {
     test_cluster.trigger_reconfiguration().await;
 }
 
+// The executor pins the pinned system packages into the Move runtime at construction. When that
+// load fails, the runtime falls back to virtual dispatch rather than failing epoch startup. This
+// test forces that failure (via a fail point) on every executor construction — at node startup
+// and on each epoch change — and verifies the network still starts, reconfigures, and executes
+// transactions in both the initial and the new epoch.
+#[sim_test]
+async fn test_reconfig_with_missing_system_packages() {
+    use sui_macros::register_fail_point_if;
+
+    register_fail_point_if("skip_system_packages_loading", || true);
+
+    let test_cluster = TestClusterBuilder::new()
+        .with_epoch_duration_ms(10000)
+        .build()
+        .await;
+
+    let sender = test_cluster.get_address_0();
+
+    // Execute a transaction with the epoch-0 executor (built without pinned system packages).
+    test_cluster
+        .transfer_sui_must_exceed(sender, sender, 1)
+        .await;
+
+    // Reconfiguration rebuilds the executor for the next epoch, again without pinned packages.
+    // If executor construction paniced on the empty package set, this would hang / fail.
+    test_cluster.trigger_reconfiguration().await;
+    let epoch = test_cluster
+        .fullnode_handle
+        .sui_node
+        .with(|node| node.state().current_epoch_for_testing());
+    assert!(epoch >= 1, "epoch should have advanced past genesis");
+
+    // Execution still works in the new epoch.
+    test_cluster
+        .transfer_sui_must_exceed(sender, sender, 1)
+        .await;
+}
+
 #[sim_test]
 async fn test_transaction_expiration() {
     let test_cluster = TestClusterBuilder::new().build().await;
