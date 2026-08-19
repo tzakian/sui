@@ -25,9 +25,19 @@ public use fun published_package as Publisher.package;
 /// authorizes upgrades for.
 public use fun upgrade_package as UpgradeCap.package;
 
-/// Allows calling `.policy` to access the most permissive kind of
-/// upgrade this cap will authorize.
+/// Allows calling `.policy` to access the base compatibility policy
+/// this cap will authorize.
 public use fun upgrade_policy as UpgradeCap.policy;
+
+/// Allows calling `.minversion_available` to check whether this cap can enroll in minversion.
+public use fun minversion_available as UpgradeCap.minversion_available;
+
+/// Allows calling `.minversion_enabled` to check whether this cap is enrolled in minversion.
+public use fun minversion_enabled as UpgradeCap.minversion_enabled;
+
+/// Allows calling `.minversion_permanently_disabled` to check whether this cap can never enroll
+/// in minversion.
+public use fun minversion_permanently_disabled as UpgradeCap.minversion_permanently_disabled;
 
 /// Allows calling `.authorize` to initiate an upgrade.
 public use fun authorize_upgrade as UpgradeCap.authorize;
@@ -81,6 +91,17 @@ const COMPATIBLE: u8 = 0;
 const ADDITIVE: u8 = 128;
 /// Only be able to change dependencies.
 const DEP_ONLY: u8 = 192;
+
+/// Mask for the base compatibility policy in an `UpgradeCap` policy.
+const BASE_POLICY_MASK: u8 = 0xc0;
+/// Mask for the minversion state in an `UpgradeCap` policy.
+const MINVERSION_STATE_MASK: u8 = 0x30;
+/// Minversion is not enabled and can still be enabled.
+const MINVERSION_AVAILABLE: u8 = 0x00;
+/// Minversion is not enabled and can never be enabled.
+const MINVERSION_PERMANENTLY_DISABLED: u8 = 0x10;
+/// Minversion is enabled.
+const MINVERSION_ENABLED: u8 = 0x20;
 
 /// This type can only be created in the transaction that
 /// generates a module, by consuming its one-time witness, so it
@@ -204,10 +225,24 @@ public fun version(cap: &UpgradeCap): u64 {
     cap.version
 }
 
-/// The most permissive kind of upgrade currently supported by this
-/// `cap`.
+/// The base compatibility policy currently supported by this `cap`.
 public fun upgrade_policy(cap: &UpgradeCap): u8 {
-    cap.policy
+    cap.policy & BASE_POLICY_MASK
+}
+
+/// Whether this `cap` can enroll in minversion.
+public fun minversion_available(cap: &UpgradeCap): bool {
+    (cap.policy & MINVERSION_STATE_MASK) == MINVERSION_AVAILABLE
+}
+
+/// Whether this `cap` is enrolled in minversion.
+public fun minversion_enabled(cap: &UpgradeCap): bool {
+    (cap.policy & MINVERSION_STATE_MASK) == MINVERSION_ENABLED
+}
+
+/// Whether this `cap` cannot be enrolled in minversion.
+public fun minversion_permanently_disabled(cap: &UpgradeCap): bool {
+    (cap.policy & MINVERSION_STATE_MASK) == MINVERSION_PERMANENTLY_DISABLED
 }
 
 /// The package that this ticket is authorized to upgrade

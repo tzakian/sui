@@ -5,7 +5,7 @@ use crate::base_types::{EpochId, ObjectID};
 use crate::config::{Config, get_config_from_store, read_config_setting};
 use crate::dynamic_field::DOFWrapper;
 use crate::storage::ObjectStore;
-use crate::{MoveTypeTagTrait, SUI_FRAMEWORK_PACKAGE_ID, SUI_PACKAGE_CONFIG_OBJECT_ID};
+use crate::{MoveTypeTagTrait, SUI_FRAMEWORK_PACKAGE_ID, SUI_PACKAGE_CONFIG_OBJECT_ID, id::ID};
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::language_storage::{StructTag, TypeTag};
@@ -91,6 +91,38 @@ impl MoveTypeTagTrait for GlobalPauseKey {
     fn get_type_tag() -> TypeTag {
         TypeTag::Struct(Box::new(Self::type_()))
     }
+}
+
+/// Rust representation of the Move type 0x2::package_config::MinVersionKey.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MinVersionKey();
+
+impl MinVersionKey {
+    pub fn new() -> Self {
+        Self()
+    }
+
+    pub fn type_() -> StructTag {
+        StructTag {
+            address: SUI_FRAMEWORK_PACKAGE_ID.into(),
+            module: PACKAGE_CONFIG_MODULE_NAME.to_owned(),
+            name: ident_str!("MinVersionKey").to_owned(),
+            type_params: vec![],
+        }
+    }
+}
+
+impl MoveTypeTagTrait for MinVersionKey {
+    fn get_type_tag() -> TypeTag {
+        TypeTag::Struct(Box::new(Self::type_()))
+    }
+}
+
+/// Rust representation of the Move type 0x2::package_config::MinVersion.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct MinVersion {
+    pub version: u64,
+    pub package_id: ID,
 }
 
 /// Returns the per-package config for `original_id`, if it exists and can be decoded.

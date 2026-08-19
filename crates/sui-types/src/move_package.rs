@@ -129,7 +129,7 @@ pub struct MovePackage {
 // associated constants before storing in any serialization setting.
 /// Rust representation of upgrade policy constants in `sui::package`.
 #[repr(u8)]
-#[derive(derive_more::Display, Debug, Clone, Copy)]
+#[derive(derive_more::Display, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpgradePolicy {
     #[display("COMPATIBLE")]
     Compatible = 0,
@@ -159,6 +159,59 @@ impl TryFrom<u8> for UpgradePolicy {
             x if x == Self::DepOnly as u8 => Ok(Self::DepOnly),
             _ => Err(()),
         }
+    }
+}
+
+const BASE_POLICY_MASK: u8 = 0xc0;
+const MINVERSION_STATE_MASK: u8 = 0x30;
+const RESERVED_POLICY_MASK: u8 = 0x0f;
+
+/// The minversion state encoded in an `UpgradeCap` policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinVersionState {
+    Available,
+    PermanentlyDisabled,
+    Enabled,
+}
+
+/// Decoded `UpgradeCap` policy. Its packed `u8` representation is retained in the on-chain
+/// `UpgradeCap` object for layout compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpgradeCapPolicy {
+    base_policy: UpgradePolicy,
+    minversion_state: MinVersionState,
+}
+
+impl UpgradeCapPolicy {
+    pub fn base_policy(self) -> UpgradePolicy {
+        self.base_policy
+    }
+
+    pub fn minversion_state(self) -> MinVersionState {
+        self.minversion_state
+    }
+}
+
+impl TryFrom<u8> for UpgradeCapPolicy {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value & RESERVED_POLICY_MASK != 0 {
+            return Err(());
+        }
+
+        let base_policy = UpgradePolicy::try_from(value & BASE_POLICY_MASK)?;
+        let minversion_state = match value & MINVERSION_STATE_MASK {
+            0x00 => MinVersionState::Available,
+            0x10 => MinVersionState::PermanentlyDisabled,
+            0x20 => MinVersionState::Enabled,
+            _ => return Err(()),
+        };
+
+        Ok(Self {
+            base_policy,
+            minversion_state,
+        })
     }
 }
 
@@ -620,6 +673,11 @@ impl MovePackage {
 }
 
 impl UpgradeCap {
+    /// Decodes the packed compatibility policy and minversion state.
+    pub fn decoded_policy(&self) -> Result<UpgradeCapPolicy, ()> {
+        self.policy.try_into()
+    }
+
     pub fn type_() -> StructTag {
         StructTag {
             address: SUI_FRAMEWORK_ADDRESS,
@@ -637,6 +695,49 @@ impl UpgradeCap {
             package: ID::new(package_id),
             version: 1,
             policy: UpgradePolicy::COMPATIBLE,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MinVersionState, UpgradeCapPolicy, UpgradePolicy};
+
+    #[test]
+    fn upgrade_cap_policy_decodes_all_valid_states() {
+        for (value, base_policy, minversion_state) in [
+            (0x00, UpgradePolicy::Compatible, MinVersionState::Available),
+            (
+                0x10,
+                UpgradePolicy::Compatible,
+                MinVersionState::PermanentlyDisabled,
+            ),
+            (0x20, UpgradePolicy::Compatible, MinVersionState::Enabled),
+            (0x80, UpgradePolicy::Additive, MinVersionState::Available),
+            (
+                0x90,
+                UpgradePolicy::Additive,
+                MinVersionState::PermanentlyDisabled,
+            ),
+            (0xa0, UpgradePolicy::Additive, MinVersionState::Enabled),
+            (0xc0, UpgradePolicy::DepOnly, MinVersionState::Available),
+            (
+                0xd0,
+                UpgradePolicy::DepOnly,
+                MinVersionState::PermanentlyDisabled,
+            ),
+            (0xe0, UpgradePolicy::DepOnly, MinVersionState::Enabled),
+        ] {
+            let decoded = UpgradeCapPolicy::try_from(value).unwrap();
+            assert_eq!(decoded.base_policy(), base_policy);
+            assert_eq!(decoded.minversion_state(), minversion_state);
+        }
+    }
+
+    #[test]
+    fn upgrade_cap_policy_rejects_reserved_bits() {
+        for value in [0x01, 0x0f, 0x30, 0x31, 0xf0] {
+            assert!(UpgradeCapPolicy::try_from(value).is_err());
         }
     }
 }

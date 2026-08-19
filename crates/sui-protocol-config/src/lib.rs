@@ -387,6 +387,7 @@ const MAINNET_USDB: &str =
 //              Enable allowed_proposers on devnet.
 //              Enable package-version forbid lists.
 //              Enable package pauses.
+//              Reserve the package minversion feature flag.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
@@ -779,6 +780,10 @@ struct FeatureFlags {
     // If true, enable package global pauses.
     #[serde(skip_serializing_if = "is_false")]
     enable_package_global_pause: bool,
+
+    // If true, enable package minversion.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_package_minversion: bool,
 
     // If true, enable the coin deny list V2.
     #[serde(skip_serializing_if = "is_false")]
@@ -4658,6 +4663,7 @@ impl ProtocolConfig {
                     cfg.feature_flags.enable_package_version_forbid_list = true;
                     cfg.feature_flags.enable_package_global_pause = true;
                 }
+                134 => {}
                 // Use this template when making changes:
                 //
                 //     // modify an existing constant.

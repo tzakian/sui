@@ -39,6 +39,15 @@ public struct VersionForbiddenKey(u64) has copy, drop, store;
 /// Setting key used to store the global-pause value for a package family.
 public struct GlobalPauseKey() has copy, drop, store;
 
+/// Setting key used to store the stable minversion selection for a package family.
+public struct MinVersionKey() has copy, drop, store;
+
+/// The package version selected by minversion.
+public struct MinVersion has copy, drop, store {
+    version: u64,
+    package_id: ID,
+}
+
 /// Trying to create the package config object when not called by the system address.
 const ENotSystemAddress: u64 = 0;
 /// The supplied version is not historical for the package controlled by the provided cap.
