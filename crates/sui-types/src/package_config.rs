@@ -3,7 +3,7 @@
 
 use crate::base_types::{EpochId, ObjectID};
 use crate::config::{Config, get_config_from_store, read_config_setting};
-use crate::dynamic_field::DOFWrapper;
+use crate::dynamic_field::{DOFWrapper, DynamicFieldKey};
 use crate::storage::ObjectStore;
 use crate::{MoveTypeTagTrait, SUI_FRAMEWORK_PACKAGE_ID, SUI_PACKAGE_CONFIG_OBJECT_ID, id::ID};
 use move_core_types::ident_str;
@@ -151,6 +151,44 @@ pub fn read_version_forbid_flags(
         VersionForbiddenKey::new(version),
         cur_epoch,
     )
+}
+
+/// Reads the stable minversion selection for `original_id`.
+///
+/// Missing package metadata or setting returns `Ok(None)`. Malformed metadata or setting returns
+/// an error so callers can reject linkage rather than silently disabling minversion.
+pub fn read_minversion(
+    original_id: ObjectID,
+    object_store: &dyn ObjectStore,
+    cur_epoch: EpochId,
+) -> crate::error::SuiResult<Option<MinVersion>> {
+    let metadata_key = DOFWrapper {
+        name: PackageMetadataKey::new(original_id),
+    };
+    let metadata_field = DynamicFieldKey(
+        SUI_PACKAGE_CONFIG_OBJECT_ID,
+        metadata_key,
+        DOFWrapper::<PackageMetadataKey>::get_type_tag(),
+    )
+    .into_unbounded_id()?;
+    let Some(metadata_field) = metadata_field.load_object(object_store) else {
+        return Ok(None);
+    };
+    let config: Config = metadata_field.load_value()?;
+
+    let setting_key = MinVersionKey::new();
+    let setting_field = DynamicFieldKey(
+        *config.id.object_id(),
+        setting_key.clone(),
+        MinVersionKey::get_type_tag(),
+    )
+    .into_unbounded_id()?;
+    let Some(setting_field) = setting_field.load_object(object_store) else {
+        return Ok(None);
+    };
+    let setting: crate::config::Setting<MinVersion> = setting_field.load_value()?;
+
+    Ok(setting.read_value(Some(cur_epoch)).cloned())
 }
 
 /// Returns whether the package family identified by `original_id` is globally paused. Missing

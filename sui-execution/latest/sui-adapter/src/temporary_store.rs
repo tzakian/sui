@@ -25,11 +25,12 @@ use sui_types::execution::{
 use sui_types::execution_status::{ExecutionErrorKind, ExecutionStatus};
 use sui_types::inner_temporary_store::InnerTemporaryStore;
 use sui_types::object::Data;
+use sui_types::package_config::{self, MinVersion};
 use sui_types::storage::{BackingStore, DenyListResult, PackageObject};
 use sui_types::sui_system_state::{AdvanceEpochParams, get_sui_system_state_wrapper};
 use sui_types::transaction::{GasData, TransactionKind};
 use sui_types::{
-    SUI_DENY_LIST_OBJECT_ID,
+    SUI_DENY_LIST_OBJECT_ID, SUI_PACKAGE_CONFIG_OBJECT_ID,
     base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest},
     effects::EffectsObjectChange,
     error::{ExecutionError, SuiResult},
@@ -1150,6 +1151,25 @@ impl Storage for TemporaryStore<'_> {
                 .insert(SUI_DENY_LIST_OBJECT_ID);
         }
         result
+    }
+
+    fn read_minversion(
+        &self,
+        original_id: ObjectID,
+        epoch: EpochId,
+    ) -> SuiResult<Option<MinVersion>> {
+        let minversion =
+            package_config::read_minversion(original_id, self.store.as_object_store(), epoch)?;
+        if minversion.is_some()
+            && !self
+                .input_objects
+                .contains_key(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+        {
+            self.loaded_per_epoch_config_objects
+                .write()
+                .insert(SUI_PACKAGE_CONFIG_OBJECT_ID);
+        }
+        Ok(minversion)
     }
 
     fn record_generated_object_ids(&mut self, generated_ids: BTreeSet<ObjectID>) {

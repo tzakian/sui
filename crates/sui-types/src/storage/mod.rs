@@ -18,6 +18,7 @@ use crate::execution::{DynamicallyLoadedObjectMetadata, ExecutionResults};
 use crate::full_checkpoint_content::ObjectSet;
 use crate::message_envelope::Message;
 use crate::move_package::MovePackage;
+use crate::package_config::MinVersion;
 use crate::storage::error::Error as StorageError;
 use crate::transaction::TransactionData;
 use crate::transaction::{SenderSignedData, TransactionDataAPI};
@@ -273,6 +274,18 @@ pub trait Storage {
         &self,
         receiving_funds_type_and_owners: BTreeMap<TypeTag, BTreeSet<SuiAddress>>,
     ) -> DenyListResult;
+
+    /// Read the stable minversion selection for the current epoch. Execution stores that support
+    /// minversion must track a successful read as a per-epoch config effect.
+    fn read_minversion(
+        &self,
+        _original_id: ObjectID,
+        _epoch: EpochId,
+    ) -> SuiResult<Option<MinVersion>> {
+        Err(SuiError::from(
+            "minversion is not supported by this execution store",
+        ))
+    }
 
     fn record_generated_object_ids(&mut self, generated_ids: BTreeSet<ObjectID>);
 }
