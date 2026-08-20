@@ -4,6 +4,7 @@
 #[test_only]
 module sui::package_config_tests;
 
+use sui::package;
 use sui::package_config;
 use sui::test_scenario as ts;
 
@@ -19,6 +20,65 @@ fun new_config(scenario: &mut ts::Scenario): package_config::PackageConfig {
 fun end(config: package_config::PackageConfig, scenario: ts::Scenario) {
     package_config::destroy_for_testing(config);
     scenario.end();
+}
+
+#[test]
+fun test_minversion_enrollment_records_current_package() {
+    let mut scenario = ts::begin(SENDER);
+    let mut config = new_config(&mut scenario);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    let enrollment = cap.enable_minversion_for_testing(PACKAGE_A.to_id());
+    config.record_minversion_enrollment(enrollment, scenario.ctx());
+
+    assert!(cap.minversion_enabled());
+    assert!(config
+        .minversion_version_for_next_epoch_for_testing(PACKAGE_A.to_id())
+        .destroy_some() == 1);
+    assert!(config
+        .minversion_package_for_next_epoch_for_testing(PACKAGE_A.to_id())
+        .destroy_some() == PACKAGE_A.to_id());
+
+    cap.make_immutable();
+    end(config, scenario);
+}
+
+#[test]
+fun test_minversion_upgrade_can_forbid_previous_version() {
+    let mut scenario = ts::begin(SENDER);
+    let mut config = new_config(&mut scenario);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    let enrollment = cap.enable_minversion_for_testing(PACKAGE_A.to_id());
+    config.record_minversion_enrollment(enrollment, scenario.ctx());
+
+    let ticket = cap.authorize_upgrade(package::compatible_policy(), b"digest");
+    let receipt = ticket.test_upgrade();
+    let upgrade = cap.commit_minversion_upgrade_for_testing(receipt, PACKAGE_A.to_id());
+    config.record_minversion_upgrade_and_forbid_previous(upgrade, scenario.ctx());
+
+    assert!(config
+        .minversion_version_for_next_epoch_for_testing(PACKAGE_A.to_id())
+        .destroy_some() == 2);
+    assert!(config.is_version_forbidden_for_next_epoch(PACKAGE_A.to_id(), 1));
+
+    cap.make_immutable();
+    end(config, scenario);
+}
+
+#[test, expected_failure(abort_code = sui::package::EMinVersionEnabled)]
+fun test_minversion_cap_rejects_ordinary_upgrade_commit() {
+    let mut scenario = ts::begin(SENDER);
+    let mut config = new_config(&mut scenario);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    let enrollment = cap.enable_minversion_for_testing(PACKAGE_A.to_id());
+    config.record_minversion_enrollment(enrollment, scenario.ctx());
+
+    let ticket = cap.authorize_upgrade(package::compatible_policy(), b"digest");
+    let receipt = ticket.test_upgrade();
+    cap.commit_upgrade(receipt);
+    abort
 }
 
 #[test]

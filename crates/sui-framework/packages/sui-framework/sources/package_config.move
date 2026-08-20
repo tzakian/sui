@@ -19,7 +19,7 @@ module sui::package_config;
 
 use sui::config::{Self, Config};
 use sui::dynamic_object_field as ofield;
-use sui::package::{Self, UpgradeCap};
+use sui::package::{Self, MinVersionEnrollment, MinVersionUpgrade, UpgradeCap};
 
 /// A shared singleton that stores per-package configuration metadata.
 public struct PackageConfig has key {
@@ -129,6 +129,40 @@ public(package) fun is_global_pause_enabled_for_next_epoch(
         .destroy_or!(false)
 }
 
+/// Record the pending minversion selection created when an `UpgradeCap` is enrolled.
+public fun record_minversion_enrollment(
+    package_config: &mut PackageConfig,
+    enrollment: MinVersionEnrollment,
+    ctx: &mut TxContext,
+) {
+    let (original_id, version, package_id) = package::minversion_enrollment_info(enrollment);
+    package_config.record_minversion_impl(original_id, version, package_id, ctx);
+}
+
+/// Record the pending minversion selection created when an enrolled package is upgraded.
+public fun record_minversion_upgrade(
+    package_config: &mut PackageConfig,
+    upgrade: MinVersionUpgrade,
+    ctx: &mut TxContext,
+) {
+    let (original_id, _previous_version, version, package_id) =
+        package::minversion_upgrade_info(upgrade);
+    package_config.record_minversion_impl(original_id, version, package_id, ctx);
+}
+
+/// Record an enrolled package upgrade's pending minversion selection and forbid the version it
+/// replaced.
+public fun record_minversion_upgrade_and_forbid_previous(
+    package_config: &mut PackageConfig,
+    upgrade: MinVersionUpgrade,
+    ctx: &mut TxContext,
+) {
+    let (original_id, previous_version, version, package_id) =
+        package::minversion_upgrade_info(upgrade);
+    package_config.record_minversion_impl(original_id, version, package_id, ctx);
+    package_config.forbid_version_impl(original_id, previous_version, ctx);
+}
+
 #[allow(unused_function)]
 fun create(ctx: &TxContext) {
     assert!(ctx.sender() == @0x0, ENotSystemAddress);
@@ -206,6 +240,29 @@ fun disable_global_pause_impl(
     );
 }
 
+fun record_minversion_impl(
+    package_config: &mut PackageConfig,
+    original_id: ID,
+    version: u64,
+    package_id: ID,
+    ctx: &mut TxContext,
+) {
+    let config = package_config.per_package_config_entry!(original_id, ctx);
+    config.update!(
+        &mut PackageConfigCap(),
+        MinVersionKey(),
+        |_package_config, _cap, _ctx| MinVersion {
+            version,
+            package_id,
+        },
+        |_old_value, value| *value = MinVersion {
+            version,
+            package_id,
+        },
+        ctx,
+    );
+}
+
 fun cap_package_info(cap: &UpgradeCap): (ID, u64) {
     (cap.original_package_id(), package::version(cap))
 }
@@ -258,6 +315,30 @@ public(package) fun create_for_testing(ctx: &TxContext) {
 public(package) fun destroy_for_testing(package_config: PackageConfig) {
     let PackageConfig { id } = package_config;
     id.delete();
+}
+
+#[mode(test)]
+public(package) fun minversion_version_for_next_epoch_for_testing(
+    package_config: &PackageConfig,
+    original_id: ID,
+): Option<u64> {
+    if (!package_config.per_package_metadata_exists(original_id)) return option::none();
+    let config = package_config.borrow_per_package_config(original_id);
+    let minversion = config.read_setting_for_next_epoch<_, _, MinVersion>(MinVersionKey());
+    if (minversion.is_none()) return option::none();
+    option::some(minversion.destroy_some().version)
+}
+
+#[mode(test)]
+public(package) fun minversion_package_for_next_epoch_for_testing(
+    package_config: &PackageConfig,
+    original_id: ID,
+): Option<ID> {
+    if (!package_config.per_package_metadata_exists(original_id)) return option::none();
+    let config = package_config.borrow_per_package_config(original_id);
+    let minversion = config.read_setting_for_next_epoch<_, _, MinVersion>(MinVersionKey());
+    if (minversion.is_none()) return option::none();
+    option::some(minversion.destroy_some().package_id)
 }
 
 #[mode(test)]
