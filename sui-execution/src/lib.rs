@@ -8,7 +8,7 @@ use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     error::SuiResult,
     metrics::BytecodeVerifierMetrics,
-    storage::BackingPackageStore,
+    storage::BackingStore,
     transaction::{ProgrammableTransaction, UnifiedLinkageInformation},
 };
 
@@ -67,7 +67,8 @@ pub fn verifier<'m>(
 pub fn collect_unification_information_for_signing(
     protocol_config: &ProtocolConfig,
     pt: &ProgrammableTransaction,
-    package_store: &dyn BackingPackageStore,
+    backing_store: &dyn BackingStore,
+    epoch: sui_types::base_types::EpochId,
 ) -> SuiResult<UnifiedLinkageInformation> {
     if !protocol_config.enable_unified_linkage() {
         return Ok(UnifiedLinkageInformation::default());
@@ -75,13 +76,36 @@ pub fn collect_unification_information_for_signing(
 
     let version = protocol_config.execution_version_as_option().unwrap_or(0);
     match version {
-        0 => v0::collect_unification_information_for_signing(protocol_config, pt, package_store),
-        1 => v1::collect_unification_information_for_signing(protocol_config, pt, package_store),
-        2 => v2::collect_unification_information_for_signing(protocol_config, pt, package_store),
-        3 => v3::collect_unification_information_for_signing(protocol_config, pt, package_store),
-        4 => {
-            latest::collect_unification_information_for_signing(protocol_config, pt, package_store)
-        }
+        0 => v0::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+            epoch,
+        ),
+        1 => v1::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+            epoch,
+        ),
+        2 => v2::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+            epoch,
+        ),
+        3 => v3::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+            epoch,
+        ),
+        4 => latest::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+            epoch,
+        ),
         v => panic!("Unsupported execution version {v}"),
     }
 }

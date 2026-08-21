@@ -147,6 +147,7 @@ impl EpochState {
             &self.bytecode_verifier_metrics,
             verifier_signing_config,
             store.backing_store(),
+            self.epoch_start_state.epoch(),
         )?;
 
         let transaction_data = transaction.data().transaction_data();

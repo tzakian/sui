@@ -1184,6 +1184,7 @@ impl AuthorityState {
             &self.metrics.bytecode_verifier_metrics,
             &self.config.verifier_signing_config,
             self.get_backing_store().as_ref(),
+            epoch_store.epoch(),
         )?;
 
         self.handle_coin_deny_list_checks(
@@ -2577,6 +2578,7 @@ impl AuthorityState {
                 &self.metrics.bytecode_verifier_metrics,
                 &self.config.verifier_signing_config,
                 self.get_backing_store().as_ref(),
+                epoch_store.epoch(),
             )?
         };
 

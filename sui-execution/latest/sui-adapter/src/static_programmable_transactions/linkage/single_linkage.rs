@@ -7,7 +7,7 @@ use crate::{
         linkage::{
             analysis::LinkageAnalyzer,
             facts::{LinkageCommandFacts, LinkageFacts, ModuleInitFacts},
-            resolution::{ResolutionTable, VersionConstraint, add_and_unify, get_package},
+            resolution::{ConstraintKind, LinkageStoreResolver, ResolutionTable, get_package},
             resolved_linkage::{ExecutableLinkage, ResolvedLinkage},
         },
         loading::ast::{Command, DeserializedPackage, PackagePayload, Transaction},
@@ -20,6 +20,7 @@ use sui_types::{
     base_types::ObjectID,
     error::ExecutionErrorTrait,
     execution_status::{ExecutionErrorKind, PackageUpgradeError},
+    package_config::MinVersion,
 };
 use sui_verifier::INIT_FN_NAME;
 
@@ -44,6 +45,7 @@ pub fn refine_to_single_linkage<E: ExecutionErrorTrait>(
     linkage_analysis: &LinkageAnalyzer,
     package_store: &VerifiedPackageStore<'_>,
     protocol_config: &ProtocolConfig,
+    minversion_resolver: Option<&dyn Fn(ObjectID) -> Result<Option<MinVersion>, E>>,
 ) -> Result<(), E> {
     let facts = txn
         .commands
@@ -59,6 +61,7 @@ pub fn refine_to_single_linkage<E: ExecutionErrorTrait>(
         package_store,
         protocol_config,
         None,
+        minversion_resolver,
     )?;
     let resolved_linkage = ExecutableLinkage::new(ResolvedLinkage::from_resolution_table(linkage));
 
@@ -148,10 +151,13 @@ pub(crate) fn compute_unified_linkage<E: ExecutionErrorTrait, S: PackageStore + 
     package_store: &S,
     protocol_config: &ProtocolConfig,
     mut execution_original_ids: Option<&mut BTreeSet<ObjectID>>,
+    minversion_resolver: Option<&dyn Fn(ObjectID) -> Result<Option<MinVersion>, E>>,
 ) -> Result<ResolutionTable, E> {
     let mut base_linkage = linkage_analysis
         .config()
         .resolution_table_with_native_packages::<E, _>(package_store)?;
+    // Share selected-package and minversion-setting cache across all transaction commands.
+    let mut resolver = LinkageStoreResolver::new(package_store, minversion_resolver);
 
     let (deferred_upgrades, facts): (Vec<_>, Vec<_>) =
         facts.into_iter().enumerate().partition(|(_, facts)| {
@@ -164,12 +170,12 @@ pub(crate) fn compute_unified_linkage<E: ExecutionErrorTrait, S: PackageStore + 
             collect_execution_original_ids::<E, S>(
                 &facts,
                 &base_linkage,
-                package_store,
                 original_ids,
+                &mut resolver,
             )
             .map_err(|e| e.with_command_index(i))?;
         }
-        analyze_command::<E, S>(facts, &mut base_linkage, package_store, protocol_config)
+        analyze_command::<E, S>(facts, &mut base_linkage, protocol_config, &mut resolver)
             .map_err(|e| e.with_command_index(i))?;
     }
 
@@ -179,24 +185,22 @@ pub(crate) fn compute_unified_linkage<E: ExecutionErrorTrait, S: PackageStore + 
 pub(crate) fn collect_execution_original_ids<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     facts: &LinkageCommandFacts,
     resolution_table: &ResolutionTable,
-    store: &S,
     original_ids: &mut BTreeSet<ObjectID>,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
     match facts {
         LinkageCommandFacts::MoveCall { package, .. } => {
-            let package = get_package(package, store)?;
-            original_ids.insert(package.original_id());
-            original_ids.extend(
-                resolution_table
-                    .config
-                    .linkage_table(&package)
-                    .into_keys()
-                    .map(ObjectID::from),
-            );
+            resolver.collect_original_ids(resolution_table, *package, original_ids)?;
         }
         LinkageCommandFacts::Publish { linkage, .. }
         | LinkageCommandFacts::Upgrade { linkage, .. } => {
-            original_ids.extend(linkage.keys().copied());
+            for package_id in linkage.values() {
+                resolver.collect_original_ids(
+                    resolution_table,
+                    ObjectID::from(*package_id),
+                    original_ids,
+                )?;
+            }
         }
         LinkageCommandFacts::MakeMoveVec { .. } | LinkageCommandFacts::Noop => (),
     }
@@ -208,8 +212,8 @@ pub(crate) fn collect_execution_original_ids<E: ExecutionErrorTrait, S: PackageS
 fn analyze_command<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     facts: LinkageCommandFacts,
     resolution_table: &mut ResolutionTable,
-    store: &S,
     protocol_config: &ProtocolConfig,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
     match facts {
         LinkageCommandFacts::MoveCall {
@@ -222,7 +226,7 @@ fn analyze_command<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
                 &package,
                 visibility,
                 type_defining_ids,
-                store,
+                resolver,
             )?;
         }
         LinkageCommandFacts::Publish { has_init, linkage } => {
@@ -237,7 +241,7 @@ fn analyze_command<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
             //
             // Published modules are guaranteed non-empty by package deserialization.
             if has_init {
-                add_exact_linkage_to_table::<E, S>(resolution_table, &linkage, store)?;
+                add_exact_linkage_to_table::<E, S>(resolution_table, &linkage, resolver)?;
             }
         }
         LinkageCommandFacts::Upgrade {
@@ -264,12 +268,12 @@ fn analyze_command<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
                     resolution_table,
                     &current_package_id,
                     &linkage,
-                    store,
+                    resolver,
                 )?;
             }
         }
         LinkageCommandFacts::MakeMoveVec { type_defining_ids } => {
-            add_type_package_ids::<E, S>(resolution_table, type_defining_ids, store)?;
+            add_type_package_ids::<E, S>(resolution_table, type_defining_ids, resolver)?;
         }
         LinkageCommandFacts::Noop => (),
     }
@@ -286,10 +290,15 @@ fn module_has_init(module: &CompiledModule) -> bool {
 fn add_exact_linkage_to_table<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     resolution_table: &mut ResolutionTable,
     linkage: &LinkageFacts,
-    store: &S,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
     for resolved in linkage.values() {
-        add_and_unify(resolved, store, resolution_table, VersionConstraint::exact)?;
+        resolver.resolve_package(
+            resolution_table,
+            *resolved,
+            ConstraintKind::Exact,
+            ConstraintKind::Exact,
+        )?;
     }
     Ok(())
 }
@@ -346,36 +355,36 @@ fn add_upgrade_init_linkage_to_table<E: ExecutionErrorTrait, S: PackageStore + ?
     resolution_table: &mut ResolutionTable,
     current_package_id: &ObjectID,
     linkage: &LinkageFacts,
-    store: &S,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
-    let current_pkg = get_package(current_package_id, store)?;
+    let current_pkg = resolver.load_package(current_package_id)?;
     let pkg_original_id = current_pkg.original_id();
 
     if !resolution_table
         .resolution_table
         .contains_key(&pkg_original_id)
     {
-        return add_exact_linkage_to_table::<E, S>(resolution_table, linkage, store);
+        return add_exact_linkage_to_table::<E, S>(resolution_table, linkage, resolver);
     }
 
     for (original_id, version_id) in linkage {
+        let package = resolver.load_package(&ObjectID::from(*version_id))?;
+        let selected_id = package.version_id();
         match resolution_table.resolution_table.get(original_id) {
-            None => {
-                add_and_unify(
-                    version_id,
-                    store,
-                    resolution_table,
-                    VersionConstraint::exact,
-                )?;
-            }
-            Some(existing) if existing.object_id() == *version_id => (),
+            None => resolver.resolve_package(
+                resolution_table,
+                selected_id,
+                ConstraintKind::Exact,
+                ConstraintKind::Exact,
+            )?,
+            Some(existing) if existing.object_id() == selected_id => (),
             Some(existing) => {
                 return Err(E::new_with_source(
                     ExecutionErrorKind::InvalidLinkage,
                     format!(
                         "upgrade init linkage conflicts with transaction linkage: package \
                          {original_id} resolves to {} in transaction linkage, but upgrade \
-                         linkage requires {version_id}",
+                         linkage requires {selected_id}",
                         existing.object_id(),
                     ),
                 ));
@@ -397,20 +406,19 @@ fn add_call_to_table<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     package: &ObjectID,
     visibility: Visibility,
     type_defining_ids: Vec<ObjectID>,
-    store: &S,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
-    let dep_resolution_fn = match visibility {
-        Visibility::Public => VersionConstraint::at_least,
-        Visibility::Private | Visibility::Friend => VersionConstraint::exact,
+    let dependency_constraint = match visibility {
+        Visibility::Public => ConstraintKind::AtLeast,
+        Visibility::Private | Visibility::Friend => ConstraintKind::Exact,
     };
-    add_package::<E, S>(
-        package,
-        store,
+    resolver.resolve_package(
         resolution_table,
-        VersionConstraint::exact,
-        dep_resolution_fn,
+        *package,
+        ConstraintKind::Exact,
+        dependency_constraint,
     )?;
-    add_type_package_ids::<E, S>(resolution_table, type_defining_ids, store)
+    add_type_package_ids(resolution_table, type_defining_ids, resolver)
 }
 
 /// Add every type-defining package to the resolution table. Types resolve upwards to later
@@ -418,39 +426,15 @@ fn add_call_to_table<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
 fn add_type_package_ids<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     resolution_table: &mut ResolutionTable,
     type_defining_ids: impl IntoIterator<Item = ObjectID>,
-    store: &S,
+    resolver: &mut LinkageStoreResolver<'_, S, E>,
 ) -> Result<(), E> {
     for type_defining_id in type_defining_ids {
-        add_package::<E, S>(
-            &type_defining_id,
-            store,
+        resolver.resolve_package(
             resolution_table,
-            VersionConstraint::at_least,
-            VersionConstraint::at_least,
+            type_defining_id,
+            ConstraintKind::AtLeast,
+            ConstraintKind::AtLeast,
         )?;
-    }
-    Ok(())
-}
-
-/// Add a package and its transitive dependencies to the resolution table. The package itself
-/// gets `self_resolution_fn`'s constraint; every transitive dep (per the package's linkage
-/// table) gets `dep_resolution_fn`'s constraint.
-fn add_package<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
-    object_id: &ObjectID,
-    store: &S,
-    resolution_table: &mut ResolutionTable,
-    self_resolution_fn: fn(&S::Package) -> Option<VersionConstraint>,
-    dep_resolution_fn: fn(&S::Package) -> Option<VersionConstraint>,
-) -> Result<(), E> {
-    let pkg = get_package(object_id, store)?;
-    let transitive_deps = resolution_table
-        .config
-        .linkage_table(&pkg)
-        .into_values()
-        .map(ObjectID::from);
-    add_and_unify(object_id, store, resolution_table, self_resolution_fn)?;
-    for dep_id in transitive_deps {
-        add_and_unify(&dep_id, store, resolution_table, dep_resolution_fn)?;
     }
     Ok(())
 }

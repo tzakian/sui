@@ -498,8 +498,8 @@ def generate_lib(output_file: TextIO):
             return "\n".join(
                 f"{spc}{feature or version} => "
                 + (
-                    "latest::collect_unification_information_for_signing(\n"
-                    f"{spc}    protocol_config, pt, package_store,\n"
+                    f"{cut}::collect_unification_information_for_signing(\n"
+                    f"{spc}    protocol_config, pt, backing_store, epoch,\n"
                     f"{spc}),"
                 )
                 for (version, feature, cut) in cuts

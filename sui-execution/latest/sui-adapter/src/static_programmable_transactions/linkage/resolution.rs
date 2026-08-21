@@ -7,10 +7,12 @@ use crate::{
 };
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
 };
 use sui_types::base_types::ObjectID;
-use sui_types::{error::ExecutionErrorTrait, execution_status::ExecutionErrorKind};
+use sui_types::{
+    error::ExecutionErrorTrait, execution_status::ExecutionErrorKind, package_config::MinVersion,
+};
 
 /// Unifiers. These are used to determine how to unify two packages.
 #[derive(Debug, Clone)]
@@ -206,4 +208,369 @@ pub(crate) fn add_and_unify<E: ExecutionErrorTrait, S: PackageStore + ?Sized>(
     }
 
     Ok(())
+}
+
+/// The use-site constraint retained while selected packages are expanded.
+///
+/// Besides selecting the `VersionConstraint` constructor, this is part of the expansion key: an
+/// `Exact` expansion must not suppress a separate `AtLeast` expansion of the same package, or
+/// vice versa, because they impose different constraints on its dependencies.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ConstraintKind {
+    Exact,
+    AtLeast,
+}
+
+impl ConstraintKind {
+    fn resolution_fn<P: PackageMetadata>(self) -> fn(&P) -> Option<VersionConstraint> {
+        match self {
+            Self::Exact => VersionConstraint::exact,
+            Self::AtLeast => VersionConstraint::at_least,
+        }
+    }
+}
+
+/// Resolves package references and expands their direct linkage tables for one transaction.
+pub(crate) struct LinkageStoreResolver<'a, S: PackageStore + ?Sized, E> {
+    store: &'a S,
+    minversion_resolver: Option<&'a dyn Fn(ObjectID) -> Result<Option<MinVersion>, E>>,
+    minversion_cache: BTreeMap<ObjectID, Option<MinVersion>>,
+    // A package must be expanded once per package/dependency constraint pair. Constraints are
+    // unified before consulting this set, so a stricter dependency context is never discarded.
+    expanded: BTreeSet<(ObjectID, ConstraintKind, ConstraintKind)>,
+}
+
+impl<'a, S: PackageStore + ?Sized, E: ExecutionErrorTrait> LinkageStoreResolver<'a, S, E> {
+    pub(crate) fn new(
+        store: &'a S,
+        minversion_resolver: Option<&'a dyn Fn(ObjectID) -> Result<Option<MinVersion>, E>>,
+    ) -> Self {
+        Self {
+            store,
+            minversion_resolver,
+            minversion_cache: BTreeMap::new(),
+            expanded: BTreeSet::new(),
+        }
+    }
+
+    /// Resolve a package and iteratively add its selected dependency graph to the table.
+    pub(crate) fn resolve_package(
+        &mut self,
+        resolution_table: &mut ResolutionTable,
+        package_id: ObjectID,
+        package_constraint: ConstraintKind,
+        dependency_constraint: ConstraintKind,
+    ) -> Result<(), E> {
+        let mut pending = BTreeSet::from([(package_id, package_constraint, dependency_constraint)]);
+        while let Some((package_id, package_constraint, dependency_constraint)) = pending.pop_last()
+        {
+            let package = self.load_package(&package_id)?;
+            let selected_id = package.version_id();
+            add_and_unify(
+                &selected_id,
+                self.store,
+                resolution_table,
+                package_constraint.resolution_fn(),
+            )?;
+            if !self
+                .expanded
+                .insert((selected_id, package_constraint, dependency_constraint))
+            {
+                continue;
+            }
+            // The set deduplicates identical work, but retains distinct dependency constraints:
+            // each is unified above and must expand dependencies under its own context.
+            pending.extend(
+                resolution_table
+                    .config
+                    .linkage_table(&package)
+                    .into_values()
+                    .map(ObjectID::from)
+                    .map(|dependency_id| {
+                        (dependency_id, dependency_constraint, dependency_constraint)
+                    }),
+            );
+        }
+        Ok(())
+    }
+
+    /// Collect original IDs from the selected graph without applying linkage constraints.
+    pub(crate) fn collect_original_ids(
+        &mut self,
+        resolution_table: &ResolutionTable,
+        package_id: ObjectID,
+        original_ids: &mut BTreeSet<ObjectID>,
+    ) -> Result<(), E> {
+        let mut pending = vec![package_id];
+        let mut visited = BTreeSet::new();
+        while let Some(package_id) = pending.pop() {
+            let package = self.load_package(&package_id)?;
+            if !visited.insert(package.version_id()) {
+                continue;
+            }
+            original_ids.insert(package.original_id());
+            pending.extend(
+                resolution_table
+                    .config
+                    .linkage_table(&package)
+                    .into_values()
+                    .map(ObjectID::from),
+            );
+        }
+        Ok(())
+    }
+
+    /// Load a reference through its stable minversion setting, caching one setting per package family.
+    pub(crate) fn load_package(&mut self, object_id: &ObjectID) -> Result<S::Package, E> {
+        let package = get_package(object_id, self.store)?;
+        let Some(minversion_resolver) = self.minversion_resolver else {
+            return Ok(package);
+        };
+        let original_id = package.original_id();
+        let minversion = match self.minversion_cache.entry(original_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(minversion_resolver(original_id)?),
+        };
+        let Some(minversion) = minversion else {
+            return Ok(package);
+        };
+        let selected_id = minversion.package_id.bytes;
+        let selected = get_package::<E, _>(&selected_id, self.store).map_err(|error| {
+            E::new_with_source(
+                ExecutionErrorKind::InvalidLinkage,
+                format!("invalid minversion selection for package {original_id}: {error}"),
+            )
+        })?;
+        if selected.original_id() != original_id
+            || selected.version_id() != selected_id
+            || selected.version() != minversion.version
+        {
+            return Err(E::new_with_source(
+                ExecutionErrorKind::InvalidLinkage,
+                format!("invalid minversion selection for package {original_id}"),
+            ));
+        }
+        Ok(selected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::static_programmable_transactions::linkage::config::{
+        LinkageConfig, ResolutionConfig,
+    };
+    use move_binary_format::binary_config::BinaryConfig;
+    use move_core_types::identifier::IdentStr;
+    use move_vm_runtime::shared::types::{OriginalId, VersionId};
+    use std::collections::BTreeMap;
+    use sui_types::{
+        error::{ExecutionError, SuiResult},
+        id::ID,
+        package_config::MinVersion,
+    };
+
+    #[derive(Clone)]
+    struct TestPackage {
+        id: ObjectID,
+        original_id: ObjectID,
+        linkage: BTreeMap<OriginalId, VersionId>,
+    }
+
+    impl PackageMetadata for TestPackage {
+        fn version(&self) -> u64 {
+            1
+        }
+
+        fn version_id(&self) -> ObjectID {
+            self.id
+        }
+
+        fn original_id(&self) -> ObjectID {
+            self.original_id
+        }
+
+        fn linkage_table(&self) -> BTreeMap<OriginalId, VersionId> {
+            self.linkage.clone()
+        }
+    }
+
+    struct TestStore(BTreeMap<ObjectID, TestPackage>);
+
+    impl PackageStore for TestStore {
+        type Package = TestPackage;
+
+        fn get_package(&self, id: &ObjectID) -> SuiResult<Option<Self::Package>> {
+            Ok(self.0.get(id).cloned())
+        }
+
+        fn resolve_type_to_defining_id(
+            &self,
+            _module_address: ObjectID,
+            _module_name: &IdentStr,
+            _type_name: &IdentStr,
+        ) -> SuiResult<Option<ObjectID>> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn selected_package_collection_uses_selected_package_dependencies() {
+        let original_id = ObjectID::from_single_byte(1);
+        let historical_id = ObjectID::from_single_byte(10);
+        let selected_id = ObjectID::from_single_byte(12);
+        let selected_dependency = ObjectID::from_single_byte(2);
+        let store = TestStore(BTreeMap::from([
+            (
+                historical_id,
+                TestPackage {
+                    id: historical_id,
+                    original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                selected_id,
+                TestPackage {
+                    id: selected_id,
+                    original_id,
+                    linkage: BTreeMap::from([(
+                        selected_dependency.into(),
+                        selected_dependency.into(),
+                    )]),
+                },
+            ),
+            (
+                selected_dependency,
+                TestPackage {
+                    id: selected_dependency,
+                    original_id: selected_dependency,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+        ]));
+        let config =
+            ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
+        let resolution_table = ResolutionTable::empty(config);
+        let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
+            Ok((id == original_id).then_some(MinVersion {
+                version: 1,
+                package_id: ID::new(selected_id),
+            }))
+        };
+        let mut builder =
+            LinkageStoreResolver::<_, ExecutionError>::new(&store, Some(&minversion_resolver));
+        let mut original_ids = BTreeSet::new();
+
+        builder
+            .collect_original_ids(&resolution_table, historical_id, &mut original_ids)
+            .unwrap();
+
+        assert_eq!(
+            original_ids,
+            BTreeSet::from([original_id, selected_dependency])
+        );
+    }
+
+    #[test]
+    fn exact_expansion_is_not_suppressed_by_at_least_expansion() {
+        let root = ObjectID::from_single_byte(1);
+        let dependency = ObjectID::from_single_byte(2);
+        let store = TestStore(BTreeMap::from([
+            (
+                root,
+                TestPackage {
+                    id: root,
+                    original_id: root,
+                    linkage: BTreeMap::from([(dependency.into(), dependency.into())]),
+                },
+            ),
+            (
+                dependency,
+                TestPackage {
+                    id: dependency,
+                    original_id: dependency,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+        ]));
+        let config =
+            ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
+        let mut resolution_table = ResolutionTable::empty(config);
+        let mut builder = LinkageStoreResolver::<_, ExecutionError>::new(&store, None);
+
+        builder
+            .resolve_package(
+                &mut resolution_table,
+                root,
+                ConstraintKind::AtLeast,
+                ConstraintKind::AtLeast,
+            )
+            .unwrap();
+        builder
+            .resolve_package(
+                &mut resolution_table,
+                root,
+                ConstraintKind::Exact,
+                ConstraintKind::Exact,
+            )
+            .unwrap();
+
+        for package_id in [root, dependency] {
+            assert!(matches!(
+                resolution_table.resolution_table.get(&package_id),
+                Some(VersionConstraint::Exact(1, id)) if *id == package_id
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_dependency_expansion_is_not_suppressed_by_at_least_dependencies() {
+        let root = ObjectID::from_single_byte(1);
+        let dependency = ObjectID::from_single_byte(2);
+        let store = TestStore(BTreeMap::from([
+            (
+                root,
+                TestPackage {
+                    id: root,
+                    original_id: root,
+                    linkage: BTreeMap::from([(dependency.into(), dependency.into())]),
+                },
+            ),
+            (
+                dependency,
+                TestPackage {
+                    id: dependency,
+                    original_id: dependency,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+        ]));
+        let config =
+            ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
+        let mut resolution_table = ResolutionTable::empty(config);
+        let mut builder = LinkageStoreResolver::<_, ExecutionError>::new(&store, None);
+
+        builder
+            .resolve_package(
+                &mut resolution_table,
+                root,
+                ConstraintKind::Exact,
+                ConstraintKind::AtLeast,
+            )
+            .unwrap();
+        builder
+            .resolve_package(
+                &mut resolution_table,
+                root,
+                ConstraintKind::Exact,
+                ConstraintKind::Exact,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            resolution_table.resolution_table.get(&dependency),
+            Some(VersionConstraint::Exact(1, id)) if *id == dependency
+        ));
+    }
 }

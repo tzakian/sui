@@ -32,7 +32,7 @@ use sui_adapter_v3::execution_engine::{
 };
 use sui_adapter_v3::type_layout_resolver::TypeLayoutResolver;
 use sui_move_natives_v3::all_natives;
-use sui_types::storage::{BackingPackageStore, BackingStore};
+use sui_types::storage::BackingStore;
 use sui_verifier_v3::meter::SuiVerifierMeter;
 
 use crate::executor;
@@ -65,7 +65,8 @@ impl<'m> Verifier<'m> {
 pub(crate) fn collect_unification_information_for_signing(
     _protocol_config: &ProtocolConfig,
     _pt: &ProgrammableTransaction,
-    _package_store: &dyn BackingPackageStore,
+    _package_store: &dyn BackingStore,
+    _epoch: sui_types::base_types::EpochId,
 ) -> SuiResult<UnifiedLinkageInformation> {
     debug_assert!(
         false,

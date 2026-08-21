@@ -71,6 +71,8 @@ pub fn transaction<Mode: ExecutionMode>(
         env.linkage_analysis,
         env.linkable_store,
         env.protocol_config,
+        &*env.state_view,
+        tx_context.epoch(),
     )
 }
 

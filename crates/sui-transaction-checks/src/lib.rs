@@ -89,6 +89,7 @@ mod checked {
         metrics: &Arc<BytecodeVerifierMetrics>,
         verifier_signing_config: &VerifierSigningConfig,
         backing_store: &dyn BackingStore,
+        epoch: u64,
     ) -> SuiResult<(SuiGasStatus, CheckedInputObjects)> {
         let gas_status = check_transaction_input_inner(
             protocol_config,
@@ -100,7 +101,7 @@ mod checked {
 
         check_receiving_objects(&input_objects, receiving_objects)?;
 
-        check_package_configuration(transaction, protocol_config, backing_store)?;
+        check_package_configuration(transaction, protocol_config, backing_store, epoch)?;
 
         // Runs verifier, which could be expensive.
         check_non_system_packages_to_be_published(
@@ -123,6 +124,7 @@ mod checked {
         metrics: &Arc<BytecodeVerifierMetrics>,
         verifier_signing_config: &VerifierSigningConfig,
         backing_store: &dyn BackingStore,
+        epoch: u64,
     ) -> SuiResult<(SuiGasStatus, CheckedInputObjects)> {
         let gas_object_ref = gas_object.compute_object_reference();
         input_objects.push(ObjectReadResult::new_from_gas_object(&gas_object));
@@ -136,7 +138,7 @@ mod checked {
         )?;
         check_receiving_objects(&input_objects, &receiving_objects)?;
 
-        check_package_configuration(transaction, protocol_config, backing_store)?;
+        check_package_configuration(transaction, protocol_config, backing_store, epoch)?;
 
         // Runs verifier, which could be expensive.
         check_non_system_packages_to_be_published(
@@ -846,10 +848,14 @@ mod checked {
         transaction: &TransactionData,
         protocol_config: &ProtocolConfig,
         backing_store: &dyn BackingStore,
+        epoch: u64,
     ) -> SuiResult {
         let enforce_version_forbid_list = protocol_config.enable_package_version_forbid_list();
         let enforce_global_pause = protocol_config.enable_package_global_pause();
-        if !enforce_version_forbid_list && !enforce_global_pause {
+        if !enforce_version_forbid_list
+            && !enforce_global_pause
+            && !protocol_config.enable_package_minversion()
+        {
             return Ok(());
         }
 
@@ -866,6 +872,7 @@ mod checked {
             protocol_config,
             pt,
             backing_store,
+            epoch,
         )
         else {
             return Ok(());
