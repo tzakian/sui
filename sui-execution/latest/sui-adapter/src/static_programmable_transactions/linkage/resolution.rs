@@ -334,6 +334,12 @@ impl<'a, S: PackageStore + ?Sized, E: ExecutionErrorTrait> LinkageStoreResolver<
         let Some(minversion) = minversion else {
             return Ok(package);
         };
+        // Minversion only raises an older reference to the stable selection. During the
+        // epoch-delay window, an explicit reference to the just-upgraded package must not be
+        // redirected back to the current stable version.
+        if package.version() >= minversion.version {
+            return Ok(package);
+        }
         let selected_id = minversion.package_id.bytes;
         let selected = get_package::<E, _>(&selected_id, self.store).map_err(|error| {
             E::new_with_source(
@@ -379,7 +385,7 @@ mod tests {
 
     impl PackageMetadata for TestPackage {
         fn version(&self) -> u64 {
-            1
+            u64::from(self.id.into_bytes()[ObjectID::LENGTH - 1])
         }
 
         fn version_id(&self) -> ObjectID {
@@ -454,7 +460,7 @@ mod tests {
         let resolution_table = ResolutionTable::empty(config);
         let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
             Ok((id == original_id).then_some(MinVersion {
-                version: 1,
+                version: 12,
                 package_id: ID::new(selected_id),
             }))
         };
@@ -469,6 +475,61 @@ mod tests {
         assert_eq!(
             original_ids,
             BTreeSet::from([original_id, selected_dependency])
+        );
+    }
+
+    #[test]
+    fn minversion_does_not_downgrade_equal_or_newer_packages() {
+        let original_id = ObjectID::from_single_byte(1);
+        let older_id = ObjectID::from_single_byte(10);
+        let stable_id = ObjectID::from_single_byte(12);
+        let newer_id = ObjectID::from_single_byte(13);
+        let store = TestStore(BTreeMap::from([
+            (
+                older_id,
+                TestPackage {
+                    id: older_id,
+                    original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                stable_id,
+                TestPackage {
+                    id: stable_id,
+                    original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                newer_id,
+                TestPackage {
+                    id: newer_id,
+                    original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+        ]));
+        let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
+            Ok((id == original_id).then_some(MinVersion {
+                version: 12,
+                package_id: ID::new(stable_id),
+            }))
+        };
+        let mut resolver =
+            LinkageStoreResolver::<_, ExecutionError>::new(&store, Some(&minversion_resolver));
+
+        assert_eq!(
+            resolver.load_package(&older_id).unwrap().version_id(),
+            stable_id
+        );
+        assert_eq!(
+            resolver.load_package(&stable_id).unwrap().version_id(),
+            stable_id
+        );
+        assert_eq!(
+            resolver.load_package(&newer_id).unwrap().version_id(),
+            newer_id
         );
     }
 
@@ -519,7 +580,9 @@ mod tests {
         for package_id in [root, dependency] {
             assert!(matches!(
                 resolution_table.resolution_table.get(&package_id),
-                Some(VersionConstraint::Exact(1, id)) if *id == package_id
+                Some(VersionConstraint::Exact(version, id))
+                    if *version == u64::from(package_id.into_bytes()[ObjectID::LENGTH - 1])
+                        && *id == package_id
             ));
         }
     }
@@ -570,7 +633,7 @@ mod tests {
 
         assert!(matches!(
             resolution_table.resolution_table.get(&dependency),
-            Some(VersionConstraint::Exact(1, id)) if *id == dependency
+            Some(VersionConstraint::Exact(2, id)) if *id == dependency
         ));
     }
 }
