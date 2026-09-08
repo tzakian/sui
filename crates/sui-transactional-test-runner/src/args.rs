@@ -197,6 +197,9 @@ pub struct UpgradePackageCommand {
     pub policy: u8,
     #[clap(long = "gas-price")]
     pub gas_price: Option<u64>,
+    /// Complete the upgrade through the enrolled-cap minversion flow.
+    #[clap(long = "minversion", action = clap::ArgAction::SetTrue)]
+    pub minversion: bool,
 }
 
 #[derive(Debug, clap::Parser)]

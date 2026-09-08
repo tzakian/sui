@@ -158,6 +158,12 @@ public struct MinVersionEnrollment {
     package_id: ID,
 }
 
+/// Must be consumed to commit an upgrade to a minversion package.
+public struct MinVersionUpgradeAuthorization {
+    cap: ID,
+    original_id: ID,
+}
+
 /// Must be consumed to record the result of an upgrade to a minversion package.
 public struct MinVersionUpgrade {
     original_id: ID,
@@ -408,18 +414,33 @@ public fun commit_upgrade(cap: &mut UpgradeCap, receipt: UpgradeReceipt) {
     cap.commit_upgrade_impl(receipt);
 }
 
-/// Consume an `UpgradeReceipt` to update an enrolled `UpgradeCap`, producing the token required
-/// to record its pending minversion selection.
+/// Prepare an enrolled cap for upgrade while its current package can still identify its original
+/// package. The returned hot potato must be consumed by `commit_minversion_upgrade`.
+public fun prepare_minversion_upgrade(
+    cap: &UpgradeCap,
+): MinVersionUpgradeAuthorization {
+    assert!(cap.minversion_enabled(), EMinVersionUnavailable);
+    MinVersionUpgradeAuthorization {
+        cap: object::id(cap),
+        original_id: cap.original_package_id(),
+    }
+}
+
+/// Consume an `UpgradeReceipt` and its pre-authorization token to update an enrolled `UpgradeCap`,
+/// producing the token required to record its pending minversion selection.
 public fun commit_minversion_upgrade(
     cap: &mut UpgradeCap,
     receipt: UpgradeReceipt,
+    authorization: MinVersionUpgradeAuthorization,
 ): MinVersionUpgrade {
+    let MinVersionUpgradeAuthorization { cap: authorization_cap, original_id } = authorization;
+    assert!(object::id(cap) == authorization_cap, EWrongUpgradeCap);
     assert!(cap.minversion_enabled(), EMinVersionUnavailable);
     let previous_version = cap.version;
     cap.commit_upgrade_impl(receipt);
 
     MinVersionUpgrade {
-        original_id: cap.original_package_id(),
+        original_id,
         previous_version,
         version: cap.version,
         package_id: cap.package,

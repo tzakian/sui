@@ -95,11 +95,11 @@ impl MoveTypeTagTrait for GlobalPauseKey {
 
 /// Rust representation of the Move type 0x2::package_config::MinVersionKey.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MinVersionKey();
+pub struct MinVersionKey(bool);
 
 impl MinVersionKey {
     pub fn new() -> Self {
-        Self()
+        Self(false)
     }
 
     pub fn type_() -> StructTag {

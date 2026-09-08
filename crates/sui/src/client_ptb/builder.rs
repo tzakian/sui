@@ -1018,6 +1018,15 @@ impl<'a> PTBBuilder<'a> {
                     // .to_vec() is necessary to get the length prefix
                     .pure(package_digest.to_vec())
                     .map_err(|e| err!(cmd_span, "{e}"))?;
+                let minversion_authorization = minversion_enabled.then(|| {
+                    self.ptb.command(Tx::Command::move_call(
+                        SUI_FRAMEWORK_PACKAGE_ID,
+                        ident_str!("package").to_owned(),
+                        ident_str!("prepare_minversion_upgrade").to_owned(),
+                        vec![],
+                        vec![upgrade_cap_arg],
+                    ))
+                });
                 let upgrade_ticket = self.ptb.command(Tx::Command::move_call(
                     SUI_FRAMEWORK_PACKAGE_ID,
                     ident_str!("package").to_owned(),
@@ -1036,7 +1045,7 @@ impl<'a> PTBBuilder<'a> {
                         .collect::<Vec<_>>(),
                     compiled_modules,
                 );
-                let res = if minversion_enabled {
+                let res = if let Some(minversion_authorization) = minversion_authorization {
                     let package_config_arg = self
                         .resolve(
                             cmd_span.wrap(PTBArg::Address(NumericalAddress::new(
@@ -1051,7 +1060,7 @@ impl<'a> PTBBuilder<'a> {
                         ident_str!("package").to_owned(),
                         ident_str!("commit_minversion_upgrade").to_owned(),
                         vec![],
-                        vec![upgrade_cap_arg, upgrade_receipt],
+                        vec![upgrade_cap_arg, upgrade_receipt, minversion_authorization],
                     ));
                     self.ptb.command(Tx::Command::move_call(
                         SUI_FRAMEWORK_PACKAGE_ID,
