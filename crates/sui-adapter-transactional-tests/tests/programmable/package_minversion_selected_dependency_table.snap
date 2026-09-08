@@ -1,0 +1,104 @@
+---
+source: external-crates/move/crates/move-transactional-test-runner/src/framework.rs
+---
+processed 18 tasks
+
+init:
+A: object(0,0)
+
+task 1, lines 9-11:
+//# publish --upgradeable --sender A
+created: object(1,0), object(1,1)
+mutated: object(0,0)
+gas summary: computation_cost: 1000000, storage_cost: 5145200,  storage_rebate: 0, non_refundable_storage_fee: 0
+
+task 2, lines 13-15:
+//# upgrade --package LeafV1 --upgrade-capability 1,1 --sender A
+created: object(2,0)
+mutated: object(0,0), object(1,1)
+gas summary: computation_cost: 1000000, storage_cost: 5076800,  storage_rebate: 2595780, non_refundable_storage_fee: 26220
+
+task 3, lines 17-20:
+//# publish --upgradeable --dependencies LeafV1 --sender A
+created: object(3,0), object(3,1)
+mutated: object(0,0)
+gas summary: computation_cost: 1000000, storage_cost: 6011600,  storage_rebate: 978120, non_refundable_storage_fee: 9880
+
+task 4, lines 22-25:
+//# upgrade --package BaseV1 --upgrade-capability 3,1 --dependencies LeafV2 --sender A
+created: object(4,0)
+mutated: object(0,0), object(3,1)
+gas summary: computation_cost: 1000000, storage_cost: 6011600,  storage_rebate: 2595780, non_refundable_storage_fee: 26220
+
+task 5, lines 27-30:
+//# publish --dependencies BaseV1 LeafV1 --sender A
+created: object(5,0)
+mutated: object(0,0)
+gas summary: computation_cost: 1000000, storage_cost: 4940000,  storage_rebate: 978120, non_refundable_storage_fee: 9880
+
+task 6, lines 32-36:
+//# programmable --sender A --inputs object(3,1) object(0x426)
+//> 0: sui::package::enable_minversion(Input(0));
+//> sui::package_config::record_minversion_enrollment(Input(1), Result(0));
+// Consumer's historical BaseV1 dependency still uses LeafV1 before activation.
+created: object(6,0), object(6,1), object(6,2)
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(3,1)
+gas summary: computation_cost: 1000000, storage_cost: 11985200,  storage_rebate: 2595780, non_refundable_storage_fee: 26220
+
+task 7, line 37:
+//# run Consumer::consumer::call --sender A
+Error: Transaction Effects Status: Move Runtime Abort. Location: LeafV1::leaf::value (function index 0) at offset 1, Abort Code: 1
+Execution Error: ExecutionError: ExecutionError { inner: ExecutionErrorInner { kind: MoveAbort(MoveLocation { module: ModuleId { address: LeafV1, name: Identifier("leaf") }, function: 0, instruction: 1, function_name: Some("value") }, 1), source: Some(VMError { major_status: ABORTED, sub_status: Some(1), message: Some("LeafV1::leaf::value at offset 1"), exec_state: None, location: Module(ModuleId { address: LeafV1, name: Identifier("leaf") }), indices: [], offsets: [(FunctionDefinitionIndex(0), 1)] }), command: Some(0) } }
+
+task 8, lines 39-41:
+//# advance-epoch
+Epoch advanced: 1
+
+task 9, lines 42-45:
+//# run Consumer::consumer::call --sender A
+mutated: object(0,0)
+unchanged_shared: 0x0000000000000000000000000000000000000000000000000000000000000426
+gas summary: computation_cost: 1000000, storage_cost: 988000,  storage_rebate: 978120, non_refundable_storage_fee: 9880
+
+task 10, line 46:
+//# run sui::package_config::forbid_version --args object(0x426) object(3,1) 1 --sender A
+created: object(10,0)
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(3,1)
+gas summary: computation_cost: 1000000, storage_cost: 6460000,  storage_rebate: 3980196, non_refundable_storage_fee: 40204
+
+task 11, lines 48-51:
+//# run Consumer::consumer::call --sender A
+mutated: object(0,0)
+unchanged_shared: 0x0000000000000000000000000000000000000000000000000000000000000426
+gas summary: computation_cost: 1000000, storage_cost: 988000,  storage_rebate: 978120, non_refundable_storage_fee: 9880
+
+task 12, line 52:
+//# run sui::package_config::enable_global_pause --args object(0x426) object(3,1) --sender A
+created: object(12,0)
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(3,1)
+gas summary: computation_cost: 1000000, storage_cost: 6315600,  storage_rebate: 3980196, non_refundable_storage_fee: 40204
+
+task 13, line 54:
+//# run Consumer::consumer::call --sender A
+Error: Error checking transaction input objects: Transaction is denied: Package object(3,0) is globally paused
+
+task 14, line 56:
+//# run sui::package_config::disable_global_pause --args object(0x426) object(3,1) --sender A
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(3,1), object(12,0)
+gas summary: computation_cost: 1000000, storage_cost: 6315600,  storage_rebate: 6252444, non_refundable_storage_fee: 63156
+
+task 15, lines 58-63:
+//# upgrade --package LeafV2 --upgrade-capability 1,1 --sender A
+created: object(15,0)
+mutated: object(0,0), object(1,1)
+gas summary: computation_cost: 1000000, storage_cost: 5076800,  storage_rebate: 2595780, non_refundable_storage_fee: 26220
+
+task 16, line 64:
+//# run sui::package_config::forbid_version --args object(0x426) object(1,1) 2 --sender A
+created: object(16,0), object(16,1), object(16,2)
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(1,1)
+gas summary: computation_cost: 1000000, storage_cost: 11392400,  storage_rebate: 3980196, non_refundable_storage_fee: 40204
+
+task 17, line 66:
+//# run Consumer::consumer::call --sender A
+Error: Error checking transaction input objects: Transaction is denied: Package object(1,0) version 2 is forbidden

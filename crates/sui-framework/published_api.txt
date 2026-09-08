@@ -3097,6 +3097,15 @@ UpgradeTicket
 UpgradeReceipt
 	public struct
 	0x2::package
+MinVersionEnrollment
+	public struct
+	0x2::package
+MinVersionUpgradeAuthorization
+	public struct
+	0x2::package
+MinVersionUpgrade
+	public struct
+	0x2::package
 claim
 	public fun
 	0x2::package
@@ -3126,6 +3135,30 @@ version
 	0x2::package
 upgrade_policy
 	public fun
+	0x2::package
+minversion_available
+	public fun
+	0x2::package
+minversion_enabled
+	public fun
+	0x2::package
+minversion_permanently_disabled
+	public fun
+	0x2::package
+enable_minversion
+	public fun
+	0x2::package
+enable_minversion_impl
+	fun
+	0x2::package
+disable_minversion_permanently
+	public fun
+	0x2::package
+minversion_enrollment_info
+	public(package) fun
+	0x2::package
+minversion_upgrade_info
+	public(package) fun
 	0x2::package
 ticket_package
 	public fun
@@ -3166,11 +3199,23 @@ authorize_upgrade
 commit_upgrade
 	public fun
 	0x2::package
+prepare_minversion_upgrade
+	public fun
+	0x2::package
+commit_minversion_upgrade
+	public fun
+	0x2::package
+commit_upgrade_impl
+	fun
+	0x2::package
 original_package_id
 	public fun
 	0x2::package
 original_package_id_impl
 	fun
+	0x2::package
+test_publish
+	public fun
 	0x2::package
 restrict
 	fun
@@ -3190,6 +3235,12 @@ VersionForbiddenKey
 GlobalPauseKey
 	public struct
 	0x2::package_config
+MinVersionKey
+	public struct
+	0x2::package_config
+MinVersion
+	public struct
+	0x2::package_config
 forbid_version
 	public fun
 	0x2::package_config
@@ -3207,6 +3258,15 @@ disable_global_pause
 	0x2::package_config
 is_global_pause_enabled_for_next_epoch
 	public(package) fun
+	0x2::package_config
+record_minversion_enrollment
+	public fun
+	0x2::package_config
+record_minversion_upgrade
+	public fun
+	0x2::package_config
+record_minversion_upgrade_and_forbid_previous
+	public fun
 	0x2::package_config
 create
 	fun
@@ -3230,6 +3290,9 @@ enable_global_pause_impl
 	fun
 	0x2::package_config
 disable_global_pause_impl
+	fun
+	0x2::package_config
+record_minversion_impl
 	fun
 	0x2::package_config
 cap_package_info

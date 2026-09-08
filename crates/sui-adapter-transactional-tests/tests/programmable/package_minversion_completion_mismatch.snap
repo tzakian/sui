@@ -1,0 +1,38 @@
+---
+source: external-crates/move/crates/move-transactional-test-runner/src/framework.rs
+---
+processed 6 tasks
+
+init:
+A: object(0,0)
+
+task 1, lines 8-10:
+//# publish --upgradeable --sender A
+created: object(1,0), object(1,1)
+mutated: object(0,0)
+gas summary: computation_cost: 1000000, storage_cost: 5130000,  storage_rebate: 0, non_refundable_storage_fee: 0
+
+task 2, lines 12-16:
+//# programmable --sender A --inputs object(1,1) object(0x426)
+//> 0: sui::package::enable_minversion(Input(0));
+//> 1: sui::package_config::record_minversion_enrollment(Input(1), Result(0));
+// An enrolled cap rejects the ordinary completion emitted without --minversion.
+created: object(2,0), object(2,1), object(2,2)
+mutated: 0x0000000000000000000000000000000000000000000000000000000000000426, object(0,0), object(1,1)
+gas summary: computation_cost: 1000000, storage_cost: 11985200,  storage_rebate: 2595780, non_refundable_storage_fee: 26220
+
+task 3, lines 17-19:
+//# upgrade --package EnrolledV1 --upgrade-capability 1,1 --sender A
+Error: Transaction Effects Status: Move Runtime Abort. Location: sui::package::commit_upgrade (function index 30) at offset 9, Abort Code: 8
+Execution Error: ExecutionError: ExecutionError { inner: ExecutionErrorInner { kind: MoveAbort(MoveLocation { module: ModuleId { address: sui, name: Identifier("package") }, function: 30, instruction: 9, function_name: Some("commit_upgrade") }, 8), source: Some(VMError { major_status: ABORTED, sub_status: Some(8), message: Some("sui::package::commit_upgrade at offset 9"), exec_state: None, location: Module(ModuleId { address: sui, name: Identifier("package") }), indices: [], offsets: [(FunctionDefinitionIndex(30), 9)] }), command: Some(2) } }
+
+task 4, lines 21-25:
+//# publish --upgradeable --sender A
+created: object(4,0), object(4,1)
+mutated: object(0,0)
+gas summary: computation_cost: 1000000, storage_cost: 5130000,  storage_rebate: 978120, non_refundable_storage_fee: 9880
+
+task 5, lines 26-28:
+//# upgrade --package OrdinaryV1 --upgrade-capability 4,1 --sender A --minversion
+Error: Transaction Effects Status: Move Runtime Abort. Location: sui::package::prepare_minversion_upgrade (function index 31) at offset 7, Abort Code: 7
+Debug of error: MoveAbort(MoveLocation { module: ModuleId { address: sui, name: Identifier("package") }, function: 31, instruction: 7, function_name: Some("prepare_minversion_upgrade") }, 7) at command Some(0)

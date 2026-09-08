@@ -534,7 +534,60 @@ mod tests {
     }
 
     #[test]
-    fn exact_expansion_is_not_suppressed_by_at_least_expansion() {
+    fn invalid_minversion_selections_are_rejected() {
+        let original_id = ObjectID::from_single_byte(1);
+        let historical_id = ObjectID::from_single_byte(10);
+        let selected_id = ObjectID::from_single_byte(12);
+        let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
+            Ok((id == original_id).then_some(MinVersion {
+                version: 12,
+                package_id: ID::new(selected_id),
+            }))
+        };
+
+        let historical = TestPackage {
+            id: historical_id,
+            original_id,
+            linkage: BTreeMap::new(),
+        };
+        let cases = [
+            // The selected package is absent.
+            TestStore(BTreeMap::from([(historical_id, historical.clone())])),
+            // The selected package belongs to another original package family.
+            TestStore(BTreeMap::from([
+                (historical_id, historical.clone()),
+                (
+                    selected_id,
+                    TestPackage {
+                        id: selected_id,
+                        original_id: ObjectID::from_single_byte(2),
+                        linkage: BTreeMap::new(),
+                    },
+                ),
+            ])),
+            // The selected package ID does not have the configured version.
+            TestStore(BTreeMap::from([
+                (historical_id, historical),
+                (
+                    selected_id,
+                    TestPackage {
+                        id: ObjectID::from_single_byte(13),
+                        original_id,
+                        linkage: BTreeMap::new(),
+                    },
+                ),
+            ])),
+        ];
+
+        for store in &cases {
+            let mut resolver =
+                LinkageStoreResolver::<_, ExecutionError>::new(store, Some(&minversion_resolver));
+            assert!(resolver.load_package(&historical_id).is_err());
+        }
+    }
+
+    #[test]
+    fn cyclic_linkage_resolution_terminates() {
         let root = ObjectID::from_single_byte(1);
         let dependency = ObjectID::from_single_byte(2);
         let store = TestStore(BTreeMap::from([
@@ -551,16 +604,16 @@ mod tests {
                 TestPackage {
                     id: dependency,
                     original_id: dependency,
-                    linkage: BTreeMap::new(),
+                    linkage: BTreeMap::from([(root.into(), root.into())]),
                 },
             ),
         ]));
         let config =
             ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
         let mut resolution_table = ResolutionTable::empty(config);
-        let mut builder = LinkageStoreResolver::<_, ExecutionError>::new(&store, None);
+        let mut resolver = LinkageStoreResolver::<_, ExecutionError>::new(&store, None);
 
-        builder
+        resolver
             .resolve_package(
                 &mut resolution_table,
                 root,
@@ -568,23 +621,195 @@ mod tests {
                 ConstraintKind::AtLeast,
             )
             .unwrap();
+
+        assert_eq!(resolution_table.resolution_table.len(), 2);
+    }
+
+    #[test]
+    fn repeated_selected_dependencies_and_cycles_terminate() {
+        let root_original_id = ObjectID::from_single_byte(1);
+        let root_historical_id = ObjectID::from_single_byte(10);
+        let root_selected_id = ObjectID::from_single_byte(12);
+        let left = ObjectID::from_single_byte(2);
+        let right = ObjectID::from_single_byte(3);
+        let shared_original_id = ObjectID::from_single_byte(4);
+        let shared_historical_id = ObjectID::from_single_byte(40);
+        let shared_selected_id = ObjectID::from_single_byte(42);
+        let tail = ObjectID::from_single_byte(5);
+        let store = TestStore(BTreeMap::from([
+            (
+                root_historical_id,
+                TestPackage {
+                    id: root_historical_id,
+                    original_id: root_original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                root_selected_id,
+                TestPackage {
+                    id: root_selected_id,
+                    original_id: root_original_id,
+                    linkage: BTreeMap::from([
+                        (left.into(), left.into()),
+                        (right.into(), right.into()),
+                    ]),
+                },
+            ),
+            (
+                left,
+                TestPackage {
+                    id: left,
+                    original_id: left,
+                    linkage: BTreeMap::from([(
+                        shared_original_id.into(),
+                        shared_historical_id.into(),
+                    )]),
+                },
+            ),
+            (
+                right,
+                TestPackage {
+                    id: right,
+                    original_id: right,
+                    linkage: BTreeMap::from([(
+                        shared_original_id.into(),
+                        shared_historical_id.into(),
+                    )]),
+                },
+            ),
+            (
+                shared_historical_id,
+                TestPackage {
+                    id: shared_historical_id,
+                    original_id: shared_original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                shared_selected_id,
+                TestPackage {
+                    id: shared_selected_id,
+                    original_id: shared_original_id,
+                    linkage: BTreeMap::from([(tail.into(), tail.into())]),
+                },
+            ),
+            (
+                tail,
+                TestPackage {
+                    id: tail,
+                    original_id: tail,
+                    linkage: BTreeMap::from([(right.into(), right.into())]),
+                },
+            ),
+        ]));
+        let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
+            Ok(match id {
+                id if id == root_original_id => Some(MinVersion {
+                    version: 12,
+                    package_id: ID::new(root_selected_id),
+                }),
+                id if id == shared_original_id => Some(MinVersion {
+                    version: 42,
+                    package_id: ID::new(shared_selected_id),
+                }),
+                _ => None,
+            })
+        };
+        let config =
+            ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
+        let mut resolution_table = ResolutionTable::empty(config);
+        let mut resolver =
+            LinkageStoreResolver::<_, ExecutionError>::new(&store, Some(&minversion_resolver));
+
+        resolver
+            .resolve_package(
+                &mut resolution_table,
+                root_historical_id,
+                ConstraintKind::AtLeast,
+                ConstraintKind::AtLeast,
+            )
+            .unwrap();
+
+        assert_eq!(resolution_table.resolution_table.len(), 5);
+        assert!(matches!(
+            resolution_table.resolution_table.get(&shared_original_id),
+            Some(VersionConstraint::AtLeast(42, id)) if *id == shared_selected_id
+        ));
+        assert!(resolution_table.resolution_table.contains_key(&tail));
+    }
+
+    #[test]
+    fn exact_expansion_is_not_suppressed_by_at_least_expansion() {
+        let root_original_id = ObjectID::from_single_byte(1);
+        let historical_root_id = ObjectID::from_single_byte(10);
+        let selected_root_id = ObjectID::from_single_byte(12);
+        let dependency = ObjectID::from_single_byte(2);
+        let store = TestStore(BTreeMap::from([
+            (
+                historical_root_id,
+                TestPackage {
+                    id: historical_root_id,
+                    original_id: root_original_id,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+            (
+                selected_root_id,
+                TestPackage {
+                    id: selected_root_id,
+                    original_id: root_original_id,
+                    linkage: BTreeMap::from([(dependency.into(), dependency.into())]),
+                },
+            ),
+            (
+                dependency,
+                TestPackage {
+                    id: dependency,
+                    original_id: dependency,
+                    linkage: BTreeMap::new(),
+                },
+            ),
+        ]));
+        let minversion_resolver = |id| -> Result<Option<MinVersion>, ExecutionError> {
+            Ok((id == root_original_id).then_some(MinVersion {
+                version: 12,
+                package_id: ID::new(selected_root_id),
+            }))
+        };
+        let config =
+            ResolutionConfig::new(LinkageConfig::new(None, false), BinaryConfig::standard());
+        let mut resolution_table = ResolutionTable::empty(config);
+        let mut builder =
+            LinkageStoreResolver::<_, ExecutionError>::new(&store, Some(&minversion_resolver));
+
+        // Both historical references select the same v12 package. The second, exact traversal
+        // must still expand its dependency under Exact rather than being suppressed by the first.
         builder
             .resolve_package(
                 &mut resolution_table,
-                root,
+                historical_root_id,
+                ConstraintKind::AtLeast,
+                ConstraintKind::AtLeast,
+            )
+            .unwrap();
+        builder
+            .resolve_package(
+                &mut resolution_table,
+                historical_root_id,
                 ConstraintKind::Exact,
                 ConstraintKind::Exact,
             )
             .unwrap();
 
-        for package_id in [root, dependency] {
-            assert!(matches!(
-                resolution_table.resolution_table.get(&package_id),
-                Some(VersionConstraint::Exact(version, id))
-                    if *version == u64::from(package_id.into_bytes()[ObjectID::LENGTH - 1])
-                        && *id == package_id
-            ));
-        }
+        assert!(matches!(
+            resolution_table.resolution_table.get(&root_original_id),
+            Some(VersionConstraint::Exact(12, id)) if *id == selected_root_id
+        ));
+        assert!(matches!(
+            resolution_table.resolution_table.get(&dependency),
+            Some(VersionConstraint::Exact(2, id)) if *id == dependency
+        ));
     }
 
     #[test]

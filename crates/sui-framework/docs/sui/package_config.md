@@ -23,6 +23,8 @@ is allowed. The global-pause setting applies to every version in the package fam
 -  [Struct `PackageMetadataKey`](#sui_package_config_PackageMetadataKey)
 -  [Struct `VersionForbiddenKey`](#sui_package_config_VersionForbiddenKey)
 -  [Struct `GlobalPauseKey`](#sui_package_config_GlobalPauseKey)
+-  [Struct `MinVersionKey`](#sui_package_config_MinVersionKey)
+-  [Struct `MinVersion`](#sui_package_config_MinVersion)
 -  [Constants](#@Constants_0)
 -  [Function `forbid_version`](#sui_package_config_forbid_version)
 -  [Function `forbid_version_range`](#sui_package_config_forbid_version_range)
@@ -30,6 +32,9 @@ is allowed. The global-pause setting applies to every version in the package fam
 -  [Function `enable_global_pause`](#sui_package_config_enable_global_pause)
 -  [Function `disable_global_pause`](#sui_package_config_disable_global_pause)
 -  [Function `is_global_pause_enabled_for_next_epoch`](#sui_package_config_is_global_pause_enabled_for_next_epoch)
+-  [Function `record_minversion_enrollment`](#sui_package_config_record_minversion_enrollment)
+-  [Function `record_minversion_upgrade`](#sui_package_config_record_minversion_upgrade)
+-  [Function `record_minversion_upgrade_and_forbid_previous`](#sui_package_config_record_minversion_upgrade_and_forbid_previous)
 -  [Function `create`](#sui_package_config_create)
 -  [Function `add_per_package_config`](#sui_package_config_add_per_package_config)
 -  [Function `borrow_per_package_config_mut`](#sui_package_config_borrow_per_package_config_mut)
@@ -38,6 +43,7 @@ is allowed. The global-pause setting applies to every version in the package fam
 -  [Function `is_version_forbidden`](#sui_package_config_is_version_forbidden)
 -  [Function `enable_global_pause_impl`](#sui_package_config_enable_global_pause_impl)
 -  [Function `disable_global_pause_impl`](#sui_package_config_disable_global_pause_impl)
+-  [Function `record_minversion_impl`](#sui_package_config_record_minversion_impl)
 -  [Function `cap_package_info`](#sui_package_config_cap_package_info)
 -  [Function `assert_historical_version`](#sui_package_config_assert_historical_version)
 -  [Function `forbid_version_impl`](#sui_package_config_forbid_version_impl)
@@ -188,6 +194,60 @@ Setting key used to store the global-pause value for a package family.
 
 
 <dl>
+</dl>
+
+
+</details>
+
+<a name="sui_package_config_MinVersionKey"></a>
+
+## Struct `MinVersionKey`
+
+Setting key used to store the stable minversion selection for a package family.
+
+
+<pre><code><b>public</b> <b>struct</b> <a href="../sui/package_config.md#sui_package_config_MinVersionKey">MinVersionKey</a> <b>has</b> <b>copy</b>, drop, store
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+</dl>
+
+
+</details>
+
+<a name="sui_package_config_MinVersion"></a>
+
+## Struct `MinVersion`
+
+The package version selected by minversion.
+
+
+<pre><code><b>public</b> <b>struct</b> <a href="../sui/package_config.md#sui_package_config_MinVersion">MinVersion</a> <b>has</b> <b>copy</b>, drop, store
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>version: u64</code>
+</dt>
+<dd>
+</dd>
+<dt>
+<code>package_id: <a href="../sui/object.md#sui_object_ID">sui::object::ID</a></code>
+</dt>
+<dd>
+</dd>
 </dl>
 
 
@@ -430,6 +490,100 @@ If the setting exists, it is retained with a value of <code><b>false</b></code>.
 
 </details>
 
+<a name="sui_package_config_record_minversion_enrollment"></a>
+
+## Function `record_minversion_enrollment`
+
+Record the pending minversion selection created when an <code>UpgradeCap</code> is enrolled.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_enrollment">record_minversion_enrollment</a>(<a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">sui::package_config::PackageConfig</a>, enrollment: <a href="../sui/package.md#sui_package_MinVersionEnrollment">sui::package::MinVersionEnrollment</a>, ctx: &<b>mut</b> <a href="../sui/tx_context.md#sui_tx_context_TxContext">sui::tx_context::TxContext</a>)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_enrollment">record_minversion_enrollment</a>(
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">PackageConfig</a>,
+    enrollment: MinVersionEnrollment,
+    ctx: &<b>mut</b> TxContext,
+) {
+    <b>let</b> (original_id, version, package_id) = <a href="../sui/package.md#sui_package_minversion_enrollment_info">package::minversion_enrollment_info</a>(enrollment);
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>.<a href="../sui/package_config.md#sui_package_config_record_minversion_impl">record_minversion_impl</a>(original_id, version, package_id, ctx);
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="sui_package_config_record_minversion_upgrade"></a>
+
+## Function `record_minversion_upgrade`
+
+Record the pending minversion selection created when an enrolled package is upgraded.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_upgrade">record_minversion_upgrade</a>(<a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">sui::package_config::PackageConfig</a>, upgrade: <a href="../sui/package.md#sui_package_MinVersionUpgrade">sui::package::MinVersionUpgrade</a>, ctx: &<b>mut</b> <a href="../sui/tx_context.md#sui_tx_context_TxContext">sui::tx_context::TxContext</a>)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_upgrade">record_minversion_upgrade</a>(
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">PackageConfig</a>,
+    upgrade: MinVersionUpgrade,
+    ctx: &<b>mut</b> TxContext,
+) {
+    <b>let</b> (original_id, _previous_version, version, package_id) =
+        <a href="../sui/package.md#sui_package_minversion_upgrade_info">package::minversion_upgrade_info</a>(upgrade);
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>.<a href="../sui/package_config.md#sui_package_config_record_minversion_impl">record_minversion_impl</a>(original_id, version, package_id, ctx);
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="sui_package_config_record_minversion_upgrade_and_forbid_previous"></a>
+
+## Function `record_minversion_upgrade_and_forbid_previous`
+
+Record an enrolled package upgrade's pending minversion selection and forbid the version it
+replaced.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_upgrade_and_forbid_previous">record_minversion_upgrade_and_forbid_previous</a>(<a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">sui::package_config::PackageConfig</a>, upgrade: <a href="../sui/package.md#sui_package_MinVersionUpgrade">sui::package::MinVersionUpgrade</a>, ctx: &<b>mut</b> <a href="../sui/tx_context.md#sui_tx_context_TxContext">sui::tx_context::TxContext</a>)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_upgrade_and_forbid_previous">record_minversion_upgrade_and_forbid_previous</a>(
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">PackageConfig</a>,
+    upgrade: MinVersionUpgrade,
+    ctx: &<b>mut</b> TxContext,
+) {
+    <b>let</b> (original_id, previous_version, version, package_id) =
+        <a href="../sui/package.md#sui_package_minversion_upgrade_info">package::minversion_upgrade_info</a>(upgrade);
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>.<a href="../sui/package_config.md#sui_package_config_record_minversion_impl">record_minversion_impl</a>(original_id, version, package_id, ctx);
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>.<a href="../sui/package_config.md#sui_package_config_forbid_version_impl">forbid_version_impl</a>(original_id, previous_version, ctx);
+}
+</code></pre>
+
+
+
+</details>
+
 <a name="sui_package_config_create"></a>
 
 ## Function `create`
@@ -656,6 +810,49 @@ If the setting exists, it is retained with a value of <code><b>false</b></code>.
         setting_name,
         |_package_config, _cap, _ctx| <b>false</b>,
         |_old_value, value| *value = <b>false</b>,
+        ctx,
+    );
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="sui_package_config_record_minversion_impl"></a>
+
+## Function `record_minversion_impl`
+
+
+
+<pre><code><b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_impl">record_minversion_impl</a>(<a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">sui::package_config::PackageConfig</a>, original_id: <a href="../sui/object.md#sui_object_ID">sui::object::ID</a>, version: u64, package_id: <a href="../sui/object.md#sui_object_ID">sui::object::ID</a>, ctx: &<b>mut</b> <a href="../sui/tx_context.md#sui_tx_context_TxContext">sui::tx_context::TxContext</a>)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>fun</b> <a href="../sui/package_config.md#sui_package_config_record_minversion_impl">record_minversion_impl</a>(
+    <a href="../sui/package_config.md#sui_package_config">package_config</a>: &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfig">PackageConfig</a>,
+    original_id: ID,
+    version: u64,
+    package_id: ID,
+    ctx: &<b>mut</b> TxContext,
+) {
+    <b>let</b> <a href="../sui/config.md#sui_config">config</a> = <a href="../sui/package_config.md#sui_package_config">package_config</a>.<a href="../sui/package_config.md#sui_package_config_per_package_config_entry">per_package_config_entry</a>!(original_id, ctx);
+    <a href="../sui/config.md#sui_config">config</a>.update!(
+        &<b>mut</b> <a href="../sui/package_config.md#sui_package_config_PackageConfigCap">PackageConfigCap</a>(),
+        <a href="../sui/package_config.md#sui_package_config_MinVersionKey">MinVersionKey</a>(),
+        |_package_config, _cap, _ctx| <a href="../sui/package_config.md#sui_package_config_MinVersion">MinVersion</a> {
+            version,
+            package_id,
+        },
+        |_old_value, value| *value = <a href="../sui/package_config.md#sui_package_config_MinVersion">MinVersion</a> {
+            version,
+            package_id,
+        },
         ctx,
     );
 }

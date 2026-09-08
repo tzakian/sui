@@ -44,6 +44,27 @@ fun test_minversion_enrollment_records_current_package() {
 }
 
 #[test]
+fun test_minversion_upgrade_preserves_original_identity_across_authorization() {
+    let mut scenario = ts::begin(SENDER);
+    let mut config = new_config(&mut scenario);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    let enrollment = cap.enable_minversion_for_testing(PACKAGE_A.to_id());
+    config.record_minversion_enrollment(enrollment, scenario.ctx());
+    let authorization = cap.prepare_minversion_upgrade();
+    let ticket = cap.authorize_upgrade(package::compatible_policy(), b"digest");
+    let receipt = ticket.test_upgrade();
+    let upgrade = cap.commit_minversion_upgrade(receipt, authorization);
+    config.record_minversion_upgrade(upgrade, scenario.ctx());
+
+    assert!(config
+        .minversion_version_for_next_epoch_for_testing(PACKAGE_A.to_id())
+        .destroy_some() == 2);
+    cap.make_immutable();
+    end(config, scenario);
+}
+
+#[test]
 fun test_minversion_upgrade_can_forbid_previous_version() {
     let mut scenario = ts::begin(SENDER);
     let mut config = new_config(&mut scenario);
@@ -78,6 +99,28 @@ fun test_minversion_cap_rejects_ordinary_upgrade_commit() {
     let ticket = cap.authorize_upgrade(package::compatible_policy(), b"digest");
     let receipt = ticket.test_upgrade();
     cap.commit_upgrade(receipt);
+    abort
+}
+
+#[test, expected_failure(abort_code = sui::package::EMinVersionUnavailable)]
+fun test_ordinary_cap_rejects_minversion_upgrade_commit() {
+    let mut scenario = ts::begin(SENDER);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    let ticket = cap.authorize_upgrade(package::compatible_policy(), b"digest");
+    let receipt = ticket.test_upgrade();
+    cap.commit_minversion_upgrade_for_testing(receipt, PACKAGE_A.to_id());
+    abort
+}
+
+#[test, expected_failure(abort_code = sui::package::EMinVersionUnavailable)]
+fun test_permanently_disabled_cap_rejects_enrollment() {
+    let mut scenario = ts::begin(SENDER);
+    let mut cap = package::test_publish(PACKAGE_A.to_id(), scenario.ctx());
+
+    cap.disable_minversion_permanently();
+    assert!(cap.minversion_permanently_disabled());
+    cap.enable_minversion_for_testing(PACKAGE_A.to_id());
     abort
 }
 
