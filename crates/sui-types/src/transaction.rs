@@ -536,6 +536,7 @@ pub enum EndOfEpochTransactionKind {
     AddressAliasStateCreate,
     WriteAccumulatorStorageCost(WriteAccumulatorStorageCost),
     ForwardingAddressRegistryCreate,
+    PackageConfigCreate,
 }
 
 impl EndOfEpochTransactionKind {
@@ -595,6 +596,10 @@ impl EndOfEpochTransactionKind {
         Self::DenyListStateCreate
     }
 
+    pub fn new_package_config_create() -> Self {
+        Self::PackageConfigCreate
+    }
+
     pub fn new_address_alias_state_create() -> Self {
         Self::AddressAliasStateCreate
     }
@@ -640,6 +645,7 @@ impl EndOfEpochTransactionKind {
             }
             Self::RandomnessStateCreate => vec![],
             Self::DenyListStateCreate => vec![],
+            Self::PackageConfigCreate => vec![],
             Self::BridgeStateCreate(_) => vec![],
             Self::BridgeCommitteeInit(bridge_version) => vec![
                 InputObjectKind::SharedMoveObject {
@@ -691,6 +697,7 @@ impl EndOfEpochTransactionKind {
             Self::AuthenticatorStateCreate => Either::Right(iter::empty()),
             Self::RandomnessStateCreate => Either::Right(iter::empty()),
             Self::DenyListStateCreate => Either::Right(iter::empty()),
+            Self::PackageConfigCreate => Either::Right(iter::empty()),
             Self::BridgeStateCreate(_) => Either::Right(iter::empty()),
             Self::BridgeCommitteeInit(bridge_version) => Either::Left(
                 vec![
@@ -738,6 +745,13 @@ impl EndOfEpochTransactionKind {
                 if !config.enable_coin_deny_list() {
                     return Err(UserInputError::Unsupported(
                         "coin deny list not enabled".to_string(),
+                    ));
+                }
+            }
+            Self::PackageConfigCreate => {
+                if !config.enable_package_version_forbid_list() {
+                    return Err(UserInputError::Unsupported(
+                        "package-version forbid lists not enabled".to_string(),
                     ));
                 }
             }
@@ -1043,6 +1057,8 @@ pub struct UnifiedLinkageInformation {
     pub execution_original_ids: BTreeSet<ObjectID>,
     /// Original package ID to its resolved package ID and version.
     pub resolved_packages: BTreeMap<ObjectID, (ObjectID, u64)>,
+    /// Exact package versions declared by publications that do not execute `init`.
+    pub publication_versions: BTreeSet<(ObjectID, u64)>,
 }
 
 /// A series of commands where the results of one command can be used in future

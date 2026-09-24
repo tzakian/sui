@@ -17,16 +17,18 @@ mod checked {
     use sui_types::gas::SuiGasStatusAPI;
     use sui_types::metrics::BytecodeVerifierMetrics;
     use sui_types::object::ObjectPermission;
+    use sui_types::storage::BackingStore;
     use sui_types::transaction::{
-        CheckedInputObjects, InputObjectKind, InputObjects, ObjectReadResultKind,
+        CheckedInputObjects, InputObjectKind, InputObjects, ObjectReadResult, ObjectReadResultKind,
         ReceivingObjectReadResult, ReceivingObjects, SharedObjectMutability, TransactionData,
-        TransactionDataAPI, TransactionKind,
+        TransactionDataAPI, TransactionKind, UnifiedLinkageInformation,
     };
     use sui_types::{
         SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_ADDRESS_ALIAS_STATE_OBJECT_ID, SUI_BRIDGE_OBJECT_ID,
         SUI_CLOCK_OBJECT_ID, SUI_COIN_REGISTRY_OBJECT_ID, SUI_DENY_LIST_OBJECT_ID,
         SUI_DISPLAY_REGISTRY_OBJECT_ID, SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID,
-        SUI_RANDOMNESS_STATE_OBJECT_ID, SUI_SYSTEM_STATE_OBJECT_ID,
+        SUI_PACKAGE_CONFIG_OBJECT_ID, SUI_RANDOMNESS_STATE_OBJECT_ID, SUI_SYSTEM_STATE_OBJECT_ID,
+        package_config,
     };
     use sui_types::{
         base_types::{SequenceNumber, SuiAddress},
@@ -87,6 +89,7 @@ mod checked {
         receiving_objects: &ReceivingObjects,
         metrics: &Arc<BytecodeVerifierMetrics>,
         verifier_signing_config: &VerifierSigningConfig,
+        backing_store: &dyn BackingStore,
     ) -> SuiResult<(SuiGasStatus, CheckedInputObjects)> {
         let gas_status = check_transaction_input_inner(
             protocol_config,
@@ -97,6 +100,44 @@ mod checked {
         )?;
         transaction.check_allowance_inputs(&input_objects)?;
         check_receiving_objects(&input_objects, receiving_objects)?;
+        check_package_configuration(transaction, protocol_config, backing_store)?;
+
+        // Runs verifier, which could be expensive.
+        check_non_system_packages_to_be_published(
+            transaction,
+            protocol_config,
+            metrics,
+            verifier_signing_config,
+        )?;
+
+        Ok((gas_status, input_objects.into_checked()))
+    }
+
+    pub fn check_transaction_input_with_given_gas(
+        protocol_config: &ProtocolConfig,
+        reference_gas_price: u64,
+        transaction: &TransactionData,
+        mut input_objects: InputObjects,
+        receiving_objects: ReceivingObjects,
+        gas_object: Object,
+        metrics: &Arc<BytecodeVerifierMetrics>,
+        verifier_signing_config: &VerifierSigningConfig,
+        backing_store: &dyn BackingStore,
+    ) -> SuiResult<(SuiGasStatus, CheckedInputObjects)> {
+        let gas_object_ref = gas_object.compute_object_reference();
+        input_objects.push(ObjectReadResult::new_from_gas_object(&gas_object));
+
+        let gas_status = check_transaction_input_inner(
+            protocol_config,
+            reference_gas_price,
+            transaction,
+            &input_objects,
+            &[gas_object_ref],
+        )?;
+        check_receiving_objects(&input_objects, &receiving_objects)?;
+
+        check_package_configuration(transaction, protocol_config, backing_store)?;
+
         // Runs verifier, which could be expensive.
         check_non_system_packages_to_be_published(
             transaction,
@@ -607,6 +648,7 @@ mod checked {
                         | (SUI_COIN_REGISTRY_OBJECT_ID, _)
                         | (SUI_DISPLAY_REGISTRY_OBJECT_ID, _)
                         | (SUI_DENY_LIST_OBJECT_ID, _)
+                        | (SUI_PACKAGE_CONFIG_OBJECT_ID, _)
                         | (SUI_BRIDGE_OBJECT_ID, _)
 
                         // System objects that can only be taken immutably
@@ -796,6 +838,85 @@ mod checked {
                 return Err(err);
             }
         };
+
+        Ok(())
+    }
+
+    fn check_package_configuration(
+        transaction: &TransactionData,
+        protocol_config: &ProtocolConfig,
+        backing_store: &dyn BackingStore,
+    ) -> SuiResult {
+        let enforce_version_forbid_list = protocol_config.enable_package_version_forbid_list();
+        if !enforce_version_forbid_list && !protocol_config.enable_package_minversion() {
+            return Ok(());
+        }
+
+        let TransactionKind::ProgrammableTransaction(pt) = transaction.kind() else {
+            return Ok(());
+        };
+        let Some(package_config_root) = backing_store.get_object(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+        else {
+            return Ok(());
+        };
+        let package_config_root_version = package_config_root.version();
+
+        // Reject collected package configuration violations, but let collection errors reach
+        // execution as invalid linkage errors instead of denying signing.
+        let Ok(UnifiedLinkageInformation {
+            execution_original_ids,
+            resolved_packages,
+            publication_versions,
+        }) = sui_execution::collect_unification_information_for_signing(
+            protocol_config,
+            pt,
+            backing_store,
+        )
+        else {
+            return Ok(());
+        };
+
+        let mut policy_versions = publication_versions;
+        policy_versions.extend(
+            execution_original_ids
+                .into_iter()
+                .filter_map(|original_id| {
+                    resolved_packages
+                        .get(&original_id)
+                        .map(|(_, version)| (original_id, *version))
+                }),
+        );
+
+        for (original_id, version) in policy_versions {
+            if protocol_config.enable_package_minversion()
+                && package_config::read_minversion(
+                    original_id,
+                    package_config_root_version,
+                    backing_store,
+                )
+                .unwrap_or(None)
+                .is_some_and(|minversion| version < minversion.version)
+            {
+                return Err(UserInputError::TransactionDenied {
+                    error: format!("Package {original_id} version {version} is below minversion"),
+                }
+                .into());
+            }
+            if enforce_version_forbid_list
+                && package_config::is_version_forbidden(
+                    original_id,
+                    version,
+                    package_config_root_version,
+                    backing_store,
+                )
+                .unwrap_or(false)
+            {
+                return Err(UserInputError::TransactionDenied {
+                    error: format!("Package {original_id} version {version} is forbidden"),
+                }
+                .into());
+            }
+        }
 
         Ok(())
     }
