@@ -11,7 +11,6 @@ use either::Either;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use sui_types::SUI_ACCUMULATOR_ROOT_OBJECT_ID;
 use sui_types::SUI_CLOCK_OBJECT_ID;
 use sui_types::SUI_CLOCK_OBJECT_SHARED_VERSION;
 use sui_types::SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID;
@@ -34,6 +33,7 @@ use sui_types::{
     IMPLICITLY_READ_SYSTEM_OBJECTS, SUI_RANDOMNESS_STATE_OBJECT_ID, base_types::SequenceNumber,
     error::SuiResult,
 };
+use sui_types::{SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_PACKAGE_CONFIG_OBJECT_ID};
 use tracing::trace;
 
 pub struct SharedObjVerManager {}
@@ -48,10 +48,10 @@ pub struct AssignedVersions {
     /// version of the object.
     ///
     /// Today this holds the accumulator root version (as of the beginning of the consensus
-    /// commit this transaction belongs to) and the forwarding address registry version (as of the
-    /// point in the commit at which this transaction is sequenced). The accumulator root qualifies
-    /// because it is written at the end of every commit, so there is always a well-defined prior
-    /// version to read from.
+    /// commit this transaction belongs to), the forwarding address registry version, and the
+    /// package-config version (both as of the point in the commit at which this transaction is
+    /// sequenced). The accumulator root qualifies because it is written at the end of every
+    /// commit, so there is always a well-defined prior version to read from.
     pub system_object_versions: SystemObjectVersions,
 }
 
@@ -97,6 +97,7 @@ impl AssignedVersions {
                     initial_shared_version: sui_types::object::OBJECT_START_VERSION,
                     version: v,
                 }),
+                None,
                 None,
             ),
         )
@@ -487,25 +488,22 @@ impl SharedObjVerManager {
     ) -> AssignedVersions {
         let shared_input_objects: Vec<_> = assignable.shared_input_objects(epoch_store).collect();
 
-        let system_object_versions = SystemObjectVersions::from_map(
-            implicitly_read_system_objects(epoch_store)
-                .into_iter()
-                .map(|(id, initial_shared_version)| {
-                    let version = *shared_input_next_versions
-                        .get(&(id, initial_shared_version))
-                        .expect(
-                            "implicitly read system objects must be in shared_input_next_versions",
-                        );
-                    (
-                        id,
-                        ConsensusObjectVersion {
-                            initial_shared_version,
-                            version,
-                        },
-                    )
-                })
-                .collect(),
-        );
+        let system_object_versions: BTreeMap<_, _> = implicitly_read_system_objects(epoch_store)
+            .into_iter()
+            .map(|(id, initial_shared_version)| {
+                let version = *shared_input_next_versions
+                    .get(&(id, initial_shared_version))
+                    .expect("implicitly read system objects must be in shared_input_next_versions");
+                (
+                    id,
+                    ConsensusObjectVersion {
+                        initial_shared_version,
+                        version,
+                    },
+                )
+            })
+            .collect();
+        let system_object_versions = SystemObjectVersions::from_map(system_object_versions);
 
         if shared_input_objects.is_empty() {
             // No shared object used by this transaction. No need to assign versions.
@@ -654,6 +652,14 @@ fn implicitly_read_system_objects(
             initial_shared_version,
         ));
     }
+    if epoch_store.package_policy_enabled() {
+        objects.push((
+            SUI_PACKAGE_CONFIG_OBJECT_ID,
+            epoch_start_config
+                .package_config_obj_initial_shared_version()
+                .expect("package config initial shared version should be set when package policy is enabled"),
+        ));
+    }
     objects
 }
 
@@ -687,7 +693,7 @@ mod tests {
     use std::sync::Arc;
     use sui_protocol_config::ProtocolConfig;
     use sui_test_transaction_builder::TestTransactionBuilder;
-    use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress};
+    use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress, SystemObjectVersions};
     use sui_types::crypto::{RandomnessRound, get_account_key_pair};
     use sui_types::digests::ObjectDigest;
     use sui_types::effects::TestEffectsBuilder;
@@ -696,9 +702,10 @@ mod tests {
     };
 
     use sui_types::object::Object;
-    use sui_types::transaction::{ObjectArg, SenderSignedData, VerifiedTransaction};
+    use sui_types::transaction::{InputObjects, ObjectArg, SenderSignedData, VerifiedTransaction};
 
     use sui_types::gas_coin::GAS;
+    use sui_types::in_memory_storage::InMemoryStorage;
     use sui_types::transaction::FundsWithdrawalArg;
     use sui_types::{SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_RANDOMNESS_STATE_OBJECT_ID};
 
@@ -711,12 +718,26 @@ mod tests {
             initial_shared_version: sui_types::object::OBJECT_START_VERSION,
             version: v,
         };
+        let mut system_object_versions = BTreeMap::new();
+        if let Some(version) = accumulator_version {
+            system_object_versions
+                .insert(SUI_ACCUMULATOR_ROOT_OBJECT_ID, at_start_version(version));
+            // Consensus-assignment fixtures with an accumulator model the default authority,
+            // which also has the package-config root enabled at the start version.
+            system_object_versions.insert(
+                SUI_PACKAGE_CONFIG_OBJECT_ID,
+                at_start_version(SequenceNumber::from_u64(1)),
+            );
+        }
+        if let Some(version) = forwarding_address_registry_version {
+            system_object_versions.insert(
+                SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID,
+                at_start_version(version),
+            );
+        }
         AssignedVersions::new(
             shared_object_versions,
-            SystemObjectVersions::new(
-                accumulator_version.map(at_start_version),
-                forwarding_address_registry_version.map(at_start_version),
-            ),
+            SystemObjectVersions::from_map(system_object_versions),
         )
     }
 
@@ -1003,6 +1024,7 @@ mod tests {
                 initial_shared_version: registry_initial_version,
                 version: registry_version,
             }),
+            None,
         );
         assert_eq!(
             assigned_versions.0,
@@ -1025,6 +1047,123 @@ mod tests {
                     )
                 ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    // Effects-based assignment must retain the exact package-config root version recorded as a
+    // read-only consensus object for checkpoint execution and replay.
+    async fn test_package_config_version_from_effects() {
+        let authority = TestAuthorityBuilder::new().build().await;
+        let epoch_store = authority.epoch_store_for_testing();
+        let initial_shared_version = epoch_store
+            .epoch_start_config()
+            .package_config_obj_initial_shared_version()
+            .unwrap();
+        let version = SequenceNumber::from_u64(4);
+        let cert = generate_shared_objs_tx_with_gas_version(&[], 3);
+        let effects = TestEffectsBuilder::new(cert.data())
+            .with_shared_input_versions(BTreeMap::from([(SUI_PACKAGE_CONFIG_OBJECT_ID, version)]))
+            .build();
+        let assigned_versions = SharedObjVerManager::assign_versions_from_effects(
+            &[(&cert, &effects, None)],
+            &epoch_store,
+            authority.get_object_cache_reader().as_ref(),
+        );
+        assert_eq!(
+            assigned_versions.0,
+            vec![(
+                cert.key(),
+                AssignedVersions::new(
+                    vec![],
+                    SystemObjectVersions::from_map(BTreeMap::from([(
+                        SUI_PACKAGE_CONFIG_OBJECT_ID,
+                        ConsensusObjectVersion {
+                            initial_shared_version,
+                            version,
+                        },
+                    )])),
+                ),
+            )]
+        );
+    }
+
+    #[test]
+    fn test_latest_system_object_versions_without_package_config_root() {
+        let versions = SystemObjectVersions::from_inputs_or_latest_in_store(
+            &InputObjects::new(vec![]),
+            &InMemoryStorage::default(),
+        );
+        assert!(versions.get(&SUI_PACKAGE_CONFIG_OBJECT_ID).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_package_policy_root_follows_consensus_order() {
+        let authority = TestAuthorityBuilder::new().build().await;
+        let epoch_store = authority.epoch_store_for_testing();
+        assert!(epoch_store.package_policy_enabled());
+        let initial_shared_version = epoch_store
+            .epoch_start_config()
+            .package_config_obj_initial_shared_version()
+            .unwrap();
+
+        let writer = generate_shared_objs_tx_with_gas_version(
+            &[(SUI_PACKAGE_CONFIG_OBJECT_ID, initial_shared_version, true)],
+            3,
+        );
+        let reader = generate_shared_objs_tx_with_gas_version(&[], 5);
+        let assignment = epoch_store
+            .assign_shared_object_versions_for_tests(
+                authority.get_object_cache_reader().as_ref(),
+                &[writer, reader],
+            )
+            .unwrap();
+
+        assert_eq!(
+            assignment.0[0]
+                .1
+                .system_object_versions
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .version,
+            initial_shared_version,
+        );
+        assert_eq!(
+            assignment.0[1]
+                .1
+                .system_object_versions
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .version,
+            SequenceNumber::from_u64(4),
+        );
+        let next_commit_reader = generate_shared_objs_tx_with_gas_version(&[], 7);
+        let next_assignment = epoch_store
+            .assign_shared_object_versions_for_tests(
+                authority.get_object_cache_reader().as_ref(),
+                &[next_commit_reader],
+            )
+            .unwrap();
+        assert_eq!(
+            next_assignment.0[0]
+                .1
+                .system_object_versions
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .version,
+            SequenceNumber::from_u64(4),
+        );
+
+        let latest = SystemObjectVersions::from_inputs_or_latest_in_store(
+            &InputObjects::new(vec![]),
+            authority.get_object_store().as_ref(),
+        );
+        assert_eq!(
+            latest
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .initial_shared_version,
+            initial_shared_version,
         );
     }
 
@@ -1250,6 +1389,8 @@ mod tests {
             SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID,
             SequenceNumber::from_u64(1),
         ));
+        shared_input_next_versions
+            .remove(&(SUI_PACKAGE_CONFIG_OBJECT_ID, SequenceNumber::from_u64(1)));
         assert_eq!(
             shared_input_next_versions,
             HashMap::from([
@@ -1592,10 +1733,16 @@ mod tests {
                         )
                     ),
                 ]),
-                shared_input_next_versions: HashMap::from([(
-                    (SUI_ACCUMULATOR_ROOT_OBJECT_ID, acc_version),
-                    acc_version.next()
-                )]),
+                shared_input_next_versions: HashMap::from([
+                    (
+                        (SUI_ACCUMULATOR_ROOT_OBJECT_ID, acc_version),
+                        acc_version.next()
+                    ),
+                    (
+                        (SUI_PACKAGE_CONFIG_OBJECT_ID, SequenceNumber::from_u64(1)),
+                        SequenceNumber::from_u64(1)
+                    ),
+                ]),
             }
         );
     }
@@ -1675,10 +1822,16 @@ mod tests {
                         )
                     ),
                 ]),
-                shared_input_next_versions: HashMap::from([(
-                    (SUI_ACCUMULATOR_ROOT_OBJECT_ID, acc_version),
-                    acc_version.next().next().next()
-                )]),
+                shared_input_next_versions: HashMap::from([
+                    (
+                        (SUI_ACCUMULATOR_ROOT_OBJECT_ID, acc_version),
+                        acc_version.next().next().next()
+                    ),
+                    (
+                        (SUI_PACKAGE_CONFIG_OBJECT_ID, SequenceNumber::from_u64(1)),
+                        SequenceNumber::from_u64(1)
+                    ),
+                ]),
             }
         );
     }
@@ -1731,6 +1884,10 @@ mod tests {
                     (
                         (shared_obj_id, shared_obj_version),
                         shared_obj_version.next()
+                    ),
+                    (
+                        (SUI_PACKAGE_CONFIG_OBJECT_ID, SequenceNumber::from_u64(1)),
+                        SequenceNumber::from_u64(1)
                     ),
                 ]),
             }

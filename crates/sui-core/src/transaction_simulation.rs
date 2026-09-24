@@ -176,6 +176,7 @@ pub fn simulate_transaction(
             &receiving_objects,
             bytecode_verifier_metrics,
             verifier_signing_config,
+            backing_store,
         )?
     };
 
