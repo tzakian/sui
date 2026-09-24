@@ -414,6 +414,8 @@ const MAINNET_USDB: &str =
 //              Merge colliding deferred-transaction entries in the consensus handler
 //              instead of overwriting (which stranded the displaced transactions).
 // Version 139: Enable forwarding addresses on devnet.
+//              Enable package-version forbid lists.
+//              Enable package minversion.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
@@ -798,6 +800,14 @@ struct FeatureFlags {
     // Enable Soft Bundle (SIP-19).
     #[serde(skip_serializing_if = "is_false")]
     soft_bundle: bool,
+
+    // If true, enable package-version forbid lists.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_package_version_forbid_list: bool,
+
+    // If true, enable package minversion.
+    #[serde(skip_serializing_if = "is_false")]
+    enable_package_minversion: bool,
 
     // If true, enable the coin deny list V2.
     #[serde(skip_serializing_if = "is_false")]
@@ -4805,6 +4815,8 @@ impl ProtocolConfig {
                     if chain != Chain::Mainnet && chain != Chain::Testnet {
                         cfg.feature_flags.enable_forwarding_addresses = true;
                     }
+                    cfg.feature_flags.enable_package_version_forbid_list = true;
+                    cfg.feature_flags.enable_package_minversion = true;
                 }
                 // Use this template when making changes:
                 //
