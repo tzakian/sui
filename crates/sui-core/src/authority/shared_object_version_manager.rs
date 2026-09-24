@@ -11,7 +11,6 @@ use either::Either;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use sui_types::SUI_ACCUMULATOR_ROOT_OBJECT_ID;
 use sui_types::SUI_CLOCK_OBJECT_ID;
 use sui_types::SUI_CLOCK_OBJECT_SHARED_VERSION;
 use sui_types::SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID;
@@ -34,6 +33,7 @@ use sui_types::{
     IMPLICITLY_READ_SYSTEM_OBJECTS, SUI_RANDOMNESS_STATE_OBJECT_ID, base_types::SequenceNumber,
     error::SuiResult,
 };
+use sui_types::{SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_PACKAGE_CONFIG_OBJECT_ID};
 use tracing::trace;
 
 pub struct SharedObjVerManager {}
@@ -334,6 +334,21 @@ impl SharedObjVerManager {
             epoch_store,
             cache_reader,
         )?;
+        let package_config_version = if epoch_store.package_policy_enabled() {
+            let initial_shared_version = epoch_store
+                .epoch_start_config()
+                .package_config_obj_initial_shared_version()
+                .expect("package config initial shared version should be set when package policy is enabled");
+            let version = *shared_input_next_versions
+                .get(&(SUI_PACKAGE_CONFIG_OBJECT_ID, initial_shared_version))
+                .expect("package config object must be initialized when package policy is enabled");
+            Some(ConsensusObjectVersion {
+                initial_shared_version,
+                version,
+            })
+        } else {
+            None
+        };
         let mut assigned_versions = Vec::new();
         for assignable in assignables {
             assert!(
@@ -346,6 +361,7 @@ impl SharedObjVerManager {
                 epoch_store,
                 assignable,
                 &mut shared_input_next_versions,
+                package_config_version,
                 cancelled_txns,
             );
             assigned_versions.push((assignable.key(), cert_assigned_versions));
@@ -483,11 +499,12 @@ impl SharedObjVerManager {
         epoch_store: &AuthorityPerEpochStore,
         assignable: &Schedulable<impl AsTx>,
         shared_input_next_versions: &mut HashMap<ConsensusObjectSequenceKey, SequenceNumber>,
+        package_config_version: Option<ConsensusObjectVersion>,
         cancelled_txns: &BTreeMap<TransactionDigest, CancelConsensusCertificateReason>,
     ) -> AssignedVersions {
         let shared_input_objects: Vec<_> = assignable.shared_input_objects(epoch_store).collect();
 
-        let system_object_versions = SystemObjectVersions::from_map(
+        let mut system_object_versions: BTreeMap<_, _> =
             implicitly_read_system_objects(epoch_store)
                 .into_iter()
                 .map(|(id, initial_shared_version)| {
@@ -504,8 +521,11 @@ impl SharedObjVerManager {
                         },
                     )
                 })
-                .collect(),
-        );
+                .collect();
+        if let Some(package_config_version) = package_config_version {
+            system_object_versions.insert(SUI_PACKAGE_CONFIG_OBJECT_ID, package_config_version);
+        }
+        let system_object_versions = SystemObjectVersions::from_map(system_object_versions);
 
         if shared_input_objects.is_empty() {
             // No shared object used by this transaction. No need to assign versions.
@@ -667,6 +687,15 @@ fn get_or_init_versions<'a>(
         .collect();
 
     shared_input_objects.extend(implicitly_read_system_objects(epoch_store));
+    if epoch_store.package_policy_enabled() {
+        shared_input_objects.push((
+            SUI_PACKAGE_CONFIG_OBJECT_ID,
+            epoch_store
+                .epoch_start_config()
+                .package_config_obj_initial_shared_version()
+                .expect("package config initial shared version should be set"),
+        ));
+    }
 
     shared_input_objects.sort();
     shared_input_objects.dedup();
@@ -687,7 +716,7 @@ mod tests {
     use std::sync::Arc;
     use sui_protocol_config::ProtocolConfig;
     use sui_test_transaction_builder::TestTransactionBuilder;
-    use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress};
+    use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress, SystemObjectVersions};
     use sui_types::crypto::{RandomnessRound, get_account_key_pair};
     use sui_types::digests::ObjectDigest;
     use sui_types::effects::TestEffectsBuilder;
@@ -696,9 +725,10 @@ mod tests {
     };
 
     use sui_types::object::Object;
-    use sui_types::transaction::{ObjectArg, SenderSignedData, VerifiedTransaction};
+    use sui_types::transaction::{InputObjects, ObjectArg, SenderSignedData, VerifiedTransaction};
 
     use sui_types::gas_coin::GAS;
+    use sui_types::in_memory_storage::InMemoryStorage;
     use sui_types::transaction::FundsWithdrawalArg;
     use sui_types::{SUI_ACCUMULATOR_ROOT_OBJECT_ID, SUI_RANDOMNESS_STATE_OBJECT_ID};
 
@@ -1025,6 +1055,77 @@ mod tests {
                     )
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn test_latest_system_object_versions_without_package_config_root() {
+        let versions = SystemObjectVersions::from_inputs_or_latest_in_store(
+            &InputObjects::new(vec![]),
+            &InMemoryStorage::default(),
+        );
+        assert!(versions.get(&SUI_PACKAGE_CONFIG_OBJECT_ID).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_package_policy_root_is_pinned_per_consensus_commit() {
+        let authority = TestAuthorityBuilder::new().build().await;
+        let epoch_store = authority.epoch_store_for_testing();
+        assert!(epoch_store.package_policy_enabled());
+        let initial_shared_version = epoch_store
+            .epoch_start_config()
+            .package_config_obj_initial_shared_version()
+            .unwrap();
+
+        let writer = generate_shared_objs_tx_with_gas_version(
+            &[(SUI_PACKAGE_CONFIG_OBJECT_ID, initial_shared_version, true)],
+            3,
+        );
+        let reader = generate_shared_objs_tx_with_gas_version(&[], 5);
+        let assignment = epoch_store
+            .assign_shared_object_versions_for_tests(
+                authority.get_object_cache_reader().as_ref(),
+                &[writer, reader],
+            )
+            .unwrap();
+
+        for (_, assigned) in &assignment.0 {
+            assert_eq!(
+                assigned
+                    .system_object_versions
+                    .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                    .unwrap()
+                    .version,
+                initial_shared_version,
+            );
+        }
+        let next_commit_reader = generate_shared_objs_tx_with_gas_version(&[], 7);
+        let next_assignment = epoch_store
+            .assign_shared_object_versions_for_tests(
+                authority.get_object_cache_reader().as_ref(),
+                &[next_commit_reader],
+            )
+            .unwrap();
+        assert_eq!(
+            next_assignment.0[0]
+                .1
+                .system_object_versions
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .version,
+            SequenceNumber::from_u64(4),
+        );
+
+        let latest = SystemObjectVersions::from_inputs_or_latest_in_store(
+            &InputObjects::new(vec![]),
+            authority.get_object_store().as_ref(),
+        );
+        assert_eq!(
+            latest
+                .get(&SUI_PACKAGE_CONFIG_OBJECT_ID)
+                .unwrap()
+                .initial_shared_version,
+            initial_shared_version,
         );
     }
 

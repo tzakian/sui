@@ -8,7 +8,7 @@ use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     error::SuiResult,
     metrics::BytecodeVerifierMetrics,
-    storage::BackingPackageStore,
+    storage::BackingStore,
     transaction::{ProgrammableTransaction, UnifiedLinkageInformation},
 };
 
@@ -51,7 +51,7 @@ pub fn verifier<'m>(
 pub fn collect_unification_information_for_signing(
     protocol_config: &ProtocolConfig,
     pt: &ProgrammableTransaction,
-    package_store: &dyn BackingPackageStore,
+    backing_store: &dyn BackingStore,
 ) -> SuiResult<UnifiedLinkageInformation> {
     if !protocol_config.enable_unified_linkage() {
         return Ok(UnifiedLinkageInformation::default());

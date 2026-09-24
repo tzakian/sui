@@ -80,6 +80,7 @@ pub mod multisig_legacy;
 pub mod nitro_attestation;
 pub mod node_role;
 pub mod object;
+pub mod package_config;
 pub mod passkey_authenticator;
 pub mod programmable_transaction_builder;
 pub mod ptb_trace;
@@ -143,6 +144,7 @@ built_in_ids! {
     SUI_COIN_REGISTRY_ADDRESS / SUI_COIN_REGISTRY_OBJECT_ID = 0xc;
     SUI_DISPLAY_REGISTRY_ADDRESS / SUI_DISPLAY_REGISTRY_OBJECT_ID = 0xd;
     SUI_DENY_LIST_ADDRESS / SUI_DENY_LIST_OBJECT_ID = 0x403;
+    SUI_PACKAGE_CONFIG_ADDRESS / SUI_PACKAGE_CONFIG_OBJECT_ID = 0x426;
     SUI_ACCUMULATOR_ROOT_ADDRESS / SUI_ACCUMULATOR_ROOT_OBJECT_ID = 0xacc;
     SUI_ADDRESS_ALIAS_STATE_ADDRESS / SUI_ADDRESS_ALIAS_STATE_OBJECT_ID = 0xa;
     SUI_FORWARDING_ADDRESS_REGISTRY_ADDRESS / SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID = 0xfa;
@@ -166,6 +168,7 @@ pub const SUI_CLOCK_OBJECT_SHARED_VERSION: SequenceNumber = OBJECT_START_VERSION
 pub const IMPLICITLY_READ_SYSTEM_OBJECTS: &[ObjectID] = &[
     SUI_ACCUMULATOR_ROOT_OBJECT_ID,
     SUI_FORWARDING_ADDRESS_REGISTRY_OBJECT_ID,
+    SUI_PACKAGE_CONFIG_OBJECT_ID,
 ];
 
 pub fn sui_framework_address_concat_string(suffix: &str) -> String {
