@@ -44,6 +44,31 @@ fun test_from_module() {
 }
 
 #[test]
+fun test_minversion_can_be_permanently_disabled() {
+    let mut scenario = test_scenario::begin(@0x1);
+    let mut cap = package::test_publish(@0x42.to_id(), scenario.ctx());
+
+    assert!(cap.minversion_available());
+    cap.disable_minversion_permanently();
+    assert!(!cap.minversion_available());
+    assert!(cap.minversion_permanently_disabled());
+    assert!(!cap.minversion_enabled());
+
+    cap.make_immutable();
+    scenario.end();
+}
+
+#[test, expected_failure(abort_code = sui::package::EMinVersionUnavailable)]
+fun test_minversion_cannot_enable_after_permanent_disable() {
+    let mut scenario = test_scenario::begin(@0x1);
+    let mut cap = package::test_publish(@0x42.to_id(), scenario.ctx());
+
+    cap.disable_minversion_permanently();
+    let _enrollment = cap.enable_minversion_for_testing(@0x42.to_id());
+    abort
+}
+
+#[test]
 fun test_restrict_upgrade_policy() {
     let mut scenario = test_scenario::begin(@0x1);
     let mut cap = package::test_publish(@0x42.to_id(), scenario.ctx());
